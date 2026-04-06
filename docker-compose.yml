@@ -1,0 +1,41 @@
+services:
+  miniflux:
+    image: miniflux/miniflux:latest
+    container_name: miniflux
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # https://miniflux.app/docs/configuration.html
+      - DATABASE_URL=postgres://miniflux:secret@db/miniflux?sslmode=disable
+      - RUN_MIGRATIONS=1
+      - CREATE_ADMIN=1
+      - DISABLE_HSTS=1
+      - FETCHER_ALLOW_PRIVATE_NETWORKS=1
+      - INTEGRATION_ALLOW_PRIVATE_NETWORKS=1
+      - ADMIN_USERNAME=admin
+      - ADMIN_PASSWORD=admin123
+    extra_hosts:
+      - host.docker.internal:host-gateway
+  db:
+    image: postgres:18
+    container_name: miniflux-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=miniflux
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=miniflux
+    volumes:
+      - ./miniflux-db:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -U
+        - miniflux
+      interval: 10s
+      start_period: 10s
+networks: {}
