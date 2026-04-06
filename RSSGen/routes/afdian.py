@@ -1,5 +1,6 @@
 """爱发电路由 — 参考 AfdianToMarkdown Go 项目的 API 端点"""
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -41,9 +42,9 @@ class AfdianRoute(Route):
         data = resp.json()
         return data["data"]["user"]["user_id"]
 
-    async def _get_post_list(self, scraper: Scraper, user_id: str, author_slug: str, per_page: int = 10) -> list[dict]:
-        """获取作者动态列表（自动翻页）"""
-        # API: /api/post/get-list?user_id={id}&type=new&publish_sn={sn}&per_page=10&...
+    async def _get_post_list(self, scraper: Scraper, user_id: str, author_slug: str,
+                             per_page: int = 10, limit: int = 0) -> list[dict]:
+        """获取作者动态列表（自动翻页），limit=0 表示获取全部"""
         referer = f"{HOST_URL}/a/{author_slug}"
         all_posts = []
         publish_sn = ""
@@ -51,7 +52,7 @@ class AfdianRoute(Route):
         while True:
             api_url = (
                 f"{HOST_URL}/api/post/get-list?"
-                f"user_id={user_id}&type=new&publish_sn={publish_sn}"
+                f"user_id={user_id}&type=old&publish_sn={publish_sn}"
                 f"&per_page={per_page}&group_id=&all=1&is_public=&plan_id=&title=&name="
             )
             resp = await scraper.get(api_url, referer=referer)
@@ -63,12 +64,15 @@ class AfdianRoute(Route):
                 break
 
             all_posts.extend(post_list)
+
+            if limit and len(all_posts) >= limit:
+                return all_posts[:limit]
+
             publish_sn = post_list[-1].get("publish_sn", "")
             if not publish_sn:
                 break
 
-            # MVP: 只取第一页，避免过度请求
-            break
+            await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
         return all_posts
 
@@ -76,7 +80,7 @@ class AfdianRoute(Route):
         """获取文章正文 HTML"""
         # API: /api/post/get-detail?post_id={id}&album_id={id}
         api_url = f"{HOST_URL}/api/post/get-detail?post_id={post_id}&album_id={album_id}"
-        referer = f"{HOST_URL}/post/{post_id}"
+        referer = f"{HOST_URL}/p/{post_id}"
         resp = await scraper.get(api_url, referer=referer)
         resp.raise_for_status()
         data = resp.json()
@@ -99,9 +103,11 @@ class AfdianRoute(Route):
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
         author_slug = path_params[0]
 
+        limit = int(kwargs.get("limit", 20))
+
         scraper = self._get_scraper()
         user_id = await self._get_author_id(scraper, author_slug)
-        posts = await self._get_post_list(scraper, user_id, author_slug)
+        posts = await self._get_post_list(scraper, user_id, author_slug, limit=limit)
 
         items = []
         for post in posts:
@@ -115,16 +121,20 @@ class AfdianRoute(Route):
                     enclosures.append({"url": pic, "type": "image/jpeg"})
 
             post_id = post.get("post_id", "")
-            content = post.get("content", "")
+
+            # 通过详情 API 获取完整正文，列表 API 返回的 content 是截断的摘要
+            content = await self._get_post_detail(scraper, post_id)
 
             items.append(FeedItem(
                 title=post.get("title", "无标题"),
-                link=f"{HOST_URL}/post/{post_id}",
+                link=f"{HOST_URL}/p/{post_id}",
                 content=content,
                 pub_date=pub_date,
                 author=post.get("user", {}).get("name"),
                 guid=post_id,
                 enclosures=enclosures,
             ))
+
+            await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
         return items
