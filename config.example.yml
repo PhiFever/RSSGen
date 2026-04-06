@@ -1,0 +1,21 @@
+# RSSGen 配置文件
+# 复制为 config.yml 并填入你自己的凭证
+
+server:
+  host: "0.0.0.0"
+  port: 8000
+  cache_ttl: 1800  # 默认缓存时间（秒）
+
+# 全局反爬配置
+scraper:
+  proxy: null  # HTTP/SOCKS5 代理，如 "socks5://127.0.0.1:1080"
+  rate_limit: 1.0  # 全局最小请求间隔（秒）
+
+# ============ 路由配置 ============
+
+routes:
+  afdian:
+    enabled: true
+    cookie: "你的爱发电 Cookie（从浏览器开发者工具复制完整 Cookie 字符串）"
+    # rate_limit: 0.5  # 可选：该路由的请求间隔
+    # proxy: null       # 可选：该路由的代理

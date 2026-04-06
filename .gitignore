@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# 用户配置（含凭证）
+config.yml
+miniflux-db/

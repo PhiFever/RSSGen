@@ -1,4 +1,15 @@
 services:
+  rssgen:
+    build: .
+    container_name: rssgen
+    restart: unless-stopped
+    volumes:
+      - ./config.yml:/app/config.yml:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
   miniflux:
     image: miniflux/miniflux:latest
     container_name: miniflux
