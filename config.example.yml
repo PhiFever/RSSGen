@@ -10,12 +10,14 @@ server:
 scraper:
   proxy: null  # HTTP/SOCKS5 代理，如 "socks5://127.0.0.1:1080"
   rate_limit: 1.0  # 全局最小请求间隔（秒）
+  impersonate: "chrome131"  # curl_cffi 浏览器指纹模拟，可选值见 https://github.com/lexiforest/curl_cffi#supported-impersonate
 
 # ============ 路由配置 ============
 
 routes:
   afdian:
     enabled: true
-    cookie: "你的爱发电 Cookie（从浏览器开发者工具复制完整 Cookie 字符串）"
-    # rate_limit: 0.5  # 可选：该路由的请求间隔
-    # proxy: null       # 可选：该路由的代理
+    cookie: "你的爱发电 Cookie（推荐使用 Cookie Master 扩展的 Flat Copy 功能）"
+    # rate_limit: 0.5       # 可选：该路由的请求间隔
+    # proxy: null            # 可选：该路由的代理
+    # impersonate: chrome131 # 可选：该路由的浏览器指纹

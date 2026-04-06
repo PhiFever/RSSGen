@@ -10,7 +10,7 @@ RSSGen 是一个自托管 RSS 源生成框架（类似 RSSHub），使用 Python
 
 - **Python 3.12**，包管理使用 uv（见 pyproject.toml）
 - **Web 框架**: FastAPI + uvicorn
-- **HTTP 客户端**: httpx（异步）
+- **HTTP 客户端**: curl_cffi（异步，自动模拟浏览器 TLS 指纹）
 - **HTML 解析**: BeautifulSoup4 / parsel
 - **Feed 生成**: feedgen
 - **无头浏览器**: Playwright（用于需要 JS 渲染的场景如微信公众号）
@@ -55,7 +55,7 @@ Miniflux 定时拉取 → GET /feed/{route_name}/{params}
 - **config.py** — YAML 配置加载，Pydantic 校验
 - **core/route.py** — `Route` 基类（定义 `feed_info()` 和 `fetch()` 接口）、`FeedItem`/`FeedInfo` 数据类、路由注册机制
 - **core/feed.py** — feedgen 封装，FeedItem → Atom/RSS XML
-- **core/scraper.py** — 基于 httpx 的反爬封装（UA 轮换、Cookie 管理、频率控制、代理）
+- **core/scraper.py** — 基于 curl_cffi 的反爬封装（TLS 指纹模拟、Cookie 管理、频率控制、代理）
 - **core/browser.py** — Playwright 无头浏览器封装
 - **core/cache.py** — 双层缓存（内存 TTLCache / Redis）
 - **routes/** — 路由脚本目录，自动发现继承 `Route` 的类并注册
