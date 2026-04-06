@@ -6,8 +6,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./config.yml:/app/config.yml:ro
-    ports:
-      - "8000:8000"
     depends_on:
       - db
 
@@ -30,6 +28,7 @@ services:
       - INTEGRATION_ALLOW_PRIVATE_NETWORKS=1
       - ADMIN_USERNAME=admin
       - ADMIN_PASSWORD=admin123
+      - NO_PROXY=rssgen,db,localhost,127.0.0.1
     extra_hosts:
       - host.docker.internal:host-gateway
   db:

@@ -69,6 +69,11 @@ Miniflux 定时拉取 → GET /feed/{route_name}/{params}
 - `config.example.yml` — 配置模板
 - `config.yml` — 用户实际配置（已 gitignore），包含凭证、风控参数等
 
+## 部署注意事项
+
+- RSSGen 仅在 Docker 内部网络中提供服务，不对外暴露端口，Miniflux 通过容器名 `rssgen:8000` 访问
+- 如宿主机配置了 HTTP 代理，需通过 `NO_PROXY` 环境变量排除 Docker 内部服务名（rssgen、db 等），否则 Miniflux 的 fetcher 会将内部请求转发到代理导致 502
+
 ## 注意事项
 
 - 所有文档和代码注释使用简体中文

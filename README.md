@@ -11,9 +11,9 @@ cp config.example.yml config.yml
 # 2. Docker 一键部署（含 Miniflux + PostgreSQL）
 docker compose up -d
 
-# 3. 访问服务
-# RSSGen:  http://localhost:8000
-# Miniflux: http://localhost:8080 (默认账号 admin / admin123)
+# 3. 访问 Miniflux
+# http://localhost:8080 (默认账号 admin / admin123)
+# RSSGen 仅在 Docker 内部网络中可用，不对外暴露端口
 ```
 
 本地开发：
@@ -61,6 +61,8 @@ routes:
 **在 Miniflux 中使用：**
 
 在 Miniflux 添加订阅时，填入 `http://rssgen:8000/feed/afdian/{作者url_slug}`（Docker 网络内使用容器名 `rssgen`）。
+
+**注意：** 如果宿主机配置了 HTTP 代理（`HTTP_PROXY`/`HTTPS_PROXY`），Docker 容器可能会继承代理设置，导致 Miniflux 无法通过 Docker 内部域名访问 RSSGen（返回 502）。`docker-compose.yml` 中已通过 `NO_PROXY` 环境变量排除内部服务，如有自定义服务名请一并添加。
 
 **查询参数：**
 
