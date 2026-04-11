@@ -12,6 +12,12 @@ scraper:
   rate_limit: 1.0  # 全局最小请求间隔（秒）
   impersonate: "chrome131"  # curl_cffi 浏览器指纹模拟，可选值见 https://github.com/lexiforest/curl_cffi#supported-impersonate
 
+# 后台刷新器配置（用于冷启动优化和定时刷新）
+refresher:
+  startup_delay: 5      # 启动延迟（秒），等待容器网络稳定
+  max_retries: 3        # 最大重试次数
+  retry_base_delay: 5   # 重试基础延迟（秒），指数退避
+
 # ============ 路由配置 ============
 
 routes:

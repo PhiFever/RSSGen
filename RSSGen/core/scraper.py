@@ -4,6 +4,7 @@ import asyncio
 import time
 
 from curl_cffi.requests import AsyncSession, Response
+from curl_cffi.const import CurlOpt
 
 
 class Scraper:
@@ -31,6 +32,9 @@ class Scraper:
             proxy=self.proxy,
             cookies=self.cookies,
             impersonate=self.impersonate,
+            # 解决 curl_cffi 在已有连接时的异步请求 bug
+            # 参考: https://github.com/lexiforest/curl_cffi/issues/302
+            curl_options={CurlOpt.FRESH_CONNECT: True},
         ) as session:
             return await session.get(url, headers=headers, **kwargs)
 
@@ -43,5 +47,6 @@ class Scraper:
             proxy=self.proxy,
             cookies=self.cookies,
             impersonate=self.impersonate,
+            curl_options={CurlOpt.FRESH_CONNECT: True},
         ) as session:
             return await session.post(url, headers=headers, **kwargs)

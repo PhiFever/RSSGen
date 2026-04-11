@@ -8,6 +8,11 @@ from RSSGen.core.cache import Cache
 
 logger = logging.getLogger("rssgen.refresher")
 
+# 默认配置
+DEFAULT_STARTUP_DELAY = 5      # 启动延迟（秒），等待网络稳定
+DEFAULT_MAX_RETRIES = 3        # 最大重试次数
+DEFAULT_RETRY_BASE_DELAY = 5   # 重试基础延迟（秒）
+
 
 class BackgroundRefresher:
     def __init__(self, feed_cache: Cache, article_cache: Cache, config: dict):
@@ -23,6 +28,12 @@ class BackgroundRefresher:
         self._task: asyncio.Task | None = None
         self._pending: set[str] = set()
         self._error_status: dict[str, dict] = {}
+
+        # 可配置的刷新参数
+        refresher_config = config.get("refresher", {})
+        self.startup_delay = refresher_config.get("startup_delay", DEFAULT_STARTUP_DELAY)
+        self.max_retries = refresher_config.get("max_retries", DEFAULT_MAX_RETRIES)
+        self.retry_base_delay = refresher_config.get("retry_base_delay", DEFAULT_RETRY_BASE_DELAY)
 
     async def start(self):
         """启动预热 + 定时循环"""
@@ -63,6 +74,10 @@ class BackgroundRefresher:
     async def _run_loop(self):
         """主循环：预热 + 定时刷新"""
         try:
+            # 启动延迟：等待网络稳定
+            logger.info(f"等待 {self.startup_delay} 秒确保网络就绪...")
+            await asyncio.sleep(self.startup_delay)
+
             await self._warmup()
 
             # 从第一个启用了 feeds 的路由获取 refresh_interval
@@ -116,7 +131,7 @@ class BackgroundRefresher:
 
     async def _refresh_one(self, route_name: str, path_params: list[str],
                            fetch_kwargs: dict | None = None):
-        """刷新单个feed
+        """刷新单个feed，失败时自动重试
 
         参数:
             fetch_kwargs: 传给 route.fetch() 的额外参数（如 limit）
@@ -130,40 +145,57 @@ class BackgroundRefresher:
             return
 
         self._pending.add(cache_key)
+
         try:
-            logger.info(f"正在刷新 {cache_key}")
+            # 重试循环
+            last_error = None
+            for attempt in range(self.max_retries):
+                try:
+                    if attempt > 0:
+                        # 指数退避：第2次等5秒，第3次等10秒...
+                        delay = self.retry_base_delay * (2 ** (attempt - 1))
+                        logger.info(f"重试 {cache_key} (第{attempt + 1}次)，等待 {delay} 秒...")
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.info(f"正在刷新 {cache_key}")
 
-            registry = get_registry()
-            route_cls = registry.get(route_name)
-            if not route_cls:
-                raise ValueError(f"路由不存在: {route_name}")
+                    registry = get_registry()
+                    route_cls = registry.get(route_name)
+                    if not route_cls:
+                        raise ValueError(f"路由不存在: {route_name}")
 
-            # 使用对应路由的配置实例化
-            route_config = self.config.get("routes", {}).get(route_name, {})
-            route = route_cls(route_config)
+                    # 使用对应路由的配置实例化
+                    route_config = self.config.get("routes", {}).get(route_name, {})
+                    route = route_cls(route_config)
 
-            kwargs = dict(fetch_kwargs or {})
-            kwargs["path_params"] = path_params
+                    kwargs = dict(fetch_kwargs or {})
+                    kwargs["path_params"] = path_params
 
-            info = await route.feed_info(**kwargs)
-            items = await route.fetch(article_cache=self.article_cache, **kwargs)
+                    info = await route.feed_info(**kwargs)
+                    items = await route.fetch(article_cache=self.article_cache, **kwargs)
 
-            xml = generate_feed(info, items, format="atom")
-            await self.feed_cache.set(cache_key, xml)
+                    xml = generate_feed(info, items, format="atom")
+                    await self.feed_cache.set(cache_key, xml)
 
-            self._error_status[cache_key] = {
-                "last_success": datetime.now(timezone.utc).isoformat(),
-                "error": None,
-                "item_count": len(items),
-            }
-            logger.info(f"刷新完成 {cache_key}: {len(items)} 条目")
+                    self._error_status[cache_key] = {
+                        "last_success": datetime.now(timezone.utc).isoformat(),
+                        "error": None,
+                        "item_count": len(items),
+                    }
+                    logger.info(f"刷新完成 {cache_key}: {len(items)} 条目")
+                    return  # 成功，退出
 
-        except Exception as e:
-            logger.error(f"刷新失败 {cache_key}: {e}")
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"刷新失败 {cache_key} (第{attempt + 1}次): {e}")
+
+            # 所有重试都失败
+            logger.error(f"刷新失败 {cache_key}: 所有 {self.max_retries} 次重试均失败")
             self._error_status[cache_key] = {
                 "last_success": self._error_status.get(cache_key, {}).get("last_success"),
-                "error": str(e),
+                "error": str(last_error),
                 "item_count": 0,
             }
+
         finally:
             self._pending.discard(cache_key)
