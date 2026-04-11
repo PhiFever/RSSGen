@@ -12,3 +12,6 @@ wheels/
 # 用户配置（含凭证）
 config.yml
 miniflux-db/
+
+# Git worktrees
+.worktrees/

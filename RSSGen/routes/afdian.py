@@ -32,6 +32,14 @@ class AfdianRoute(Route):
             "proxy": self.config.get("proxy"),
         })
 
+    @staticmethod
+    def _check_api_response(data: dict, context: str):
+        """检查爱发电 API 业务级响应，非 200 时抛出明确异常"""
+        ec = data.get("ec", -1)
+        if ec != 200:
+            em = data.get("em", "未知错误")
+            raise RuntimeError(f"爱发电 API 错误 ({context}): ec={ec}, em={em}")
+
     async def _get_author_id(self, scraper: Scraper, author_slug: str) -> str:
         """通过 url_slug 获取作者 user_id"""
         # API: /api/user/get-profile-by-slug?url_slug={slug}
@@ -40,6 +48,7 @@ class AfdianRoute(Route):
         resp = await scraper.get(api_url, referer=referer)
         resp.raise_for_status()
         data = resp.json()
+        self._check_api_response(data, f"get-profile-by-slug/{author_slug}")
         return data["data"]["user"]["user_id"]
 
     async def _get_post_list(self, scraper: Scraper, user_id: str, author_slug: str,
@@ -58,6 +67,7 @@ class AfdianRoute(Route):
             resp = await scraper.get(api_url, referer=referer)
             resp.raise_for_status()
             data = resp.json()
+            self._check_api_response(data, f"get-list/{author_slug}")
 
             post_list = data.get("data", {}).get("list", [])
             if not post_list:
@@ -84,6 +94,7 @@ class AfdianRoute(Route):
         resp = await scraper.get(api_url, referer=referer)
         resp.raise_for_status()
         data = resp.json()
+        self._check_api_response(data, f"get-detail/{post_id}")
         return data.get("data", {}).get("post", {}).get("content", "")
 
     async def feed_info(self, **kwargs) -> FeedInfo:
@@ -97,7 +108,7 @@ class AfdianRoute(Route):
             description=f"爱发电创作者 {author_slug} 的最新动态",
         )
 
-    async def fetch(self, **kwargs) -> list[FeedItem]:
+    async def fetch(self, article_cache=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])
         if not path_params:
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
@@ -114,27 +125,37 @@ class AfdianRoute(Route):
             publish_time = int(post.get("publish_time", 0))
             pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
 
-            # 图片列表作为 enclosures
             enclosures = []
             for pic in post.get("pics", []):
                 if pic:
                     enclosures.append({"url": pic, "type": "image/jpeg"})
 
             post_id = post.get("post_id", "")
+            article_cache_key = f"article:afdian:{post_id}"
 
-            # 通过详情 API 获取完整正文，列表 API 返回的 content 是截断的摘要
-            content = await self._get_post_detail(scraper, post_id)
+            # 优先读文章缓存
+            cache_hit = False
+            content = None
+            if article_cache:
+                content = await article_cache.get(article_cache_key)
+                if content is not None:
+                    cache_hit = True
+
+            # 缓存未命中才调 API
+            if not cache_hit:
+                content = await self._get_post_detail(scraper, post_id)
+                if article_cache and content:
+                    await article_cache.set(article_cache_key, content)
+                await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
             items.append(FeedItem(
                 title=post.get("title", "无标题"),
                 link=f"{HOST_URL}/p/{post_id}",
-                content=content,
+                content=content or "",
                 pub_date=pub_date,
                 author=post.get("user", {}).get("name"),
                 guid=post_id,
                 enclosures=enclosures,
             ))
-
-            await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
         return items

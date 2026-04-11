@@ -40,24 +40,39 @@ pytest tests/test_xxx.py::test_func  # 运行单个测试
 
 ### 请求流程
 
+**读写分离架构（爱发电路由）：**
+
+```
+Miniflux 定时拉取 → GET /feed/afdian/{slug}
+  → FastAPI 路由分发
+  → 检查 FeedCache（命中直接返回 XML，响应时间 <1ms）
+  → 缓存未命中：
+     - 触发 BackgroundRefresher 后台刷新（非阻塞）
+     - 返回空 feed（首次请求约 50ms）
+  → 后台刷新完成后，后续请求命中缓存
+```
+
+**其他路由（同步模式）：**
+
 ```
 Miniflux 定时拉取 → GET /feed/{route_name}/{params}
   → FastAPI 路由分发 → 匹配路由脚本
   → 检查缓存（命中直接返回 XML）
-  → 调用 Route.fetch() 抓取数据源
+  → 调用 Route.fetch(article_cache) 抓取数据源
   → feed.py 将 FeedItem 列表转为 Atom XML
-  → 写入缓存，返回响应
+  → 写入双层缓存，返回响应
 ```
 
 ### 核心模块（RSSGen/）
 
-- **app.py** — FastAPI 主服务入口
+- **app.py** — FastAPI 主服务入口，初始化双层缓存和后台刷新器
 - **config.py** — YAML 配置加载，Pydantic 校验
 - **core/route.py** — `Route` 基类（定义 `feed_info()` 和 `fetch()` 接口）、`FeedItem`/`FeedInfo` 数据类、路由注册机制
 - **core/feed.py** — feedgen 封装，FeedItem → Atom/RSS XML
 - **core/scraper.py** — 基于 curl_cffi 的反爬封装（TLS 指纹模拟、Cookie 管理、频率控制、代理）
 - **core/browser.py** — Playwright 无头浏览器封装
-- **core/cache.py** — 双层缓存（内存 TTLCache / Redis）
+- **core/cache.py** — 双层缓存（FeedCache + ArticleCache，内存 TTLCache）
+- **core/refresher.py** — BackgroundRefresher 后台调度器（预热 + 定时刷新 + 动态触发）
 - **routes/** — 路由脚本目录，自动发现继承 `Route` 的类并注册
 
 ### 路由编写模式
