@@ -1,9 +1,13 @@
 """FastAPI 主服务"""
 
 import logging
+import sys
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
+
+# 配置 RSSGen 日志：添加 StreamHandler 并设置 INFO 级别
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(name)s: %(message)s")
 
 from RSSGen.config import load_config
 from RSSGen.core.cache import Cache
@@ -90,7 +94,8 @@ async def feed(route_name: str, path: str, request: Request):
             await refresher.trigger(route_name, path_parts, dict(request.query_params))
 
             # 返回合法的空 feed
-            route = route_cls(route_config)
+            merged_config = {**config.get("scraper", {}), **route_config}
+            route = route_cls(merged_config)
             info = await route.feed_info(**kwargs)
             fmt = request.query_params.get("format", "atom")
             xml = generate_feed(info, [], format=fmt)
@@ -98,7 +103,8 @@ async def feed(route_name: str, path: str, request: Request):
 
     # 4. 其他路由或未启用后台刷新，走原有同步逻辑
     route_config = config.get("routes", {}).get(route_name, {})
-    route = route_cls(route_config)
+    merged_config = {**config.get("scraper", {}), **route_config}
+    route = route_cls(merged_config)
 
     try:
         info = await route.feed_info(**kwargs)

@@ -43,13 +43,16 @@ class AfdianRoute(Route):
     async def _get_author_id(self, scraper: Scraper, author_slug: str) -> str:
         """通过 url_slug 获取作者 user_id"""
         # API: /api/user/get-profile-by-slug?url_slug={slug}
+        logger.info(f"获取作者 ID: {author_slug}")
         api_url = f"{HOST_URL}/api/user/get-profile-by-slug?url_slug={author_slug}"
         referer = f"{HOST_URL}/a/{author_slug}"
         resp = await scraper.get(api_url, referer=referer)
         resp.raise_for_status()
         data = resp.json()
         self._check_api_response(data, f"get-profile-by-slug/{author_slug}")
-        return data["data"]["user"]["user_id"]
+        user_id = data["data"]["user"]["user_id"]
+        logger.info(f"作者 ID: {user_id}")
+        return user_id
 
     async def _get_post_list(self, scraper: Scraper, user_id: str, author_slug: str,
                              per_page: int = 10, limit: int = 0) -> list[dict]:
@@ -57,6 +60,7 @@ class AfdianRoute(Route):
         referer = f"{HOST_URL}/a/{author_slug}"
         all_posts = []
         publish_sn = ""
+        page = 1
 
         while True:
             api_url = (
@@ -71,17 +75,22 @@ class AfdianRoute(Route):
 
             post_list = data.get("data", {}).get("list", [])
             if not post_list:
+                logger.info(f"列表页 {page}: 无更多数据，结束翻页")
                 break
 
             all_posts.extend(post_list)
+            logger.info(f"列表页 {page}: 获取 {len(post_list)} 条，累计 {len(all_posts)} 条")
 
             if limit and len(all_posts) >= limit:
+                logger.info(f"已达 limit={limit}，停止翻页")
                 return all_posts[:limit]
 
             publish_sn = post_list[-1].get("publish_sn", "")
             if not publish_sn:
+                logger.info(f"列表页 {page}: 无 publish_sn，结束翻页")
                 break
 
+            page += 1
             await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
         return all_posts
@@ -95,7 +104,9 @@ class AfdianRoute(Route):
         resp.raise_for_status()
         data = resp.json()
         self._check_api_response(data, f"get-detail/{post_id}")
-        return data.get("data", {}).get("post", {}).get("content", "")
+        content = data.get("data", {}).get("post", {}).get("content", "")
+        logger.debug(f"文章详情 {post_id}: {len(content)} 字符")
+        return content
 
     async def feed_info(self, **kwargs) -> FeedInfo:
         path_params: list[str] = kwargs.get("path_params", [])
@@ -115,6 +126,7 @@ class AfdianRoute(Route):
         author_slug = path_params[0]
 
         limit = int(kwargs.get("limit", 20))
+        logger.info(f"开始抓取 {author_slug}，limit={limit}")
 
         scraper = self._get_scraper()
         user_id = await self._get_author_id(scraper, author_slug)
@@ -158,4 +170,5 @@ class AfdianRoute(Route):
                 enclosures=enclosures,
             ))
 
+        logger.info(f"抓取完成 {author_slug}: {len(items)} 条文章")
         return items

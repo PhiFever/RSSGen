@@ -71,12 +71,38 @@ class BackgroundRefresher:
         path = "/".join(path_params)
         return f"{route_name}/{path}"
 
+    async def _preinit_curl_cffi(self):
+        """预初始化 curl_cffi 库，确保在 uvicorn 环境中正常工作"""
+        from curl_cffi.requests import AsyncSession
+        from curl_cffi.const import CurlOpt
+
+        # 使用一个简单的请求来初始化底层 libcurl 库
+        # 这可以解决 curl_cffi 在 uvicorn/uvloop 启动阶段的异步兼容问题
+        try:
+            async with AsyncSession(
+                impersonate="chrome131",
+                curl_options={CurlOpt.FRESH_CONNECT: True},
+            ) as session:
+                # 连接一个可靠的、响应快速的测试端点
+                resp = await session.get("https://httpbin.org/get", timeout=10)
+                if resp.status_code == 200:
+                    logger.info("HTTP 客户端预初始化成功")
+                else:
+                    logger.warning(f"HTTP 客户端预初始化响应异常: {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"HTTP 客户端预初始化失败: {e}，将继续尝试正常请求")
+
     async def _run_loop(self):
         """主循环：预热 + 定时刷新"""
         try:
             # 启动延迟：等待网络稳定
             logger.info(f"等待 {self.startup_delay} 秒确保网络就绪...")
             await asyncio.sleep(self.startup_delay)
+
+            # 预初始化 curl_cffi：强制底层 libcurl 库在 uvicorn 环境中正确加载
+            # 解决 curl_cffi 在 uvicorn/uvloop 启动阶段的异步兼容问题
+            logger.info("预初始化 HTTP 客户端...")
+            await self._preinit_curl_cffi()
 
             await self._warmup()
 
@@ -164,9 +190,11 @@ class BackgroundRefresher:
                     if not route_cls:
                         raise ValueError(f"路由不存在: {route_name}")
 
-                    # 使用对应路由的配置实例化
+                    # 合并全局 scraper 配置到路由配置（路由配置优先，全局配置作为 fallback）
                     route_config = self.config.get("routes", {}).get(route_name, {})
-                    route = route_cls(route_config)
+                    global_scraper = self.config.get("scraper", {})
+                    merged_config = {**global_scraper, **route_config}
+                    route = route_cls(merged_config)
 
                     kwargs = dict(fetch_kwargs or {})
                     kwargs["path_params"] = path_params
