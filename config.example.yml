@@ -21,3 +21,12 @@ routes:
     # rate_limit: 0.5       # 可选：该路由的请求间隔
     # proxy: null            # 可选：该路由的代理
     # impersonate: chrome131 # 可选：该路由的浏览器指纹
+    # === 后台刷新配置（冷启动优化）===
+    refresh_interval: 14400     # 后台刷新间隔，默认 4 小时（秒）
+    article_ttl: 43200          # 文章级缓存 TTL，默认 12 小时（秒）
+    feed_ttl: 21600             # Feed 级缓存 TTL，默认 6 小时（秒）
+    feeds:                      # 预热列表（可选，不配置则无预热）
+      - slug: "author1"
+        limit: 20
+      - slug: "author2"
+        limit: 10
