@@ -1,12 +1,11 @@
 """后台调度器：负责预热和定期刷新feed缓存"""
 
 import asyncio
-import logging
 from datetime import datetime, timezone
 
-from RSSGen.core.cache import Cache
+from loguru import logger
 
-logger = logging.getLogger("rssgen.refresher")
+from RSSGen.core.cache import Cache
 
 # 默认配置
 DEFAULT_STARTUP_DELAY = 5      # 启动延迟（秒），等待网络稳定
@@ -59,9 +58,29 @@ class BackgroundRefresher:
                       query_params: dict | None = None):
         """动态触发：未知feed首次访问时调用，非阻塞"""
         cache_key = self.build_cache_key(route_name, path_params)
-        if cache_key not in self._pending:
-            asyncio.create_task(self._refresh_one(route_name, path_params,
-                                                  fetch_kwargs=query_params))
+        if cache_key in self._pending:
+            return
+
+        fetch_kwargs = dict(query_params or {})
+        # query_params 未显式指定时，从 feeds 配置中按 slug 补齐参数（如 limit），
+        # 保证动态触发与定时刷新行为一致
+        if path_params:
+            feed_conf = self._find_feed_config(route_name, path_params[0])
+            if feed_conf:
+                for key, value in feed_conf.items():
+                    if key != "slug" and key not in fetch_kwargs:
+                        fetch_kwargs[key] = str(value)
+
+        asyncio.create_task(self._refresh_one(route_name, path_params,
+                                              fetch_kwargs=fetch_kwargs))
+
+    def _find_feed_config(self, route_name: str, slug: str) -> dict | None:
+        """根据 route_name 和 slug 在配置中查找对应的 feed 配置项"""
+        feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
+        for fc in feeds:
+            if fc.get("slug") == slug:
+                return fc
+        return None
 
     def get_status(self) -> dict:
         """返回所有feed的刷新状态"""

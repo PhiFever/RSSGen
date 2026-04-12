@@ -15,3 +15,5 @@ miniflux-db/
 
 # Git worktrees
 .worktrees/
+
+.idea/

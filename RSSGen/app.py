@@ -1,13 +1,10 @@
 """FastAPI 主服务"""
 
-import logging
 import sys
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
-
-# 配置 RSSGen 日志：添加 StreamHandler 并设置 INFO 级别
-logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(name)s: %(message)s")
+from loguru import logger
 
 from RSSGen.config import load_config
 from RSSGen.core.cache import Cache
@@ -15,7 +12,13 @@ from RSSGen.core.feed import generate_feed
 from RSSGen.core.refresher import BackgroundRefresher
 from RSSGen.routes import discover_routes, get_registry
 
-logger = logging.getLogger("rssgen")
+# 配置 loguru：移除默认 handler，添加带时间和代码行数的格式
+logger.remove()
+logger.add(
+    sys.stdout,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level:<8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    level="INFO",
+)
 
 app = FastAPI(title="RSSGen", description="自托管 RSS 源生成框架")
 

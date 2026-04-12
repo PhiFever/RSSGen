@@ -1,13 +1,12 @@
 """爱发电路由 — 参考 AfdianToMarkdown Go 项目的 API 端点"""
 
 import asyncio
-import logging
 from datetime import datetime, timezone
+
+from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
 from RSSGen.core.scraper import Scraper
-
-logger = logging.getLogger("rssgen.afdian")
 
 HOST = "afdian.com"
 HOST_URL = "https://afdian.com"
@@ -156,6 +155,7 @@ class AfdianRoute(Route):
             # 缓存未命中才调 API
             if not cache_hit:
                 content = await self._get_post_detail(scraper, post_id)
+                logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
                 if article_cache and content:
                     await article_cache.set(article_cache_key, content)
                 await asyncio.sleep(self.config.get("rate_limit", 0.5))
