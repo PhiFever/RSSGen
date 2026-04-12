@@ -23,7 +23,7 @@ class Scraper:
             await asyncio.sleep(self.rate_limit - elapsed)
         self._last_request_time = time.monotonic()
 
-    async def get(self, url: str, referer: str | None = None, **kwargs) -> Response:
+    async def _request(self, method: str, url: str, referer: str | None = None, **kwargs) -> Response:
         await self._rate_limit_wait()
         headers = dict(self.extra_headers)
         if referer:
@@ -36,17 +36,10 @@ class Scraper:
             # 参考: https://github.com/lexiforest/curl_cffi/issues/302
             curl_options={CurlOpt.FRESH_CONNECT: True},
         ) as session:
-            return await session.get(url, headers=headers, **kwargs)
+            return await session.request(method, url, headers=headers, **kwargs)
+
+    async def get(self, url: str, referer: str | None = None, **kwargs) -> Response:
+        return await self._request("GET", url, referer=referer, **kwargs)
 
     async def post(self, url: str, referer: str | None = None, **kwargs) -> Response:
-        await self._rate_limit_wait()
-        headers = dict(self.extra_headers)
-        if referer:
-            headers["referer"] = referer
-        async with AsyncSession(
-            proxy=self.proxy,
-            cookies=self.cookies,
-            impersonate=self.impersonate,
-            curl_options={CurlOpt.FRESH_CONNECT: True},
-        ) as session:
-            return await session.post(url, headers=headers, **kwargs)
+        return await self._request("POST", url, referer=referer, **kwargs)

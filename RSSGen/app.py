@@ -19,9 +19,9 @@ logger = logging.getLogger("rssgen")
 
 app = FastAPI(title="RSSGen", description="自托管 RSS 源生成框架")
 
-# 双层缓存 + 后台刷新器
-feed_cache = Cache()     # TTL 在 startup 中根据配置重新初始化
-article_cache = Cache()  # TTL 在 startup 中根据配置重新初始化
+# 双层缓存 + 后台刷新器（在 startup 中根据配置初始化）
+feed_cache: Cache | None = None
+article_cache: Cache | None = None
 refresher: BackgroundRefresher | None = None
 config: dict = {}
 
@@ -80,31 +80,26 @@ async def feed(route_name: str, path: str, request: Request):
     if cached:
         return Response(content=cached, media_type="application/xml; charset=utf-8")
 
-    # 2. 解析参数
+    # 2. 解析参数 & 合并配置
     kwargs = {}
     if path_parts:
         kwargs["path_params"] = path_parts
     kwargs.update(request.query_params)
 
-    # 3. 如果有后台刷新器且该路由已启用，走异步模式
-    if refresher:
-        route_config = config.get("routes", {}).get(route_name, {})
-        if route_config.get("enabled", False):
-            # 触发后台刷新（非阻塞）
-            await refresher.trigger(route_name, path_parts, dict(request.query_params))
-
-            # 返回合法的空 feed
-            merged_config = {**config.get("scraper", {}), **route_config}
-            route = route_cls(merged_config)
-            info = await route.feed_info(**kwargs)
-            fmt = request.query_params.get("format", "atom")
-            xml = generate_feed(info, [], format=fmt)
-            return Response(content=xml, media_type="application/xml; charset=utf-8")
-
-    # 4. 其他路由或未启用后台刷新，走原有同步逻辑
     route_config = config.get("routes", {}).get(route_name, {})
     merged_config = {**config.get("scraper", {}), **route_config}
     route = route_cls(merged_config)
+
+    # 3. 如果有后台刷新器且该路由已启用，走异步模式
+    if refresher and route_config.get("enabled", False):
+        # 触发后台刷新（非阻塞）
+        await refresher.trigger(route_name, path_parts, dict(request.query_params))
+
+        # 返回合法的空 feed
+        info = await route.feed_info(**kwargs)
+        fmt = request.query_params.get("format", "atom")
+        xml = generate_feed(info, [], format=fmt)
+        return Response(content=xml, media_type="application/xml; charset=utf-8")
 
     try:
         info = await route.feed_info(**kwargs)

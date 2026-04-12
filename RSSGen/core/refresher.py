@@ -29,6 +29,9 @@ class BackgroundRefresher:
         self._pending: set[str] = set()
         self._error_status: dict[str, dict] = {}
 
+        # 缓存常用配置，避免多处重复查询
+        self._afdian_config = config.get("routes", {}).get("afdian", {})
+
         # 可配置的刷新参数
         refresher_config = config.get("refresher", {})
         self.startup_delay = refresher_config.get("startup_delay", DEFAULT_STARTUP_DELAY)
@@ -76,15 +79,14 @@ class BackgroundRefresher:
         from curl_cffi.requests import AsyncSession
         from curl_cffi.const import CurlOpt
 
-        # 使用一个简单的请求来初始化底层 libcurl 库
-        # 这可以解决 curl_cffi 在 uvicorn/uvloop 启动阶段的异步兼容问题
+        # 对目标站点发起一次无害请求来初始化底层 libcurl 库
+        # 解决 curl_cffi 在 uvicorn/uvloop 启动阶段的异步兼容问题
         try:
             async with AsyncSession(
                 impersonate="chrome131",
                 curl_options={CurlOpt.FRESH_CONNECT: True},
             ) as session:
-                # 连接一个可靠的、响应快速的测试端点
-                resp = await session.get("https://httpbin.org/get", timeout=10)
+                resp = await session.get("https://afdian.com/", timeout=10)
                 if resp.status_code == 200:
                     logger.info("HTTP 客户端预初始化成功")
                 else:
@@ -104,17 +106,14 @@ class BackgroundRefresher:
             logger.info("预初始化 HTTP 客户端...")
             await self._preinit_curl_cffi()
 
-            await self._warmup()
+            await self._refresh_feeds("预热")
 
-            # 从第一个启用了 feeds 的路由获取 refresh_interval
-            # 目前只有 afdian，后续扩展时可改为按路由独立调度
-            afdian_config = self.config.get("routes", {}).get("afdian", {})
-            refresh_interval = afdian_config.get("refresh_interval", 14400)
+            refresh_interval = self._afdian_config.get("refresh_interval", 14400)
 
             while True:
                 await asyncio.sleep(refresh_interval)
                 try:
-                    await self._refresh_all()
+                    await self._refresh_feeds("定时刷新")
                 except Exception:
                     logger.exception("定时刷新异常，将在下一轮重试")
         except asyncio.CancelledError:
@@ -122,38 +121,21 @@ class BackgroundRefresher:
         except Exception:
             logger.exception("BackgroundRefresher 主循环异常退出")
 
-    async def _warmup(self):
-        """预热已配置的feed"""
-        afdian_config = self.config.get("routes", {}).get("afdian", {})
-        feeds = afdian_config.get("feeds", [])
+    async def _refresh_feeds(self, label: str):
+        """刷新所有已配置的 feed，label 用于日志区分（如"预热"、"定时刷新"）"""
+        feeds = self._afdian_config.get("feeds", [])
         if not feeds:
-            logger.info("未配置预热列表，跳过预热")
+            logger.info(f"未配置 feed 列表，跳过{label}")
             return
 
-        logger.info(f"开始预热 {len(feeds)} 个 feed")
+        logger.info(f"开始{label} {len(feeds)} 个 feed")
         for feed_conf in feeds:
             slug = feed_conf.get("slug")
             limit = feed_conf.get("limit", 20)
             if slug:
                 await self._refresh_one("afdian", [slug],
                                         fetch_kwargs={"limit": str(limit)})
-        logger.info("预热完成")
-
-    async def _refresh_all(self):
-        """刷新所有已配置的feed"""
-        afdian_config = self.config.get("routes", {}).get("afdian", {})
-        feeds = afdian_config.get("feeds", [])
-        if not feeds:
-            return
-
-        logger.info(f"开始定时刷新 {len(feeds)} 个 feed")
-        for feed_conf in feeds:
-            slug = feed_conf.get("slug")
-            limit = feed_conf.get("limit", 20)
-            if slug:
-                await self._refresh_one("afdian", [slug],
-                                        fetch_kwargs={"limit": str(limit)})
-        logger.info("定时刷新完成")
+        logger.info(f"{label}完成")
 
     async def _refresh_one(self, route_name: str, path_params: list[str],
                            fetch_kwargs: dict | None = None):

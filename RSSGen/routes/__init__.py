@@ -10,12 +10,6 @@ from RSSGen.core.route import Route
 _registry: dict[str, type[Route]] = {}
 
 
-def register_route(cls: type[Route]) -> type[Route]:
-    """装饰器：手动注册路由"""
-    _registry[cls.name] = cls
-    return cls
-
-
 def discover_routes() -> dict[str, type[Route]]:
     """扫描 routes/ 目录，自动收集所有 Route 子类"""
     package_path = Path(__file__).parent
