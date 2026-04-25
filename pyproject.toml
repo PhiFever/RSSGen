@@ -6,12 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
-    "uvicorn[standard]>=0.34",
+    "uvicorn>=0.34",
     "curl_cffi>=0.12",
     "beautifulsoup4>=4.13",
     "feedgen>=1.0",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
     "cachetools>=5.5",
     "loguru>=0.7.3",
 ]
