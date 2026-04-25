@@ -81,8 +81,8 @@ class TestRefreshOne:
 
         mock_registry = {"afdian": MagicMock(return_value=mock_route)}
 
-        with patch("RSSGen.routes.get_registry", return_value=mock_registry), \
-             patch("RSSGen.core.feed.generate_feed", return_value="<feed/>"):
+        with patch("RSSGen.core.refresher.get_registry", return_value=mock_registry), \
+             patch("RSSGen.core.refresher.generate_feed", return_value="<feed/>"):
             await refresher._refresh_one("afdian", ["author1"],
                                          fetch_kwargs={"limit": "5"})
 
@@ -98,7 +98,7 @@ class TestRefreshOne:
 
         mock_registry = {"afdian": MagicMock(side_effect=RuntimeError("boom"))}
 
-        with patch("RSSGen.routes.get_registry", return_value=mock_registry):
+        with patch("RSSGen.core.refresher.get_registry", return_value=mock_registry):
             await refresher._refresh_one("afdian", ["author1"],
                                          fetch_kwargs={"limit": "5"})
 

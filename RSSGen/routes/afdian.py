@@ -1,6 +1,5 @@
 """爱发电路由 — 参考 AfdianToMarkdown Go 项目的 API 端点"""
 
-import asyncio
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -34,14 +33,13 @@ class AfdianRoute(Route):
     @staticmethod
     def _check_api_response(data: dict, context: str):
         """检查爱发电 API 业务级响应，非 200 时抛出明确异常"""
-        ec = data.get("ec", -1)
+        ec = data.get("ec")
         if ec != 200:
             em = data.get("em", "未知错误")
             raise RuntimeError(f"爱发电 API 错误 ({context}): ec={ec}, em={em}")
 
     async def _get_author_id(self, scraper: Scraper, author_slug: str) -> str:
         """通过 url_slug 获取作者 user_id"""
-        # API: /api/user/get-profile-by-slug?url_slug={slug}
         logger.info(f"获取作者 ID: {author_slug}")
         api_url = f"{HOST_URL}/api/user/get-profile-by-slug?url_slug={author_slug}"
         referer = f"{HOST_URL}/a/{author_slug}"
@@ -90,13 +88,11 @@ class AfdianRoute(Route):
                 break
 
             page += 1
-            await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
         return all_posts
 
     async def _get_post_detail(self, scraper: Scraper, post_id: str, album_id: str = "") -> str:
         """获取文章正文 HTML"""
-        # API: /api/post/get-detail?post_id={id}&album_id={id}
         api_url = f"{HOST_URL}/api/post/get-detail?post_id={post_id}&album_id={album_id}"
         referer = f"{HOST_URL}/p/{post_id}"
         resp = await scraper.get(api_url, referer=referer)
@@ -158,7 +154,6 @@ class AfdianRoute(Route):
                 logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
                 if article_cache and content:
                     await article_cache.set(article_cache_key, content)
-                await asyncio.sleep(self.config.get("rate_limit", 0.5))
 
             items.append(FeedItem(
                 title=post.get("title", "无标题"),
