@@ -167,7 +167,7 @@ class AfdianRoute(Route):
 
         post_id = post.get("post_id", "")
         return FeedItem(
-            title=post.get("title", "无标题"),
+            title=post.get("title", ""),
             link=f"{HOST_URL}/p/{post_id}",
             content=content or "",
             pub_date=pub_date,

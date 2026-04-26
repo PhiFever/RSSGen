@@ -6,9 +6,9 @@ from datetime import datetime
 
 @dataclass
 class FeedItem:
-    title: str
-    link: str
-    content: str  # HTML 正文
+    title: str | None = None
+    link: str | None = None
+    content: str | None = None  # HTML 正文
     pub_date: datetime | None = None
     author: str | None = None
     guid: str | None = None  # 默认用 link
