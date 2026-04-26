@@ -114,7 +114,7 @@ class AfdianRoute(Route):
             description=f"爱发电创作者 {author_slug} 的最新动态",
         )
 
-    async def fetch(self, article_cache=None, **kwargs) -> list[FeedItem]:
+    async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])
         if not path_params:
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
@@ -138,22 +138,16 @@ class AfdianRoute(Route):
                     enclosures.append({"url": pic, "type": "image/jpeg"})
 
             post_id = post.get("post_id", "")
-            article_cache_key = f"article:afdian:{post_id}"
 
-            # 优先读文章缓存
-            cache_hit = False
             content = None
-            if article_cache:
-                content = await article_cache.get(article_cache_key)
-                if content is not None:
-                    cache_hit = True
+            if article_store:
+                content = await article_store.get("afdian", post_id)
 
-            # 缓存未命中才调 API
-            if not cache_hit:
+            if content is None:
                 content = await self._get_post_detail(scraper, post_id)
                 logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
-                if article_cache and content:
-                    await article_cache.set(article_cache_key, content)
+                if article_store and content:
+                    await article_store.save("afdian", post_id, content)
 
             items.append(FeedItem(
                 title=post.get("title", "无标题"),
