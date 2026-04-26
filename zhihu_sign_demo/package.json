@@ -1,8 +1,0 @@
-{
-  "name": "zhihu-sign-demo",
-  "version": "1.0.0",
-  "description": "知乎 x-zse-96 签名生成 Demo",
-  "dependencies": {
-    "jsdom": "^20.0.0"
-  }
-}

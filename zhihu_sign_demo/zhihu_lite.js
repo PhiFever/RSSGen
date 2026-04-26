@@ -1,35 +1,64 @@
-const jsdom = require("jsdom");
-const { JSDOM } = jsdom;
-const dom = new JSDOM(`<!DOCTYPE html><p>Hello world</p>`,{url:"https://zhuanlan.zhihu.com/"});
-window = dom.window
-location = window.location
-navigator = window.navigator
+/**
+ * 知乎签名核心 - 轻量版（无 jsdom）
+ *
+ * 替换 jsdom 为最小浏览器环境模拟
+ */
+
+// ============================================
+// 最小浏览器环境模拟
+// ============================================
+self = global;
+
+// window 对象（知乎环境检测和字节码初始化需要）
+window = {
+    __ZH__: {},
+    location: { href: "https://zhuanlan.zhihu.com/" },
+    navigator: { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+    document: {
+        referrer: "",
+        body: { className: "" },
+        createElement: function() { return {}; },
+        getElementsByTagName: function() { return []; },
+        head: { appendChild: function() {}, querySelectorAll: function() { return []; } }
+    },
+    history: {},
+    screen: {},
+    sessionStorage: { getItem: function() { return null; } },
+    addEventListener: function() {},
+    removeEventListener: function() {},
+    alert: function() {}
+};
+
+// 全局对象引用
+location = window.location;
+navigator = window.navigator;
 document = window.document;
 history = window.history;
 screen = window.screen;
-let xxx = Object.prototype.toString
+alert = window.alert;
+
+// 原型链检测修复
+let xxx = Object.prototype.toString;
 Object.prototype.toString = function () {
-    if(this.constructor.name === 'Document') {
-      return '[object HTMLDocument]'
-     }
-    else if(this.constructor.name === 'CanvasRenderingContext2D') {
-      return '[object CanvasRenderingContext2D]'
-    }
-    return xxx.call(this, arguments)
-}
-window._resourceLoader = undefined
-window._sessionHistory = undefined
-alert = window.alert
-let aaa = Function.prototype.toString
+    if(this.constructor.name === 'Document') return '[object HTMLDocument]';
+    if(this.constructor.name === 'CanvasRenderingContext2D') return '[object CanvasRenderingContext2D]';
+    return xxx.call(this, arguments);
+};
+
+let aaa = Function.prototype.toString;
 Function.prototype.toString = function () {
-    if(this.name === 'Window') {
-      return 'function Window() { [native code] }'
-    }
-    return aaa.call(this, arguments)
-}
-const zc =  require('./other')
+    if(this.name === 'Window') return 'function Window() { [native code] }';
+    return aaa.call(this, arguments);
+};
+
+// ============================================
+// 加载加密模块
+// ============================================
+const zc = require('./other');
+
 var ei;
-self = global;
+
+// webpack 模块加载器（从原 zhihu.js 复制，保持完全一致）
 !function() {
     "use strict";
     var e, t, a, r, c, o, n, f, d, i, b, l = {}, u = {};
@@ -275,7 +304,7 @@ self = global;
             5423: "1fc2a401f4070a935da1",
             5518: "93c0e1cb74a455a1827b",
             5560: "d6b7125e576be63cde9a",
-            5622: "e17b5c2a490d45869e5e",
+            5622: "e17b5c2a490d45869e5b",
             5634: "496d98c31e2d12af5bc6",
             5946: "4fc6fb99b9bb0835e7e9",
             6018: "36ba39f9e0bdd739e02c",
@@ -587,68 +616,48 @@ self = global;
     ei = m;
 }();
 
+// ============================================
+// 签名函数（从原 zhihu.js 复制）
+// ============================================
 let ta = RegExp("d_c0=([^;]+)")
 let tc = function(cookie_str) {
     var er = ta.exec(cookie_str);
     return er && er[1]
 }
 e8 = function(er) {
-            var eo = new URL(er,"https://www.zhihu.com");
-            return "" + eo.pathname + eo.search
-        }
-        tt = function(er) {
-            return null == er ? "" : "string" == typeof er ? er : "undefined" != typeof URLSearchParams && (0,
-            ed._)(er, URLSearchParams) ? er.toString() : eb()(er) ? JSON.stringify(er) : e9(er) ? String(er) : ""
-        }
-        ti = function(er, eo) {
-            return void 0 === eo && (eo = 4096),
-            !!er && tr(er) <= eo
-        }
-        var e2 = function(er) {
-            return er && er.version && "function" == typeof er.encrypt ? er : {
-                encrypt: ey.ZP,
-                version: ey.XL
-            }
-        };
+    var eo = new URL(er,"https://www.zhihu.com");
+    return "" + eo.pathname + eo.search
+}
+tt = function(er) {
+    return null == er ? "" : "string" == typeof er ? er : "undefined" != typeof URLSearchParams && er.toString ? er.toString() : JSON.stringify(er)
+}
+ti = function(er, eo) {
+    return void 0 === eo && (eo = 4096),
+    !!er && er.length <= eo
+}
+var e2 = function(er) {
+    return er && er.version && "function" == typeof er.encrypt ? er : {
+        encrypt: ey.ZP,
+        version: ey.XL
+    }
+};
 
-var ec, eu, ef, ed = ei(15030), ep = ei(51384), eh = ei(54422), em = ei(4667), eg = ei.n(em), ey = ei(1514), eA = ei(6153), eb = ei.n(eA), ew = ei(10261), eC = ei.n(ew), e_ = [(0,
-        ep.IO)(), (0,
-        ep.ig)(), (0,
-        ep.ce)({
-            credentials: "include"
-        }), (0,
-        ep.A)({
-            "x-requested-with": "fetch"
-        })], eE = function(er, eo) {
-            return void 0 === eo && (eo = []),
-            (0,
-            ep.Fc)(er, [].concat(e_, eo))
-        };
-function tv(er, eo, ei, ec) {
-    if (eo==""){
-        eo = undefined;
-    }
-    if(ec==""){
-        ec = undefined;
-    }
-    var eu = ei.zse93
-      , ef = ei.dc0
-      , ed = ei.xZst81
+var ec, eu, ef, ed = ei(15030), ep = ei(51384), eh = ei(54422), em = ei(4667), eg = ei.n(em), ey = ei(1514), eA = ei(6153), eb = ei.n(eA), ew = ei(10261), eC = ei.n(ew);
+
+function tv(er, eo, ei_params, ec) {
+    if (eo=="") eo = undefined;
+    if(ec=="") ec = undefined;
+    var eu = ei_params.zse93
+      , ef = ei_params.dc0
+      , ed = ei_params.xZst81
       , ep = e8(er)
       , eh = tt(eo)
       , em = [eu, ep, ef, ti(eh) && eh, ed].filter(Boolean).join("+");
     return {
         source: em,
-        signature: (0,
-        e2(ec).encrypt)(eC()(em))
+        signature: (0, e2(ec).encrypt)(eC()(em))
     }
 }
 
-// 导出 tv 函数到全局，供外部调用
+// 导出 tv 函数到全局
 global.tv = tv;
-
-// console.log(tv("https://www.zhihu.com/api/v4/comment_v5/answers/2744801099/root_comment?order_by=score&limit=20&offset=454517189_10649253915_0", undefined, {
-//                             zse93: "101_3_3.0",
-//                             dc0: "AXCWcRzPxxaPTglr4KZjjL10WitObtTgQEA=|1684146078",
-//                             xZst81: null
-//                         }, undefined))

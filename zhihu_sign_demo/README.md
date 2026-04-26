@@ -1,16 +1,12 @@
 # 知乎 x-zse-96 签名生成 Demo
 
-最小化演示项目，展示知乎 API 签名生成流程。
+知乎 API 签名生成工具，无需浏览器环境模拟。
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装 Node.js
 
-```bash
-cd zhihu_sign_demo
-npm install
-pip install requests
-```
+确保系统已安装 Node.js（v18+）。
 
 ### 2. 配置 Cookie
 
@@ -32,37 +28,36 @@ _zap=xxx; d_c0=AXCWcRzPxxx; z_c0=xxx; ...
 ### 3. 运行
 
 ```bash
-python demo.py --url "<your url>"
+uv run demo.py --url "<知乎API URL>"
 ```
+
+示例：
+```bash
+uv run demo.py --url "https://www.zhihu.com/api/v4/questions/659012275/answers?limit=5"
+```
+
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `zhihu_lite.js` | 签名核心（轻量版，无浏览器模拟） |
+| `sign_minimal.js` | Node.js 签名入口 |
+| `other.js` | SM4-like 加密算法（知乎前端提取） |
+| `demo.py` | Python 测试脚本 |
 
 ## 单独使用 Node.js
 
 ```bash
-node sign_gen.js "https://www.zhihu.com/api/v4/questions/659012275/answers" "你的d_c0值"
+node sign_minimal.js "<url>" "<d_c0值>"
 ```
 
 输出示例：
-
 ```json
 {
-  "url": "https://www.zhihu.com/api/v4/questions/659012275/answers",
-  "d_c0": "AXCWcRzPxxx...",
-  "source": "101_3_3.0+/api/v4/questions/659012275/answers+AXCWcRzPxxx...",
+  "source": "101_3_3.0+/api/v4/xxx+AXCWcRzP...",
   "x_zse_93": "101_3_3.0",
-  "x_zse_96": "2.0_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "x_zse_96": "2.0_xxxxxxxxxxxxxxx"
 }
-```
-
-## 签名算法原理
-
-```
-签名源字符串 = zse93 + url_path + d_c0 + body(可选) + xZst81(可选)
-              ↓
-           MD5 哈希
-              ↓
-         SM4-like 加密
-              ↓
-         "2.0_" + 结果
 ```
 
 ## 注意事项

@@ -10,12 +10,10 @@
 
 运行前需要:
 1. 安装 Node.js
-2. 在当前目录安装 jsdom: npm install jsdom
-3. 修改下方 COOKIE 变量为你的知乎 cookie
+2. 修改下方 COOKIE 变量为你的知乎 cookie
 
 使用方法:
-python demo.py
-python demo.py --url "https://www.zhihu.com/api/v3/moments/xxx/activities?limit=5"
+uv run demo.py --url "<知乎API URL>"
 """
 
 import argparse
@@ -35,9 +33,9 @@ COOKIE = """
 
 
 def get_signature(url: str, d_c0: str) -> dict:
-    """通过 Node.js 执行签名生成"""
+    """通过 Node.js 执行签名生成（无 jsdom 版）"""
     result = subprocess.run(
-        ['node', 'sign_gen.js', url, d_c0],
+        ['node', 'sign_minimal.js', url, d_c0],
         capture_output=True,
         text=True,
         cwd='/mnt/d/MyProject/Python/RSSGen/zhihu_sign_demo'
