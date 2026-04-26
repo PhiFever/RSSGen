@@ -170,11 +170,43 @@ class AfdianRoute(Route):
 
         scraper = self._get_scraper()
         user_id = await self._get_author_id(scraper, author_slug)
-        items: list[FeedItem] = []
-        async for page in self._iter_post_list(scraper, user_id, author_slug, limit=limit):
-            for post in page:
-                content = await self._fetch_one_content(scraper, article_store, post)
-                items.append(self._make_feed_item(post, content))
 
-        logger.info(f"抓取完成 {author_slug}: {len(items)} 条文章")
+        posts: list[dict] = []
+        tasks: list[asyncio.Task[str]] = []
+
+        try:
+            async for page in self._iter_post_list(scraper, user_id, author_slug, limit=limit):
+                for post in page:
+                    posts.append(post)
+                    tasks.append(asyncio.create_task(
+                        self._fetch_one_content(scraper, article_store, post)
+                    ))
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+        except Exception:
+            # list 翻页失败 - 但仍等已派的 detail task 完成（让 save 落地）
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+
+        try:
+            contents = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            raise
+
+        items: list[FeedItem] = []
+        for post, content in zip(posts, contents):
+            post_id = post.get("post_id", "")
+            if isinstance(content, Exception):
+                logger.warning(f"文章详情获取失败，跳过 {post_id}: {content}")
+                continue
+            items.append(self._make_feed_item(post, content))
+
+        logger.info(f"抓取完成 {author_slug}: {len(items)}/{len(posts)} 条文章")
         return items
