@@ -1,6 +1,8 @@
 """爱发电路由 — 参考 AfdianToMarkdown Go 项目的 API 端点"""
 
+import asyncio
 from datetime import datetime, timezone
+from typing import AsyncIterator
 
 from loguru import logger
 
@@ -51,13 +53,15 @@ class AfdianRoute(Route):
         logger.info(f"作者 ID: {user_id}")
         return user_id
 
-    async def _get_post_list(self, scraper: Scraper, user_id: str, author_slug: str,
-                             per_page: int = 10, limit: int = 0) -> list[dict]:
-        """获取作者动态列表（自动翻页），limit=0 表示获取全部"""
+    async def _iter_post_list(
+        self, scraper: Scraper, user_id: str, author_slug: str,
+        per_page: int = 10, limit: int = 0,
+    ) -> AsyncIterator[list[dict]]:
+        """逐页 yield 作者动态列表。limit=0 表示获取全部。"""
         referer = f"{HOST_URL}/a/{author_slug}"
-        all_posts = []
         publish_sn = ""
         page = 1
+        total_yielded = 0
 
         while True:
             api_url = (
@@ -73,23 +77,27 @@ class AfdianRoute(Route):
             post_list = data.get("data", {}).get("list", [])
             if not post_list:
                 logger.info(f"列表页 {page}: 无更多数据，结束翻页")
-                break
+                return
 
-            all_posts.extend(post_list)
-            logger.info(f"列表页 {page}: 获取 {len(post_list)} 条，累计 {len(all_posts)} 条")
-
-            if limit and len(all_posts) >= limit:
+            # limit 截断：本页加进去会超过 limit，只 yield 前 N 条
+            if limit and total_yielded + len(post_list) >= limit:
+                chunk = post_list[:limit - total_yielded]
+                total_yielded += len(chunk)
+                logger.info(f"列表页 {page}: 获取 {len(chunk)} 条，累计 {total_yielded} 条")
+                yield chunk
                 logger.info(f"已达 limit={limit}，停止翻页")
-                return all_posts[:limit]
+                return
+
+            total_yielded += len(post_list)
+            logger.info(f"列表页 {page}: 获取 {len(post_list)} 条，累计 {total_yielded} 条")
+            yield post_list
 
             publish_sn = post_list[-1].get("publish_sn", "")
             if not publish_sn:
                 logger.info(f"列表页 {page}: 无 publish_sn，结束翻页")
-                break
+                return
 
             page += 1
-
-        return all_posts
 
     async def _get_post_detail(self, scraper: Scraper, post_id: str, album_id: str = "") -> str:
         """获取文章正文 HTML"""
@@ -125,39 +133,38 @@ class AfdianRoute(Route):
 
         scraper = self._get_scraper()
         user_id = await self._get_author_id(scraper, author_slug)
-        posts = await self._get_post_list(scraper, user_id, author_slug, limit=limit)
+        items: list[FeedItem] = []
+        async for page in self._iter_post_list(scraper, user_id, author_slug, limit=limit):
+            for post in page:
+                publish_time = int(post.get("publish_time", 0))
+                pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
 
-        items = []
-        for post in posts:
-            publish_time = int(post.get("publish_time", 0))
-            pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
+                enclosures = []
+                for pic in post.get("pics", []):
+                    if pic:
+                        enclosures.append({"url": pic, "type": "image/jpeg"})
 
-            enclosures = []
-            for pic in post.get("pics", []):
-                if pic:
-                    enclosures.append({"url": pic, "type": "image/jpeg"})
+                post_id = post.get("post_id", "")
 
-            post_id = post.get("post_id", "")
+                content = None
+                if article_store:
+                    content = await article_store.get("afdian", post_id)
 
-            content = None
-            if article_store:
-                content = await article_store.get("afdian", post_id)
+                if content is None:
+                    content = await self._get_post_detail(scraper, post_id)
+                    logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
+                    if article_store and content:
+                        await article_store.save("afdian", post_id, content)
 
-            if content is None:
-                content = await self._get_post_detail(scraper, post_id)
-                logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
-                if article_store and content:
-                    await article_store.save("afdian", post_id, content)
-
-            items.append(FeedItem(
-                title=post.get("title", "无标题"),
-                link=f"{HOST_URL}/p/{post_id}",
-                content=content or "",
-                pub_date=pub_date,
-                author=post.get("user", {}).get("name"),
-                guid=post_id,
-                enclosures=enclosures,
-            ))
+                items.append(FeedItem(
+                    title=post.get("title", "无标题"),
+                    link=f"{HOST_URL}/p/{post_id}",
+                    content=content or "",
+                    pub_date=pub_date,
+                    author=post.get("user", {}).get("name"),
+                    guid=post_id,
+                    enclosures=enclosures,
+                ))
 
         logger.info(f"抓取完成 {author_slug}: {len(items)} 条文章")
         return items

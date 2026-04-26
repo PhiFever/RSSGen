@@ -31,15 +31,23 @@ def _make_post(post_id: str):
     }
 
 
+def _iter_pages(pages):
+    """返回一个调用即得 async generator 的函数，依次 yield 每一页。"""
+    async def _gen(*args, **kwargs):
+        for page in pages:
+            yield page
+    return _gen
+
+
 class TestFetchWithStore:
     @pytest.mark.asyncio
     async def test_store_hit_skips_api(self, route, article_store):
         """store 命中时不调用详情 API"""
         await article_store.save("afdian", "post1", "<p>cached content</p>")
-        mock_posts = [_make_post("post1")]
+        mock_pages = [[_make_post("post1")]]
 
         with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_get_post_list", new_callable=AsyncMock, return_value=mock_posts), \
+             patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)), \
              patch.object(route, "_get_post_detail", new_callable=AsyncMock) as mock_detail:
 
             items = await route.fetch(article_store=article_store, path_params=["slug1"])
@@ -51,10 +59,10 @@ class TestFetchWithStore:
     @pytest.mark.asyncio
     async def test_store_miss_calls_api_and_saves(self, route, article_store):
         """store 未命中时调用 API 并落库"""
-        mock_posts = [_make_post("post2")]
+        mock_pages = [[_make_post("post2")]]
 
         with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_get_post_list", new_callable=AsyncMock, return_value=mock_posts), \
+             patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)), \
              patch.object(route, "_get_post_detail", new_callable=AsyncMock, return_value="<p>fresh</p>"):
 
             items = await route.fetch(article_store=article_store, path_params=["slug1"])
@@ -66,10 +74,10 @@ class TestFetchWithStore:
     @pytest.mark.asyncio
     async def test_no_store_still_works(self, route):
         """不传 article_store 时仍能正常走 API"""
-        mock_posts = [_make_post("post3")]
+        mock_posts = [[_make_post("post3")]]
 
         with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_get_post_list", new_callable=AsyncMock, return_value=mock_posts), \
+             patch.object(route, "_iter_post_list", new=_iter_pages(mock_posts)), \
              patch.object(route, "_get_post_detail", new_callable=AsyncMock, return_value="<p>detail</p>"):
 
             items = await route.fetch(path_params=["slug1"])
