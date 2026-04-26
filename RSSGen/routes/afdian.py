@@ -79,7 +79,6 @@ class AfdianRoute(Route):
                 logger.info(f"列表页 {page}: 无更多数据，结束翻页")
                 return
 
-            # limit 截断：本页加进去会超过 limit，只 yield 前 N 条
             if limit and total_yielded + len(post_list) >= limit:
                 chunk = post_list[:limit - total_yielded]
                 total_yielded += len(chunk)

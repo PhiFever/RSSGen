@@ -1,42 +1,9 @@
 """爱发电路由文章级持久化逻辑测试"""
 
 import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 
-from RSSGen.core.article_store import SqliteArticleStore
-from RSSGen.routes.afdian import AfdianRoute
-
-
-@pytest.fixture
-def route():
-    return AfdianRoute({"cookie": "test", "rate_limit": 0})
-
-
-@pytest_asyncio.fixture
-async def article_store(tmp_path):
-    s = SqliteArticleStore(tmp_path / "afdian.db")
-    await s.init()
-    yield s
-    await s.close()
-
-
-def _make_post(post_id: str):
-    return {
-        "post_id": post_id,
-        "title": "test",
-        "publish_time": 1700000000,
-        "pics": [],
-        "user": {"name": "a"},
-    }
-
-
-def _iter_pages(pages):
-    """返回一个调用即得 async generator 的函数，依次 yield 每一页。"""
-    async def _gen(*args, **kwargs):
-        for page in pages:
-            yield page
-    return _gen
+from tests.helpers import _iter_pages, _make_post
 
 
 class TestFetchWithStore:

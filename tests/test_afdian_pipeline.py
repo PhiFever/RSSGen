@@ -3,41 +3,9 @@
 import asyncio
 
 import pytest
-import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 
-from RSSGen.core.article_store import SqliteArticleStore
-from RSSGen.routes.afdian import AfdianRoute
-
-
-@pytest.fixture
-def route():
-    return AfdianRoute({"cookie": "test", "rate_limit": 0})
-
-
-@pytest_asyncio.fixture
-async def article_store(tmp_path):
-    s = SqliteArticleStore(tmp_path / "pipeline.db")
-    await s.init()
-    yield s
-    await s.close()
-
-
-def _make_post(post_id: str):
-    return {
-        "post_id": post_id,
-        "title": f"title-{post_id}",
-        "publish_time": 1700000000,
-        "pics": [],
-        "user": {"name": "a"},
-    }
-
-
-def _iter_pages(pages):
-    async def _gen(*args, **kwargs):
-        for page in pages:
-            yield page
-    return _gen
+from tests.helpers import _iter_pages, _make_post
 
 
 def _iter_pages_then_raise(pages, exc):
@@ -93,10 +61,8 @@ class TestPipeline:
         assert len(items) == 3
         assert [i.guid for i in items] == ["p1", "p2", "p4"]
 
-        # 成功的 3 篇都已落库
         for post_id in ("p1", "p2", "p4"):
             assert await article_store.get("afdian", post_id) == f"<p>{post_id}</p>"
-        # 失败的没落库
         assert await article_store.get("afdian", "p3") is None
 
     @pytest.mark.asyncio
@@ -107,8 +73,6 @@ class TestPipeline:
         ]
 
         async def slow_detail(scraper, post_id, album_id=""):
-            # 模拟有耗时的 detail 请求；如果 fetch 不等待已派任务就 re-raise，
-            # 测试结束时 store 里就没有这 3 条
             await asyncio.sleep(0.05)
             return f"<p>{post_id}</p>"
 
@@ -120,6 +84,5 @@ class TestPipeline:
             with pytest.raises(RuntimeError, match="list boom"):
                 await route.fetch(article_store=article_store, path_params=["slug"])
 
-        # 关键断言：fetch 抛 RuntimeError 之前，已派出的 3 个 detail 必须全部落库
         for post_id in ("p1", "p2", "p3"):
             assert await article_store.get("afdian", post_id) == f"<p>{post_id}</p>"
