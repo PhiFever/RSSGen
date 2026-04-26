@@ -3,14 +3,11 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "requests>=2.33.1",
+#     "mini-racer==0.14.1",
 # ]
 # ///
 """
 知乎 x-zse-96 签名生成 Demo
-
-运行前需要:
-1. 安装 Node.js
-2. 修改下方 COOKIE 变量为你的知乎 cookie
 
 使用方法:
 uv run demo.py --url "<知乎API URL>"
@@ -19,10 +16,12 @@ uv run demo.py --url "<知乎API URL>"
 import argparse
 import json
 import re
-import subprocess
 import sys
 import urllib.parse
+from pathlib import Path
+
 import requests
+from py_mini_racer import MiniRacer
 
 # ============================================
 # 在这里填写你的知乎 Cookie (登录后从浏览器复制)
@@ -32,24 +31,34 @@ COOKIE = """
 # ============================================
 
 
+# 签名 JS 文件路径
+SIGN_JS_PATH = Path(__file__).parent / "zhihu_sign.js"
+
+# 初始化 V8 引擎并加载签名 JS（惰性初始化）
+_v8_ctx = None
+
+
 def get_signature(url: str, d_c0: str) -> dict:
-    """通过 Node.js 执行签名生成（无 jsdom 版）"""
-    result = subprocess.run(
-        ['node', 'sign_minimal.js', url, d_c0],
-        capture_output=True,
-        text=True,
-        cwd='/mnt/d/MyProject/Python/RSSGen/zhihu_sign_demo'
+    """通过 PyMiniRacer (V8) 执行签名生成"""
+    global _v8_ctx
+    if _v8_ctx is None:
+        js_code = SIGN_JS_PATH.read_text()
+        _v8_ctx = MiniRacer()
+        _v8_ctx.eval(js_code)
+
+    result = _v8_ctx.call(
+        "tv",
+        url,
+        "",
+        {"zse93": "101_3_3.0", "dc0": d_c0, "xZst81": None},
+        ""
     )
 
-    if result.returncode != 0:
-        print(f"Node.js 执行错误:\n{result.stderr}")
-        sys.exit(1)
-
-    try:
-        return json.loads(result.stdout.strip())
-    except json.JSONDecodeError:
-        print(f"输出解析错误:\n{result.stdout}")
-        sys.exit(1)
+    return {
+        "source": result["source"],
+        "x_zse_93": "101_3_3.0",
+        "x_zse_96": "2.0_" + result["signature"]
+    }
 
 
 def parse_cookies(cookie_str: str) -> dict:
