@@ -6,6 +6,14 @@ from pathlib import Path
 from RSSGen.routes.zhihu import ZhihuSigner
 
 
+@pytest.fixture(autouse=True)
+def reset_signer_ctx():
+    """每个测试前后重置 MiniRacer 实例，避免 event loop 冲突"""
+    ZhihuSigner._ctx = None
+    yield
+    ZhihuSigner._ctx = None
+
+
 class TestZhihuSigner:
     def test_init_loads_js_file(self):
         """初始化时加载 JS 文件"""
