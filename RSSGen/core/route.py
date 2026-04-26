@@ -34,10 +34,12 @@ class Route:
     async def feed_info(self, **kwargs) -> FeedInfo:
         raise NotImplementedError
 
-    async def fetch(self, article_cache=None, **kwargs) -> list[FeedItem]:
+    async def fetch(self, article_cache=None, article_store=None, **kwargs) -> list[FeedItem]:
         """抓取数据源。
 
         参数:
-            article_cache: 可选的文章级缓存实例，子类可利用它跳过已缓存文章的 API 调用
+            article_cache: 可选的内存型缓存（key-value），适合临时性数据源
+            article_store: 可选的持久化存储（ArticleStoreProtocol），适合需要跨重启
+                保留已抓内容的数据源
         """
         raise NotImplementedError
