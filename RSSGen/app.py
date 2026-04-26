@@ -9,6 +9,7 @@ from loguru import logger
 from RSSGen.config import load_config
 from RSSGen.core.cache import Cache
 from RSSGen.core.feed import generate_feed
+from RSSGen.core.article_store import SqliteArticleStore
 from RSSGen.core.refresher import BackgroundRefresher
 from RSSGen.routes import discover_routes, get_registry
 
@@ -24,31 +25,39 @@ app = FastAPI(title="RSSGen", description="自托管 RSS 源生成框架")
 
 feed_cache: Cache | None = None
 article_cache: Cache | None = None
+article_store: SqliteArticleStore | None = None
 refresher: BackgroundRefresher | None = None
 config: dict = {}
 
 
 @app.on_event("startup")
 async def startup():
-    global config, feed_cache, article_cache, refresher
+    global config, feed_cache, article_cache, article_store, refresher
     config = load_config()
     discover_routes()
     logger.info(f"已加载路由: {list(get_registry().keys())}")
 
     afdian_config = config.get("routes", {}).get("afdian", {})
     feed_cache = Cache(ttl=afdian_config.get("feed_ttl", 21600))
+    # 保留：通用内存型 KV，不再接入 afdian，留给将来其他路由 / 测试使用
     article_cache = Cache(ttl=afdian_config.get("article_ttl", 43200))
 
+    sqlite_path = config.get("storage", {}).get("sqlite_path", "./data/rssgen.db")
+    article_store = SqliteArticleStore(sqlite_path)
+    await article_store.init()
+
     if afdian_config.get("enabled", False):
-        refresher = BackgroundRefresher(feed_cache, article_cache, config)
+        refresher = BackgroundRefresher(feed_cache, article_store, config)
         await refresher.start()
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    global refresher
+    global refresher, article_store
     if refresher:
         await refresher.stop()
+    if article_store:
+        await article_store.close()
 
 
 @app.get("/")
@@ -93,7 +102,7 @@ async def feed(route_name: str, path: str, request: Request):
 
     try:
         info = await route.feed_info(**kwargs)
-        items = await route.fetch(article_cache=article_cache, **kwargs)
+        items = await route.fetch(article_store=article_store, **kwargs)
     except Exception as e:
         logger.exception(f"路由 {route_name} 抓取失败")
         raise HTTPException(status_code=502, detail=f"抓取失败: {e}")
