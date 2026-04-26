@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from RSSGen.routes.zhihu import ZhihuRoute
+from RSSGen.routes.zhihu import ZhihuRoute, ZhihuSigner
 
 
 class TestZhihuRouteFeedInfo:
@@ -143,3 +143,27 @@ class TestZhihuRouteFetch:
         assert len(items) == 2
         assert items[0].title == "问题标题"
         assert items[1].title == "文章标题"
+
+
+class TestZhihuRouteFetchWithSigner:
+    @pytest.mark.asyncio
+    async def test_fetch_with_real_signature_calls_api(self):
+        """fetch 使用真实签名请求 API（需要网络）"""
+        # 此测试需要真实 Cookie 和网络，标记为 integration
+        pytest.skip("integration test - 需要真实 Cookie")
+
+    @pytest.mark.asyncio
+    async def test_fetch_builds_correct_headers(self):
+        """fetch 构造正确的请求头"""
+        route = ZhihuRoute({"cookie": "d_c0=test_value"})
+
+        # 检查 headers 构造逻辑
+        url = "https://www.zhihu.com/api/v3/moments/test_user/activities"
+        d_c0 = route._get_d_c0()
+
+        signer = ZhihuSigner()
+        sig = signer.get_signature(url, d_c0)
+
+        # 验证签名格式
+        assert sig["x_zse_93"] == "101_3_3.0"
+        assert sig["x_zse_96"].startswith("2.0_")

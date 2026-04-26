@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
+from curl_cffi.requests import AsyncSession
 from loguru import logger
 from py_mini_racer import MiniRacer
 
@@ -109,8 +110,33 @@ class ZhihuRoute(Route):
 
     async def _fetch_activities(self, user_id: str, limit: int = 5):
         """请求知乎用户动态 API"""
-        # TODO: 实现实际 HTTP 请求
-        pass
+        url = f"https://www.zhihu.com/api/v3/moments/{user_id}/activities"
+        url_with_params = f"{url}?limit={limit}&desktop=true"
+
+        d_c0 = self._get_d_c0()
+        signer = ZhihuSigner()
+        signature = signer.get_signature(url_with_params, d_c0)
+
+        headers = {
+            "accept": "*/*",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "x-requested-with": "fetch",
+            "x-zse-93": signature["x_zse_93"],
+            "x-zse-96": signature["x_zse_96"],
+            "referer": f"https://www.zhihu.com/people/{user_id}",
+        }
+
+        cookies = {}
+        cookie_str = self.config.get("cookie", "")
+        for item in cookie_str.split(";"):
+            item = item.strip()
+            if "=" in item:
+                k, v = item.split("=", 1)
+                cookies[k.strip()] = v.strip()
+
+        async with AsyncSession() as session:
+            resp = await session.get(url_with_params, headers=headers, cookies=cookies)
+            return resp
 
     async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])
