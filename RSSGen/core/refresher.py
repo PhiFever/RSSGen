@@ -26,9 +26,13 @@ class BackgroundRefresher:
         self._error_status: dict[str, dict] = {}
 
         refresher_config = config.get("refresher", {})
-        self.startup_delay = refresher_config.get("startup_delay", DEFAULT_STARTUP_DELAY)
+        self.startup_delay = refresher_config.get(
+            "startup_delay", DEFAULT_STARTUP_DELAY
+        )
         self.max_retries = refresher_config.get("max_retries", DEFAULT_MAX_RETRIES)
-        self.retry_base_delay = refresher_config.get("retry_base_delay", DEFAULT_RETRY_BASE_DELAY)
+        self.retry_base_delay = refresher_config.get(
+            "retry_base_delay", DEFAULT_RETRY_BASE_DELAY
+        )
 
     async def start(self):
         if self._task is None:
@@ -45,8 +49,9 @@ class BackgroundRefresher:
             self._task = None
             logger.info("BackgroundRefresher 已停止")
 
-    async def trigger(self, route_name: str, path_params: list[str],
-                      query_params: dict | None = None):
+    async def trigger(
+        self, route_name: str, path_params: list[str], query_params: dict | None = None
+    ):
         """动态触发：未知feed首次访问时调用，非阻塞"""
         if self.build_cache_key(route_name, path_params) in self._pending:
             return
@@ -61,8 +66,9 @@ class BackgroundRefresher:
                     if key != "slug" and key not in fetch_kwargs:
                         fetch_kwargs[key] = value
 
-        asyncio.create_task(self._refresh_one(route_name, path_params,
-                                              fetch_kwargs=fetch_kwargs))
+        asyncio.create_task(
+            self._refresh_one(route_name, path_params, fetch_kwargs=fetch_kwargs)
+        )
 
     def _find_feed_config(self, route_name: str, slug: str) -> dict | None:
         feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
@@ -103,8 +109,11 @@ class BackgroundRefresher:
 
             await self._refresh_feeds("预热")
 
-            refresh_interval = self.config.get("routes", {}).get("afdian", {}).get(
-                "refresh_interval", 14400)
+            refresh_interval = (
+                self.config.get("routes", {})
+                .get("afdian", {})
+                .get("refresh_interval", 14400)
+            )
 
             while True:
                 await asyncio.sleep(refresh_interval)
@@ -127,12 +136,14 @@ class BackgroundRefresher:
         for feed_conf in feeds:
             slug = feed_conf.get("slug")
             if slug:
-                await self._refresh_one("afdian", [slug],
-                                        fetch_kwargs={"limit": feed_conf.get("limit", 20)})
+                await self._refresh_one(
+                    "afdian", [slug], fetch_kwargs={"limit": feed_conf.get("limit", 20)}
+                )
         logger.info(f"{label}完成")
 
-    async def _refresh_one(self, route_name: str, path_params: list[str],
-                           fetch_kwargs: dict | None = None):
+    async def _refresh_one(
+        self, route_name: str, path_params: list[str], fetch_kwargs: dict | None = None
+    ):
         cache_key = self.build_cache_key(route_name, path_params)
 
         if cache_key in self._pending:
@@ -155,7 +166,9 @@ class BackgroundRefresher:
             for attempt in range(self.max_retries):
                 if attempt > 0:
                     delay = self.retry_base_delay * (2 ** (attempt - 1))
-                    logger.info(f"重试 {cache_key} (第{attempt + 1}次)，等待 {delay} 秒...")
+                    logger.info(
+                        f"重试 {cache_key} (第{attempt + 1}次)，等待 {delay} 秒..."
+                    )
                     await asyncio.sleep(delay)
                 else:
                     logger.info(f"正在刷新 {cache_key}")
@@ -163,7 +176,9 @@ class BackgroundRefresher:
                 try:
                     route = route_cls(merged_config)
                     info = await route.feed_info(**kwargs)
-                    items = await route.fetch(article_store=self.article_store, **kwargs)
+                    items = await route.fetch(
+                        article_store=self.article_store, **kwargs
+                    )
                     xml = generate_feed(info, items, format="atom")
                     await self.feed_cache.set(cache_key, xml)
 
@@ -180,7 +195,9 @@ class BackgroundRefresher:
 
             logger.error(f"刷新失败 {cache_key}: 所有 {self.max_retries} 次重试均失败")
             self._error_status[cache_key] = {
-                "last_success": self._error_status.get(cache_key, {}).get("last_success"),
+                "last_success": self._error_status.get(cache_key, {}).get(
+                    "last_success"
+                ),
                 "error": str(last_error),
                 "item_count": 0,
             }

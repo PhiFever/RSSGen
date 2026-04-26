@@ -13,11 +13,18 @@ class TestFetchWithStore:
         await article_store.save("afdian", "post1", "<p>cached content</p>")
         mock_pages = [[_make_post("post1")]]
 
-        with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)), \
-             patch.object(route, "_get_post_detail", new_callable=AsyncMock) as mock_detail:
-
-            items = await route.fetch(article_store=article_store, path_params=["slug1"])
+        with (
+            patch.object(
+                route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"
+            ),
+            patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)),
+            patch.object(
+                route, "_get_post_detail", new_callable=AsyncMock
+            ) as mock_detail,
+        ):
+            items = await route.fetch(
+                article_store=article_store, path_params=["slug1"]
+            )
 
             mock_detail.assert_not_called()
             assert len(items) == 1
@@ -28,11 +35,21 @@ class TestFetchWithStore:
         """store 未命中时调用 API 并落库"""
         mock_pages = [[_make_post("post2")]]
 
-        with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)), \
-             patch.object(route, "_get_post_detail", new_callable=AsyncMock, return_value="<p>fresh</p>"):
-
-            items = await route.fetch(article_store=article_store, path_params=["slug1"])
+        with (
+            patch.object(
+                route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"
+            ),
+            patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)),
+            patch.object(
+                route,
+                "_get_post_detail",
+                new_callable=AsyncMock,
+                return_value="<p>fresh</p>",
+            ),
+        ):
+            items = await route.fetch(
+                article_store=article_store, path_params=["slug1"]
+            )
 
             assert items[0].content == "<p>fresh</p>"
             saved = await article_store.get("afdian", "post2")
@@ -43,10 +60,18 @@ class TestFetchWithStore:
         """不传 article_store 时仍能正常走 API"""
         mock_pages = [[_make_post("post3")]]
 
-        with patch.object(route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"), \
-             patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)), \
-             patch.object(route, "_get_post_detail", new_callable=AsyncMock, return_value="<p>detail</p>"):
-
+        with (
+            patch.object(
+                route, "_get_author_id", new_callable=AsyncMock, return_value="uid1"
+            ),
+            patch.object(route, "_iter_post_list", new=_iter_pages(mock_pages)),
+            patch.object(
+                route,
+                "_get_post_detail",
+                new_callable=AsyncMock,
+                return_value="<p>detail</p>",
+            ),
+        ):
             items = await route.fetch(path_params=["slug1"])
 
             assert items[0].content == "<p>detail</p>"

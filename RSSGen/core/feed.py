@@ -27,7 +27,11 @@ def generate_feed(info: FeedInfo, items: list[FeedItem], format: str = "atom") -
         if item.author:
             fe.author(name=item.author)
         for enc in item.enclosures:
-            fe.enclosure(url=enc.get("url", ""), length=enc.get("length", "0"), type=enc.get("type", ""))
+            fe.enclosure(
+                url=enc.get("url", ""),
+                length=enc.get("length", "0"),
+                type=enc.get("type", ""),
+            )
 
     if format == "rss":
         return fg.rss_str(pretty=True).decode("utf-8")

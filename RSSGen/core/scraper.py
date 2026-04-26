@@ -23,7 +23,9 @@ class Scraper:
             await asyncio.sleep(self.rate_limit - elapsed)
         self._last_request_time = time.monotonic()
 
-    async def _request(self, method: str, url: str, referer: str | None = None, **kwargs) -> Response:
+    async def _request(
+        self, method: str, url: str, referer: str | None = None, **kwargs
+    ) -> Response:
         await self._rate_limit_wait()
         headers = dict(self.extra_headers)
         if referer:

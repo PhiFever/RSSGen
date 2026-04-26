@@ -13,7 +13,9 @@ def _make_post(post_id: str):
 
 def _iter_pages(pages):
     """返回一个调用即得 async generator 的函数，依次 yield 每一页。"""
+
     async def _gen(*args, **kwargs):
         for page in pages:
             yield page
+
     return _gen

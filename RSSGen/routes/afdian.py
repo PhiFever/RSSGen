@@ -26,11 +26,13 @@ class AfdianRoute(Route):
                 if "=" in pair:
                     k, v = pair.split("=", 1)
                     cookies[k.strip()] = v.strip()
-        return Scraper({
-            "cookies": cookies,
-            "rate_limit": self.config.get("rate_limit", 0.5),
-            "proxy": self.config.get("proxy"),
-        })
+        return Scraper(
+            {
+                "cookies": cookies,
+                "rate_limit": self.config.get("rate_limit", 0.5),
+                "proxy": self.config.get("proxy"),
+            }
+        )
 
     @staticmethod
     def _check_api_response(data: dict, context: str):
@@ -54,8 +56,12 @@ class AfdianRoute(Route):
         return user_id
 
     async def _iter_post_list(
-        self, scraper: Scraper, user_id: str, author_slug: str,
-        per_page: int = 10, limit: int = 0,
+        self,
+        scraper: Scraper,
+        user_id: str,
+        author_slug: str,
+        per_page: int = 10,
+        limit: int = 0,
     ) -> AsyncIterator[list[dict]]:
         """逐页 yield 作者动态列表。limit=0 表示获取全部。"""
         referer = f"{HOST_URL}/a/{author_slug}"
@@ -80,15 +86,19 @@ class AfdianRoute(Route):
                 return
 
             if limit and total_yielded + len(post_list) >= limit:
-                chunk = post_list[:limit - total_yielded]
+                chunk = post_list[: limit - total_yielded]
                 total_yielded += len(chunk)
-                logger.info(f"列表页 {page}: 获取 {len(chunk)} 条，累计 {total_yielded} 条")
+                logger.info(
+                    f"列表页 {page}: 获取 {len(chunk)} 条，累计 {total_yielded} 条"
+                )
                 yield chunk
                 logger.info(f"已达 limit={limit}，停止翻页")
                 return
 
             total_yielded += len(post_list)
-            logger.info(f"列表页 {page}: 获取 {len(post_list)} 条，累计 {total_yielded} 条")
+            logger.info(
+                f"列表页 {page}: 获取 {len(post_list)} 条，累计 {total_yielded} 条"
+            )
             yield post_list
 
             publish_sn = post_list[-1].get("publish_sn", "")
@@ -98,9 +108,13 @@ class AfdianRoute(Route):
 
             page += 1
 
-    async def _get_post_detail(self, scraper: Scraper, post_id: str, album_id: str = "") -> str:
+    async def _get_post_detail(
+        self, scraper: Scraper, post_id: str, album_id: str = ""
+    ) -> str:
         """获取文章正文 HTML"""
-        api_url = f"{HOST_URL}/api/post/get-detail?post_id={post_id}&album_id={album_id}"
+        api_url = (
+            f"{HOST_URL}/api/post/get-detail?post_id={post_id}&album_id={album_id}"
+        )
         referer = f"{HOST_URL}/p/{post_id}"
         resp = await scraper.get(api_url, referer=referer)
         resp.raise_for_status()
@@ -140,7 +154,11 @@ class AfdianRoute(Route):
     def _make_feed_item(self, post: dict, content: str) -> FeedItem:
         """根据 post dict 与正文 content 构造 FeedItem。"""
         publish_time = int(post.get("publish_time", 0))
-        pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
+        pub_date = (
+            datetime.fromtimestamp(publish_time, tz=timezone.utc)
+            if publish_time
+            else None
+        )
 
         enclosures = []
         for pic in post.get("pics", []):
@@ -174,12 +192,16 @@ class AfdianRoute(Route):
         tasks: list[asyncio.Task[str]] = []
 
         try:
-            async for page in self._iter_post_list(scraper, user_id, author_slug, limit=limit):
+            async for page in self._iter_post_list(
+                scraper, user_id, author_slug, limit=limit
+            ):
                 for post in page:
                     posts.append(post)
-                    tasks.append(asyncio.create_task(
-                        self._fetch_one_content(scraper, article_store, post)
-                    ))
+                    tasks.append(
+                        asyncio.create_task(
+                            self._fetch_one_content(scraper, article_store, post)
+                        )
+                    )
         except asyncio.CancelledError:
             for t in tasks:
                 if not t.done():

@@ -34,7 +34,9 @@ class Route:
     async def feed_info(self, **kwargs) -> FeedInfo:
         raise NotImplementedError
 
-    async def fetch(self, article_cache=None, article_store=None, **kwargs) -> list[FeedItem]:
+    async def fetch(
+        self, article_cache=None, article_store=None, **kwargs
+    ) -> list[FeedItem]:
         """抓取数据源。
 
         参数:

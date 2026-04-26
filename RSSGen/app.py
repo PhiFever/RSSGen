@@ -65,9 +65,7 @@ async def index():
     registry = get_registry()
     return {
         "name": "RSSGen",
-        "routes": {
-            name: cls.description for name, cls in registry.items()
-        },
+        "routes": {name: cls.description for name, cls in registry.items()},
     }
 
 
