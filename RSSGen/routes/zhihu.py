@@ -57,3 +57,44 @@ class ZhihuRoute(Route):
             link=f"https://www.zhihu.com/people/{user_id}",
             description=f"知乎用户 {user_id} 的最新动态",
         )
+
+    def _make_feed_item(self, target: dict) -> FeedItem:
+        """根据 target dict 构造 FeedItem"""
+        target_id = target.get("id", "")
+        target_type = target.get("type", "unknown")
+        created_time = target.get("created_time", 0)
+
+        # 标题和链接根据类型处理
+        if target_type == "answer":
+            question = target.get("question", {})
+            title = question.get("title", "")
+            question_id = question.get("id", "")
+            link = f"https://www.zhihu.com/question/{question_id}/answer/{target_id}"
+        elif target_type == "article":
+            title = target.get("title", "")
+            link = f"https://zhuanlan.zhihu.com/p/{target_id}"
+        elif target_type == "pin":
+            excerpt = target.get("excerpt", "")
+            title = excerpt[:50] if excerpt else "想法"
+            link = f"https://www.zhihu.com/pin/{target_id}"
+        else:
+            title = target.get("title", target.get("excerpt", "未知内容")[:50])
+            link = f"https://www.zhihu.com/{target_type}/{target_id}"
+
+        pub_date = (
+            datetime.fromtimestamp(created_time, tz=timezone.utc)
+            if created_time
+            else None
+        )
+
+        content = target.get("content", "") or target.get("excerpt", "")
+        author = target.get("author", {}).get("name", "")
+
+        return FeedItem(
+            title=title,
+            link=link,
+            content=content,
+            pub_date=pub_date,
+            author=author,
+            guid=target_id,
+        )
