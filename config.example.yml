@@ -6,6 +6,10 @@ server:
   port: 8000
   cache_ttl: 1800  # 默认缓存时间（秒）
 
+# 持久化存储（文章正文持久化到 SQLite，避免重启重抓）
+storage:
+  sqlite_path: "./data/rssgen.db"   # 文章数据库路径，相对项目根；Docker 内会挂载
+
 # 全局反爬配置
 scraper:
   proxy: null  # HTTP/SOCKS5 代理，如 "socks5://127.0.0.1:1080"
