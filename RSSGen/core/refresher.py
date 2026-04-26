@@ -17,9 +17,9 @@ DEFAULT_RETRY_BASE_DELAY = 5
 
 
 class BackgroundRefresher:
-    def __init__(self, feed_cache: Cache, article_cache: Cache, config: dict):
+    def __init__(self, feed_cache: Cache, article_store, config: dict):
         self.feed_cache = feed_cache
-        self.article_cache = article_cache
+        self.article_store = article_store
         self.config = config
         self._task: asyncio.Task | None = None
         self._pending: set[str] = set()
@@ -163,7 +163,7 @@ class BackgroundRefresher:
                 try:
                     route = route_cls(merged_config)
                     info = await route.feed_info(**kwargs)
-                    items = await route.fetch(article_cache=self.article_cache, **kwargs)
+                    items = await route.fetch(article_store=self.article_store, **kwargs)
                     xml = generate_feed(info, items, format="atom")
                     await self.feed_cache.set(cache_key, xml)
 

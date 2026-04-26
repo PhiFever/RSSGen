@@ -28,8 +28,8 @@ def global_config():
 @pytest.fixture
 def caches():
     feed_cache = Cache(ttl=60)
-    article_cache = Cache(ttl=60)
-    return feed_cache, article_cache
+    article_store = Cache(ttl=60)
+    return feed_cache, article_store
 
 
 class TestBuildCacheKey:
@@ -45,8 +45,8 @@ class TestBuildCacheKey:
 class TestTrigger:
     @pytest.mark.asyncio
     async def test_trigger_creates_task(self, caches, global_config):
-        feed_cache, article_cache = caches
-        refresher = BackgroundRefresher(feed_cache, article_cache, global_config)
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, global_config)
 
         with patch.object(refresher, "_refresh_one", new_callable=AsyncMock) as mock_refresh:
             await refresher.trigger("afdian", ["author1"], {"limit": "10"})
@@ -57,8 +57,8 @@ class TestTrigger:
     @pytest.mark.asyncio
     async def test_trigger_dedup(self, caches, global_config):
         """已在刷新中的feed不会重复触发"""
-        feed_cache, article_cache = caches
-        refresher = BackgroundRefresher(feed_cache, article_cache, global_config)
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, global_config)
 
         cache_key = BackgroundRefresher.build_cache_key("afdian", ["author1"])
         refresher._pending.add(cache_key)
@@ -72,8 +72,8 @@ class TestTrigger:
 class TestRefreshOne:
     @pytest.mark.asyncio
     async def test_success_updates_status(self, caches, global_config):
-        feed_cache, article_cache = caches
-        refresher = BackgroundRefresher(feed_cache, article_cache, global_config)
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, global_config)
 
         mock_route = MagicMock()
         mock_route.feed_info = AsyncMock(return_value=MagicMock(title="t", link="l", description="d"))
@@ -93,8 +93,8 @@ class TestRefreshOne:
 
     @pytest.mark.asyncio
     async def test_failure_records_error(self, caches, global_config):
-        feed_cache, article_cache = caches
-        refresher = BackgroundRefresher(feed_cache, article_cache, global_config)
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, global_config)
 
         mock_registry = {"afdian": MagicMock(side_effect=RuntimeError("boom"))}
 
@@ -110,8 +110,8 @@ class TestRefreshOne:
 class TestStartStop:
     @pytest.mark.asyncio
     async def test_start_and_stop(self, caches, global_config):
-        feed_cache, article_cache = caches
-        refresher = BackgroundRefresher(feed_cache, article_cache, global_config)
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, global_config)
 
         with patch.object(refresher, "_run_loop", new_callable=AsyncMock):
             await refresher.start()
