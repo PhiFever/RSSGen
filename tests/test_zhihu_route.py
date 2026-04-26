@@ -2,6 +2,7 @@
 
 import pytest
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch, MagicMock
 
 from RSSGen.routes.zhihu import ZhihuRoute
 
@@ -94,3 +95,51 @@ class TestZhihuRouteMakeFeedItem:
         item = route._make_feed_item(target)
 
         assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+
+
+class TestZhihuRouteFetch:
+    @pytest.mark.asyncio
+    async def test_fetch_returns_feed_items(self):
+        """fetch 返回 FeedItem 列表"""
+        route = ZhihuRoute({"cookie": "d_c0=test; other=val"})
+
+        # Mock API 响应
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "act1",
+                    "type": "feed",
+                    "target": {
+                        "id": "123",
+                        "type": "answer",
+                        "content": "<p>内容</p>",
+                        "created_time": 1700000000,
+                        "author": {"name": "作者"},
+                        "question": {"id": "456", "title": "问题标题"},
+                    },
+                },
+                {
+                    "id": "act2",
+                    "type": "feed",
+                    "target": {
+                        "id": "789",
+                        "type": "article",
+                        "title": "文章标题",
+                        "content": "<p>文章内容</p>",
+                        "created_time": 1700000100,
+                        "author": {"name": "作者2"},
+                    },
+                },
+            ]
+        }
+
+        with (
+            patch.object(route, "_fetch_activities", new_callable=AsyncMock, return_value=mock_response),
+        ):
+            items = await route.fetch(path_params=["kvxjr369f"])
+
+        assert len(items) == 2
+        assert items[0].title == "问题标题"
+        assert items[1].title == "文章标题"

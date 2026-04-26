@@ -98,3 +98,43 @@ class ZhihuRoute(Route):
             author=author,
             guid=target_id,
         )
+
+    def _get_d_c0(self) -> str:
+        """从 cookie 提取 d_c0"""
+        cookie_str = self.config.get("cookie", "")
+        match = re.search(r"d_c0=([^;]+)", cookie_str)
+        if match:
+            return match.group(1)
+        raise ValueError("Cookie 中缺少 d_c0 字段")
+
+    async def _fetch_activities(self, user_id: str, limit: int = 5):
+        """请求知乎用户动态 API"""
+        # TODO: 实现实际 HTTP 请求
+        pass
+
+    async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
+        path_params: list[str] = kwargs.get("path_params", [])
+        if not path_params:
+            raise ValueError("需要指定用户 ID")
+
+        user_id = path_params[0]
+        limit = int(kwargs.get("limit", 20))
+
+        logger.info(f"开始抓取知乎用户 {user_id}，limit={limit}")
+
+        resp = await self._fetch_activities(user_id, limit)
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
+
+        data = resp.json()
+        activities = data.get("data", [])
+
+        items = []
+        for act in activities:
+            target = act.get("target", {})
+            if target:
+                items.append(self._make_feed_item(target))
+
+        logger.info(f"抓取完成 {user_id}: {len(items)} 条动态")
+        return items
