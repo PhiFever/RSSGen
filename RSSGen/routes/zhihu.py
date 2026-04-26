@@ -38,3 +38,22 @@ class ZhihuSigner:
             "x_zse_93": "101_3_3.0",
             "x_zse_96": "2.0_" + result["signature"]
         }
+
+
+class ZhihuRoute(Route):
+    """知乎用户动态路由"""
+
+    name = "zhihu"
+    description = "知乎用户动态订阅"
+
+    async def feed_info(self, **kwargs) -> FeedInfo:
+        path_params: list[str] = kwargs.get("path_params", [])
+        if not path_params:
+            raise ValueError("需要指定用户 ID，如 /feed/zhihu/{user_id}")
+
+        user_id = path_params[0]
+        return FeedInfo(
+            title=f"知乎动态 - {user_id}",
+            link=f"https://www.zhihu.com/people/{user_id}",
+            description=f"知乎用户 {user_id} 的最新动态",
+        )
