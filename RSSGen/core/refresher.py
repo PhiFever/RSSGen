@@ -191,7 +191,9 @@ class BackgroundRefresher:
                     return
                 except Exception as e:
                     last_error = e
-                    logger.warning(f"刷新失败 {cache_key} (第{attempt + 1}次): {e}")
+                    logger.opt(exception=True).warning(
+                        f"刷新失败 {cache_key} (第{attempt + 1}次): {e}"
+                    )
 
             logger.error(f"刷新失败 {cache_key}: 所有 {self.max_retries} 次重试均失败")
             self._error_status[cache_key] = {

@@ -13,6 +13,18 @@ HOST = "afdian.com"
 HOST_URL = "https://afdian.com"
 
 
+def _summarize_post(post: dict) -> str:
+    """提取帖子关键字段用于诊断日志"""
+    return (
+        f"post_id={post.get('post_id')!r}, "
+        f"title={post.get('title')!r}, "
+        f"publish_time={post.get('publish_time')!r}, "
+        f"publish_sn={post.get('publish_sn')!r}, "
+        f"user={post.get('user', {}).get('name')!r}, "
+        f"pics_count={len(post.get('pics') or [])}"
+    )
+
+
 class AfdianRoute(Route):
     name = "afdian"
     description = "爱发电创作者动态订阅"
@@ -85,6 +97,15 @@ class AfdianRoute(Route):
                 logger.info(f"列表页 {page}: 无更多数据，结束翻页")
                 return
 
+            # 诊断日志：每页第一条和最后一条帖子的原始字段
+            logger.debug(
+                f"列表页 {page} 首帖: {_summarize_post(post_list[0])}"
+            )
+            if len(post_list) > 1:
+                logger.debug(
+                    f"列表页 {page} 尾帖: {_summarize_post(post_list[-1])}"
+                )
+
             if limit and total_yielded + len(post_list) >= limit:
                 chunk = post_list[: limit - total_yielded]
                 total_yielded += len(chunk)
@@ -153,21 +174,40 @@ class AfdianRoute(Route):
 
     def _make_feed_item(self, post: dict, content: str) -> FeedItem:
         """根据 post dict 与正文 content 构造 FeedItem。"""
+        post_id = post.get("post_id", "")
+        title = post.get("title", "")
+
+        # 诊断日志：标记关键字段缺失的帖子
+        if not post_id:
+            logger.warning(
+                f"帖子缺少 post_id: title={title!r}, "
+                f"publish_time={post.get('publish_time')!r}, "
+                f"raw_keys={list(post.keys())[:10]}"
+            )
+        if not title:
+            logger.warning(
+                f"帖子缺少 title: post_id={post_id!r}, "
+                f"raw_keys={list(post.keys())[:10]}"
+            )
+
         publish_time = int(post.get("publish_time", 0))
         pub_date = (
             datetime.fromtimestamp(publish_time, tz=timezone.utc)
             if publish_time
             else None
         )
+        if not publish_time:
+            logger.warning(
+                f"帖子缺少 publish_time: post_id={post_id!r}, title={title!r}"
+            )
 
         enclosures = []
         for pic in post.get("pics", []):
             if pic:
                 enclosures.append({"url": pic, "type": "image/jpeg"})
 
-        post_id = post.get("post_id", "")
         return FeedItem(
-            title=post.get("title", ""),
+            title=title,
             link=f"{HOST_URL}/p/{post_id}",
             content=content or "",
             pub_date=pub_date,
@@ -230,4 +270,21 @@ class AfdianRoute(Route):
             items.append(self._make_feed_item(post, content))
 
         logger.info(f"抓取完成 {author_slug}: {len(items)}/{len(posts)} 条文章")
+
+        # 诊断日志：检查是否有缺失关键字段的条目
+        suspicious = []
+        for i, item in enumerate(items):
+            if not item.title or not item.guid or not item.pub_date:
+                suspicious.append(
+                    f"  [{i}] title={item.title!r}, guid={item.guid!r}, "
+                    f"pub_date={item.pub_date}, link={item.link!r}"
+                )
+        if suspicious:
+            logger.warning(
+                f"{author_slug}: {len(suspicious)} 个条目缺少关键字段:\n"
+                + "\n".join(suspicious[:10])
+            )
+            if len(suspicious) > 10:
+                logger.warning(f"  ... 及其他 {len(suspicious) - 10} 条")
+
         return items
