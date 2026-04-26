@@ -122,6 +122,43 @@ class AfdianRoute(Route):
             description=f"爱发电创作者 {author_slug} 的最新动态",
         )
 
+    async def _fetch_one_content(
+        self, scraper: Scraper, article_store, post: dict
+    ) -> str:
+        """单篇文章内容获取：先查 store，未命中则下 detail 并落库。"""
+        post_id = post.get("post_id", "")
+        if article_store:
+            cached = await article_store.get("afdian", post_id)
+            if cached is not None:
+                return cached
+
+        content = await self._get_post_detail(scraper, post_id)
+        logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
+        if article_store and content:
+            await article_store.save("afdian", post_id, content)
+        return content
+
+    def _make_feed_item(self, post: dict, content: str) -> FeedItem:
+        """根据 post dict 与正文 content 构造 FeedItem。"""
+        publish_time = int(post.get("publish_time", 0))
+        pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
+
+        enclosures = []
+        for pic in post.get("pics", []):
+            if pic:
+                enclosures.append({"url": pic, "type": "image/jpeg"})
+
+        post_id = post.get("post_id", "")
+        return FeedItem(
+            title=post.get("title", "无标题"),
+            link=f"{HOST_URL}/p/{post_id}",
+            content=content or "",
+            pub_date=pub_date,
+            author=post.get("user", {}).get("name"),
+            guid=post_id,
+            enclosures=enclosures,
+        )
+
     async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])
         if not path_params:
@@ -136,35 +173,8 @@ class AfdianRoute(Route):
         items: list[FeedItem] = []
         async for page in self._iter_post_list(scraper, user_id, author_slug, limit=limit):
             for post in page:
-                publish_time = int(post.get("publish_time", 0))
-                pub_date = datetime.fromtimestamp(publish_time, tz=timezone.utc) if publish_time else None
-
-                enclosures = []
-                for pic in post.get("pics", []):
-                    if pic:
-                        enclosures.append({"url": pic, "type": "image/jpeg"})
-
-                post_id = post.get("post_id", "")
-
-                content = None
-                if article_store:
-                    content = await article_store.get("afdian", post_id)
-
-                if content is None:
-                    content = await self._get_post_detail(scraper, post_id)
-                    logger.info(f"文章详情下载成功: {post.get('title', post_id)}")
-                    if article_store and content:
-                        await article_store.save("afdian", post_id, content)
-
-                items.append(FeedItem(
-                    title=post.get("title", "无标题"),
-                    link=f"{HOST_URL}/p/{post_id}",
-                    content=content or "",
-                    pub_date=pub_date,
-                    author=post.get("user", {}).get("name"),
-                    guid=post_id,
-                    enclosures=enclosures,
-                ))
+                content = await self._fetch_one_content(scraper, article_store, post)
+                items.append(self._make_feed_item(post, content))
 
         logger.info(f"抓取完成 {author_slug}: {len(items)} 条文章")
         return items
