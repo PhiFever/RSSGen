@@ -3,16 +3,24 @@
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
 
 from curl_cffi.requests import AsyncSession
 from loguru import logger
 from py_mini_racer import MiniRacer
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
+from RSSGen.core.utils import parse_cookie_string
 
-# 签名 JS 文件路径
 SIGN_JS_PATH = Path(__file__).parent.parent / "sign" / "zhihu" / "zhihu_sign.js"
+
+# 签名版本常量
+X_ZSE_93_VERSION = "101_3_3.0"
+X_ZSE_96_PREFIX = "2.0_"
+
+# 动态类型常量
+TYPE_ANSWER = "answer"
+TYPE_ARTICLE = "article"
+TYPE_PIN = "pin"
 
 
 class ZhihuSigner:
@@ -32,12 +40,12 @@ class ZhihuSigner:
             "tv",
             url,
             "",
-            {"zse93": "101_3_3.0", "dc0": d_c0, "xZst81": None},
+            {"zse93": X_ZSE_93_VERSION, "dc0": d_c0, "xZst81": None},
             ""
         )
         return {
-            "x_zse_93": "101_3_3.0",
-            "x_zse_96": "2.0_" + result["signature"]
+            "x_zse_93": X_ZSE_93_VERSION,
+            "x_zse_96": X_ZSE_96_PREFIX + result["signature"]
         }
 
 
@@ -65,16 +73,15 @@ class ZhihuRoute(Route):
         target_type = target.get("type", "unknown")
         created_time = target.get("created_time", 0)
 
-        # 标题和链接根据类型处理
-        if target_type == "answer":
+        if target_type == TYPE_ANSWER:
             question = target.get("question", {})
             title = question.get("title", "")
             question_id = question.get("id", "")
             link = f"https://www.zhihu.com/question/{question_id}/answer/{target_id}"
-        elif target_type == "article":
+        elif target_type == TYPE_ARTICLE:
             title = target.get("title", "")
             link = f"https://zhuanlan.zhihu.com/p/{target_id}"
-        elif target_type == "pin":
+        elif target_type == TYPE_PIN:
             excerpt = target.get("excerpt", "")
             title = excerpt[:50] if excerpt else "想法"
             link = f"https://www.zhihu.com/pin/{target_id}"
@@ -126,13 +133,7 @@ class ZhihuRoute(Route):
             "referer": f"https://www.zhihu.com/people/{user_id}",
         }
 
-        cookies = {}
-        cookie_str = self.config.get("cookie", "")
-        for item in cookie_str.split(";"):
-            item = item.strip()
-            if "=" in item:
-                k, v = item.split("=", 1)
-                cookies[k.strip()] = v.strip()
+        cookies = parse_cookie_string(self.config.get("cookie", ""))
 
         async with AsyncSession() as session:
             resp = await session.get(url_with_params, headers=headers, cookies=cookies)

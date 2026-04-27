@@ -8,6 +8,7 @@ from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
 from RSSGen.core.scraper import Scraper
+from RSSGen.core.utils import parse_cookie_string
 
 HOST = "afdian.com"
 HOST_URL = "https://afdian.com"
@@ -30,14 +31,7 @@ class AfdianRoute(Route):
     description = "爱发电创作者动态订阅"
 
     def _get_scraper(self) -> Scraper:
-        cookie_str = self.config.get("cookie", "")
-        cookies = {}
-        if cookie_str:
-            for pair in cookie_str.split(";"):
-                pair = pair.strip()
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    cookies[k.strip()] = v.strip()
+        cookies = parse_cookie_string(self.config.get("cookie", ""))
         return Scraper(
             {
                 "cookies": cookies,
