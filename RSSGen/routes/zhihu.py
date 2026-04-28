@@ -30,7 +30,7 @@ class ZhihuSigner:
 
     def __init__(self):
         if ZhihuSigner._ctx is None:
-            js_code = SIGN_JS_PATH.read_text()
+            js_code = SIGN_JS_PATH.read_text(encoding="utf-8")
             ZhihuSigner._ctx = MiniRacer()
             ZhihuSigner._ctx.eval(js_code)
 
@@ -67,6 +67,29 @@ class ZhihuRoute(Route):
             description=f"知乎用户 {user_id} 的最新动态",
         )
 
+    @staticmethod
+    def _render_pin_content(blocks: list) -> str:
+        """将 PIN 类型的 content blocks (list of dict) 渲染为 HTML"""
+        parts = []
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            text = block.get("content")
+            if text:
+                parts.append(text)
+                continue
+            block_type = block.get("type", "")
+            if block_type == "image":
+                url = block.get("original_url") or block.get("url", "")
+                if url:
+                    parts.append(f'<img src="{url}" />')
+            elif block_type == "link_card":
+                url = block.get("url", "")
+                title = block.get("data_draft_title") or url
+                if url:
+                    parts.append(f'<a href="{url}">{title}</a>')
+        return "<br/>".join(parts)
+
     def _make_feed_item(self, target: dict) -> FeedItem:
         """根据 target dict 构造 FeedItem"""
         target_id = target.get("id", "")
@@ -95,7 +118,11 @@ class ZhihuRoute(Route):
             else None
         )
 
-        content = target.get("content", "") or target.get("excerpt", "")
+        raw_content = target.get("content")
+        if isinstance(raw_content, list):
+            content = self._render_pin_content(raw_content)
+        else:
+            content = raw_content or target.get("excerpt", "")
         author = target.get("author", {}).get("name", "")
 
         return FeedItem(
