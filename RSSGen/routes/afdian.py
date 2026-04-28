@@ -8,6 +8,7 @@ from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
 from RSSGen.core.scraper import Scraper
+from RSSGen.core.utils import lookup_alias, parse_cookie_string
 
 HOST = "afdian.com"
 HOST_URL = "https://afdian.com"
@@ -30,14 +31,7 @@ class AfdianRoute(Route):
     description = "爱发电创作者动态订阅"
 
     def _get_scraper(self) -> Scraper:
-        cookie_str = self.config.get("cookie", "")
-        cookies = {}
-        if cookie_str:
-            for pair in cookie_str.split(";"):
-                pair = pair.strip()
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    cookies[k.strip()] = v.strip()
+        cookies = parse_cookie_string(self.config.get("cookie", ""))
         return Scraper(
             {
                 "cookies": cookies,
@@ -150,10 +144,11 @@ class AfdianRoute(Route):
         if not path_params:
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
         author_slug = path_params[0]
+        display_name = lookup_alias(self.config.get("feeds"), "slug", author_slug) or author_slug
         return FeedInfo(
-            title=f"爱发电 - {author_slug}",
+            title=f"爱发电 - {display_name}",
             link=f"{HOST_URL}/a/{author_slug}",
-            description=f"爱发电创作者 {author_slug} 的最新动态",
+            description=f"爱发电创作者 {display_name} 的最新动态",
         )
 
     async def _fetch_one_content(
