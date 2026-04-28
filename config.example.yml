@@ -37,6 +37,7 @@ routes:
     feed_ttl: 21600             # Feed 级缓存 TTL，默认 6 小时（秒）
     feeds:                      # 预热列表（可选，不配置则无预热）
       - slug: "author1"
+        alias: "作者别名"          # 可选，用于易读的 feed title
         limit: 20              # 获取最新 20 篇
       - slug: "author2"
         limit: 0               # 0 = 获取全部文章

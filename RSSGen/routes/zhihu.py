@@ -9,7 +9,7 @@ from loguru import logger
 from py_mini_racer import MiniRacer
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
-from RSSGen.core.utils import parse_cookie_string
+from RSSGen.core.utils import lookup_alias, parse_cookie_string
 
 SIGN_JS_PATH = Path(__file__).parent.parent / "sign" / "zhihu" / "zhihu_sign.js"
 
@@ -61,10 +61,11 @@ class ZhihuRoute(Route):
             raise ValueError("需要指定用户 ID，如 /feed/zhihu/{user_id}")
 
         user_id = path_params[0]
+        display_name = lookup_alias(self.config.get("feeds"), "user_id", user_id) or user_id
         return FeedInfo(
-            title=f"知乎动态 - {user_id}",
+            title=f"知乎动态 - {display_name}",
             link=f"https://www.zhihu.com/people/{user_id}",
-            description=f"知乎用户 {user_id} 的最新动态",
+            description=f"知乎用户 {display_name} 的最新动态",
         )
 
     @staticmethod
