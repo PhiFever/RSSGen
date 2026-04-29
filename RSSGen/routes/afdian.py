@@ -144,7 +144,7 @@ class AfdianRoute(Route):
         if not path_params:
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
         author_slug = path_params[0]
-        display_name = lookup_alias(self.config.get("feeds"), "slug", author_slug) or author_slug
+        display_name = lookup_alias(self.config.get("feeds"), "user_id", author_slug) or author_slug
         return FeedInfo(
             title=f"爱发电 - {display_name}",
             link=f"{HOST_URL}/a/{author_slug}",

@@ -114,3 +114,28 @@ class TestDegradation:
         await s.init()
         await s.close()
         await s.save("afdian", "post1", "content")  # 不应抛
+
+
+class TestHasArticles:
+    @pytest.mark.asyncio
+    async def test_empty_store_returns_false(self, store):
+        """空数据库返回 False"""
+        assert await store.has_articles("afdian") is False
+
+    @pytest.mark.asyncio
+    async def test_with_data_returns_true(self, store):
+        """有数据时返回 True"""
+        await store.save("afdian", "post1", "<p>content</p>")
+        assert await store.has_articles("afdian") is True
+
+    @pytest.mark.asyncio
+    async def test_route_isolation(self, store):
+        """只检查指定路由，不被其他路由的数据影响"""
+        await store.save("afdian", "post1", "<p>content</p>")
+        assert await store.has_articles("zhihu") is False
+
+    @pytest.mark.asyncio
+    async def test_uninitialized_returns_false(self, tmp_path):
+        """未 init 返回 False（降级）"""
+        s = SqliteArticleStore(tmp_path / "x.db")
+        assert await s.has_articles("afdian") is False
