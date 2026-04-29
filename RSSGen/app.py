@@ -37,16 +37,16 @@ async def startup():
     discover_routes()
     logger.info(f"已加载路由: {list(get_registry().keys())}")
 
-    afdian_config = config.get("routes", {}).get("afdian", {})
-    feed_cache = Cache(ttl=afdian_config.get("feed_ttl", 21600))
-    # 保留：通用内存型 KV，不再接入 afdian，留给将来其他路由 / 测试使用
-    article_cache = Cache(ttl=afdian_config.get("article_ttl", 43200))
+    cache_config = config.get("cache", {})
+    feed_cache = Cache(ttl=cache_config.get("feed_ttl", 21600))
+    article_cache = Cache(ttl=cache_config.get("article_ttl", 43200))
 
     sqlite_path = config.get("storage", {}).get("sqlite_path", "./data/rssgen.db")
     article_store = SqliteArticleStore(sqlite_path)
     await article_store.init()
 
-    if afdian_config.get("enabled", False):
+    routes_config = config.get("routes", {})
+    if any(r.get("enabled", False) for r in routes_config.values()):
         refresher = BackgroundRefresher(feed_cache, article_store, config)
         await refresher.start()
 
