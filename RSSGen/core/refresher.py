@@ -1,4 +1,4 @@
-"""后台调度器：负责预热和定期刷新feed缓存"""
+"""后台调度器：路由无关的预热与定期刷新"""
 
 import asyncio
 from datetime import datetime, timezone
@@ -21,7 +21,7 @@ class BackgroundRefresher:
         self.feed_cache = feed_cache
         self.article_store = article_store
         self.config = config
-        self._task: asyncio.Task | None = None
+        self._tasks: dict[str, asyncio.Task] = {}
         self._pending: set[str] = set()
         self._error_status: dict[str, dict] = {}
 
@@ -33,21 +33,37 @@ class BackgroundRefresher:
         self.retry_base_delay = refresher_config.get(
             "retry_base_delay", DEFAULT_RETRY_BASE_DELAY
         )
+        self.preinit_url = refresher_config.get("preinit_url", "https://cn.bing.com/")
 
     async def start(self):
-        if self._task is None:
-            self._task = asyncio.create_task(self._run_loop())
-            logger.info("BackgroundRefresher 已启动")
+        if self._tasks:
+            return
+
+        await self._preinit_curl_cffi()
+
+        routes_config = self.config.get("routes", {})
+        for route_name, route_conf in routes_config.items():
+            if not route_conf.get("enabled", False):
+                continue
+            if not route_conf.get("feeds"):
+                logger.info(f"路由 {route_name} 未配置 feeds，跳过调度")
+                continue
+            self._tasks[route_name] = asyncio.create_task(
+                self._run_route_loop(route_name)
+            )
+            logger.info(f"路由 {route_name} 调度任务已创建")
+
+        logger.info(f"BackgroundRefresher 已启动，共 {len(self._tasks)} 个路由任务")
 
     async def stop(self):
-        if self._task:
-            self._task.cancel()
+        for name, task in self._tasks.items():
+            task.cancel()
             try:
-                await self._task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
-            logger.info("BackgroundRefresher 已停止")
+        self._tasks.clear()
+        logger.info("BackgroundRefresher 已停止")
 
     async def trigger(
         self, route_name: str, path_params: list[str], query_params: dict | None = None
@@ -57,41 +73,56 @@ class BackgroundRefresher:
             return
 
         fetch_kwargs = dict(query_params or {})
-        # query_params 未显式指定时，从 feeds 配置中按 slug 补齐参数（如 limit），
-        # 保证动态触发与定时刷新行为一致
         if path_params:
             feed_conf = self._find_feed_config(route_name, path_params[0])
             if feed_conf:
+                route_cls = get_registry().get(route_name)
+                feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
                 for key, value in feed_conf.items():
-                    if key != "slug" and key not in fetch_kwargs:
+                    if key != feed_id_field and key != "alias" and key not in fetch_kwargs:
                         fetch_kwargs[key] = value
 
         asyncio.create_task(
             self._refresh_one(route_name, path_params, fetch_kwargs=fetch_kwargs)
         )
 
-    def _find_feed_config(self, route_name: str, slug: str) -> dict | None:
+    def _find_feed_config(self, route_name: str, feed_id: str) -> dict | None:
         feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
+        route_cls = get_registry().get(route_name)
+        feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
         for fc in feeds:
-            if fc.get("slug") == slug:
+            if fc.get(feed_id_field) == feed_id:
                 return fc
         return None
 
     def get_status(self) -> dict:
-        return self._error_status.copy()
+        """返回按路由分组的状态"""
+        grouped: dict[str, dict] = {}
+        for cache_key, status in self._error_status.items():
+            parts = cache_key.split("/", 1)
+            if len(parts) == 2:
+                route_name, feed_id = parts
+            else:
+                route_name = cache_key
+                feed_id = ""
+            grouped.setdefault(route_name, {})[feed_id] = status
+        return grouped
 
     @staticmethod
     def build_cache_key(route_name: str, path_params: list[str]) -> str:
         return f"{route_name}/{'/'.join(path_params)}"
 
     async def _preinit_curl_cffi(self):
-        """对目标站点发起一次无害请求，强制底层 libcurl 在 uvicorn/uvloop 启动阶段正确加载"""
+        """对目标站点发起一次无害请求，强制底层 libcurl 正确加载"""
+        if not self.preinit_url:
+            logger.info("preinit_url 为空，跳过 HTTP 客户端预初始化")
+            return
         try:
             async with AsyncSession(
                 impersonate="chrome131",
                 curl_options={CurlOpt.FRESH_CONNECT: True},
             ) as session:
-                resp = await session.get("https://cn.bing.com/", timeout=10)
+                resp = await session.get(self.preinit_url, timeout=10)
                 if resp.status_code == 200:
                     logger.info("HTTP 客户端预初始化成功")
                 else:
@@ -99,47 +130,65 @@ class BackgroundRefresher:
         except Exception as e:
             logger.warning(f"HTTP 客户端预初始化失败: {e}，将继续尝试正常请求")
 
-    async def _run_loop(self):
+    async def _run_route_loop(self, route_name: str):
+        """单路由生命周期：startup_delay → 预热判定 → 周期刷新循环"""
         try:
-            logger.info(f"等待 {self.startup_delay} 秒确保网络就绪...")
+            logger.info(f"[{route_name}] 等待 {self.startup_delay} 秒确保网络就绪...")
             await asyncio.sleep(self.startup_delay)
 
-            logger.info("预初始化 HTTP 客户端...")
-            await self._preinit_curl_cffi()
+            # ── 预热阶段 ──
+            route_conf = self.config.get("routes", {}).get(route_name, {})
+            preheat = route_conf.get("preheat_on_startup", False)
 
-            await self._refresh_feeds("预热")
+            if preheat:
+                has_data = await self.article_store.has_articles(route_name)
+                if has_data:
+                    logger.info(f"[{route_name}] 路由已有数据，跳过预热")
+                else:
+                    logger.info(f"[{route_name}] 开始预热")
+                    await self._refresh_feeds("预热", route_name)
+            else:
+                logger.info(f"[{route_name}] 预热已关闭（preheat_on_startup=false）")
 
-            refresh_interval = (
-                self.config.get("routes", {})
-                .get("afdian", {})
-                .get("refresh_interval", 14400)
-            )
+            # ── 周期刷新阶段 ──
+            refresh_interval = route_conf.get("refresh_interval")
+            if not refresh_interval:
+                logger.info(f"[{route_name}] 未配置 refresh_interval，定时刷新已关闭")
+                return
 
             while True:
                 await asyncio.sleep(refresh_interval)
                 try:
-                    await self._refresh_feeds("定时刷新")
+                    await self._refresh_feeds("定时刷新", route_name)
                 except Exception:
-                    logger.exception("定时刷新异常，将在下一轮重试")
+                    logger.exception(f"[{route_name}] 定时刷新异常，将在下一轮重试")
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("BackgroundRefresher 主循环异常退出")
+            logger.exception(f"[{route_name}] 路由调度任务异常退出")
 
-    async def _refresh_feeds(self, label: str):
-        feeds = self.config.get("routes", {}).get("afdian", {}).get("feeds", [])
+    async def _refresh_feeds(self, label: str, route_name: str):
+        feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
         if not feeds:
-            logger.info(f"未配置 feed 列表，跳过{label}")
+            logger.info(f"[{route_name}] 未配置 feed 列表，跳过{label}")
             return
 
-        logger.info(f"开始{label} {len(feeds)} 个 feed")
+        route_cls = get_registry().get(route_name)
+        feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+
+        logger.info(f"[{route_name}] 开始{label} {len(feeds)} 个 feed")
         for feed_conf in feeds:
-            slug = feed_conf.get("slug")
-            if slug:
-                await self._refresh_one(
-                    "afdian", [slug], fetch_kwargs={"limit": feed_conf.get("limit", 20)}
-                )
-        logger.info(f"{label}完成")
+            feed_id = feed_conf.get(feed_id_field)
+            if not feed_id:
+                logger.warning(f"[{route_name}] feed 配置缺少 {feed_id_field} 字段，跳过: {feed_conf}")
+                continue
+            # 构造 fetch_kwargs：透传 feed_conf 中除 feed_id_field 和 alias 之外的字段
+            fetch_kwargs = {}
+            for key, value in feed_conf.items():
+                if key != feed_id_field and key != "alias":
+                    fetch_kwargs[key] = value
+            await self._refresh_one(route_name, [feed_id], fetch_kwargs=fetch_kwargs)
+        logger.info(f"[{route_name}] {label}完成")
 
     async def _refresh_one(
         self, route_name: str, path_params: list[str], fetch_kwargs: dict | None = None
