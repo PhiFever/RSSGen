@@ -76,8 +76,7 @@ class BackgroundRefresher:
         if path_params:
             feed_conf = self._find_feed_config(route_name, path_params[0])
             if feed_conf:
-                route_cls = get_registry().get(route_name)
-                feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+                feed_id_field = self._get_feed_id_field(route_name)
                 for key, value in feed_conf.items():
                     if key != feed_id_field and key != "alias" and key not in fetch_kwargs:
                         fetch_kwargs[key] = value
@@ -86,10 +85,13 @@ class BackgroundRefresher:
             self._refresh_one(route_name, path_params, fetch_kwargs=fetch_kwargs)
         )
 
+    def _get_feed_id_field(self, route_name: str) -> str:
+        route_cls = get_registry().get(route_name)
+        return getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+
     def _find_feed_config(self, route_name: str, feed_id: str) -> dict | None:
         feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
-        route_cls = get_registry().get(route_name)
-        feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+        feed_id_field = self._get_feed_id_field(route_name)
         for fc in feeds:
             if fc.get(feed_id_field) == feed_id:
                 return fc
@@ -173,8 +175,7 @@ class BackgroundRefresher:
             logger.info(f"[{route_name}] 未配置 feed 列表，跳过{label}")
             return
 
-        route_cls = get_registry().get(route_name)
-        feed_id_field = getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+        feed_id_field = self._get_feed_id_field(route_name)
 
         logger.info(f"[{route_name}] 开始{label} {len(feeds)} 个 feed")
         for feed_conf in feeds:
