@@ -87,3 +87,19 @@ class SqliteArticleStore:
                 await self._conn.commit()
         except Exception as e:
             logger.warning(f"ArticleStore.save 失败 ({route}/{item_id}): {e}")
+
+    async def has_articles(self, route: str) -> bool:
+        """检查指定路由是否已有文章数据（路由粒度）"""
+        if self._conn is None:
+            return False
+        try:
+            async with self._lock:
+                async with self._conn.execute(
+                    "SELECT 1 FROM articles WHERE route = ? LIMIT 1",
+                    (route,),
+                ) as cursor:
+                    row = await cursor.fetchone()
+            return row is not None
+        except Exception as e:
+            logger.warning(f"ArticleStore.has_articles 失败 ({route}): {e}")
+            return False
