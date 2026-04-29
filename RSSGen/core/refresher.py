@@ -91,7 +91,7 @@ class BackgroundRefresher:
                 impersonate="chrome131",
                 curl_options={CurlOpt.FRESH_CONNECT: True},
             ) as session:
-                resp = await session.get("https://afdian.com/", timeout=10)
+                resp = await session.get("https://cn.bing.com/", timeout=10)
                 if resp.status_code == 200:
                     logger.info("HTTP 客户端预初始化成功")
                 else:
