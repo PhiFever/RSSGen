@@ -27,6 +27,7 @@ class Route:
 
     name: str = ""
     description: str = ""
+    feed_id_field: str = "user_id"  # feeds 配置中用于标识 feed 的字段名
 
     def __init__(self, config: dict):
         self.config = config
