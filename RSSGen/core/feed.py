@@ -44,6 +44,8 @@ def generate_feed(info: FeedInfo, items: list[FeedItem], format: str = "atom") -
             fe.content(item.content, type="html")
         if item.author:
             fe.author(name=item.author)
+        for cat in item.categories:
+            fe.category(term=cat)
         for enc in item.enclosures:
             if enc.get("url"):
                 fe.enclosure(
