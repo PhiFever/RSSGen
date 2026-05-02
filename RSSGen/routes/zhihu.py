@@ -10,10 +10,46 @@ from RSSGen.core.route import FeedInfo, FeedItem, Route
 from RSSGen.core.utils import lookup_alias, parse_cookie_string
 from RSSGen.sign.zhihu.sign import get_signature
 
-# 动态类型常量
-TYPE_ANSWER = "answer"
-TYPE_ARTICLE = "article"
-TYPE_PIN = "pin"
+# 动态 category 常量（按 verb + target.type 派生，比 target.type 更细分）
+TYPE_ANSWER = "answer"  # 自己回答问题
+TYPE_ARTICLE = "article"  # 自己创作文章
+TYPE_PIN = "pin"  # 自己发布想法
+TYPE_COLLECTED_ANSWER = "collected_answer"
+TYPE_COLLECTED_ARTICLE = "collected_article"
+TYPE_COLLECTED_PIN = "collected_pin"
+TYPE_VOTEUP_ANSWER = "voteup_answer"
+TYPE_VOTEUP_ARTICLE = "voteup_article"
+TYPE_FOLLOWED_QUESTION = "followed_question"
+
+# verb 直接映射 category
+_VERB_CATEGORY_MAP = {
+    "MEMBER_ANSWER_QUESTION": TYPE_ANSWER,
+    "MEMBER_CREATE_ARTICLE": TYPE_ARTICLE,
+    "MEMBER_CREATE_PIN": TYPE_PIN,
+    "MEMBER_COLLECT_ANSWER": TYPE_COLLECTED_ANSWER,
+    "MEMBER_COLLECT_ARTICLE": TYPE_COLLECTED_ARTICLE,
+    "MEMBER_COLLECT_PIN": TYPE_COLLECTED_PIN,
+    "MEMBER_VOTEUP_ANSWER": TYPE_VOTEUP_ANSWER,
+    "MEMBER_VOTEUP_ARTICLE": TYPE_VOTEUP_ARTICLE,
+    "MEMBER_FOLLOW_QUESTION": TYPE_FOLLOWED_QUESTION,
+}
+
+# verb 缺失或未知时按 target.type 兜底；关注问题时 verb 为空、target.type=question
+_TARGET_TYPE_FALLBACK = {
+    "answer": TYPE_ANSWER,
+    "article": TYPE_ARTICLE,
+    "pin": TYPE_PIN,
+    "question": TYPE_FOLLOWED_QUESTION,
+}
+
+
+def _derive_category(act: dict) -> str:
+    """从 activity 派生 category：先看 verb，再用 target.type 兜底"""
+    verb = act.get("verb", "")
+    if verb in _VERB_CATEGORY_MAP:
+        return _VERB_CATEGORY_MAP[verb]
+    target_type = act.get("target", {}).get("type", "unknown")
+    return _TARGET_TYPE_FALLBACK.get(target_type, target_type)
 
 
 class ZhihuRoute(Route):
@@ -60,28 +96,52 @@ class ZhihuRoute(Route):
                     parts.append(f'<a href="{url}">{title}</a>')
         return "<br/>".join(parts)
 
-    def _make_feed_item(self, target: dict) -> FeedItem:
-        """根据 target dict 构造 FeedItem"""
+    def _make_feed_item(self, act: dict) -> FeedItem:
+        """根据 activity dict 构造 FeedItem"""
+        target = act.get("target", {})
         target_id = target.get("id", "")
         target_type = target.get("type", "unknown")
-        created_time = target.get("created_time") or target.get("created", 0)
+        category = _derive_category(act)
 
-        if target_type == TYPE_ANSWER:
+        # 按 target.type（数据结构）选择字段，与 category（动作语义）解耦
+        if target_type == "answer":
             question = target.get("question", {})
             title = question.get("title", "")
             question_id = question.get("id", "")
             link = f"https://www.zhihu.com/question/{question_id}/answer/{target_id}"
-        elif target_type == TYPE_ARTICLE:
+        elif target_type == "article":
             title = target.get("title", "")
             link = f"https://zhuanlan.zhihu.com/p/{target_id}"
-        elif target_type == TYPE_PIN:
+        elif target_type == "pin":
             excerpt = target.get("excerpt_title") or target.get("excerpt") or ""
             title = re.sub(r"<[^>]+>", "", excerpt)[:50] if excerpt else "想法"
             link = f"https://www.zhihu.com/pin/{target_id}"
+        elif target_type == "question":
+            title = target.get("title", "")
+            link = f"https://www.zhihu.com/question/{target_id}"
         else:
             title = target.get("title", target.get("excerpt", "未知内容")[:50])
             link = f"https://www.zhihu.com/{target_type}/{target_id}"
 
+        # 非"自己创作"的活动加 action 前缀，避免 RSS 阅读器中混淆
+        if category not in (TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN):
+            action_text = act.get("action_text", "")
+            if action_text:
+                title = f"[{action_text}] {title}"
+
+        # guid：自己创作沿用 target_id（兼容旧订阅去重）；其他 case 加 category 前缀
+        guid = (
+            target_id
+            if category in (TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN)
+            else f"{category}_{target_id}"
+        )
+
+        # pub_date 优先用 act.created_time（动作发生时间），否则回退到 target 时间
+        created_time = (
+            act.get("created_time")
+            or target.get("created_time")
+            or target.get("created", 0)
+        )
         pub_date = (
             datetime.fromtimestamp(created_time, tz=timezone.utc)
             if created_time
@@ -92,7 +152,7 @@ class ZhihuRoute(Route):
         if isinstance(raw_content, list):
             content = self._render_pin_content(raw_content)
         else:
-            content = raw_content or target.get("excerpt", "")
+            content = raw_content or target.get("detail") or target.get("excerpt", "")
         author = target.get("author", {}).get("name", "")
 
         return FeedItem(
@@ -101,8 +161,8 @@ class ZhihuRoute(Route):
             content=content,
             pub_date=pub_date,
             author=author,
-            guid=target_id,
-            categories=[target_type],
+            guid=guid,
+            categories=[category],
         )
 
     def _get_feed_include(self, user_id: str) -> list[str] | None:
@@ -176,13 +236,12 @@ class ZhihuRoute(Route):
 
         items = []
         for act in activities:
-            target = act.get("target", {})
-            if not target:
+            if not act.get("target"):
                 continue
-            target_type = target.get("type", "unknown")
-            if include and target_type not in include:
+            category = _derive_category(act)
+            if include and category not in include:
                 continue
-            items.append(self._make_feed_item(target))
+            items.append(self._make_feed_item(act))
 
         logger.info(f"抓取完成 {user_id}: 累计 {len(activities)} 条动态，过滤后 {len(items)} 条")
         return items

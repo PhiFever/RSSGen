@@ -60,7 +60,17 @@ routes:
       - user_id: "your_user_id"   # 用户主页 URL token
         alias: "用户别名"           # 别名，用于易读的 feed title
         limit: 20                  # 获取最新 20 篇
-        # include:                 # 可选：只返回指定活动类型，不配置则返回全部
-        #   - answer               # 回答
-        #   - article              # 专栏文章
-        #   - pin                  # 想法
+        # include:                       # 可选：只返回指定活动类型，不配置则返回全部
+        #   # === 自己创作 ===
+        #   - answer                     # 回答了问题
+        #   - article                    # 创作了文章
+        #   - pin                        # 发布了想法
+        #   # === 收藏 ===
+        #   - collected_answer           # 收藏了回答
+        #   - collected_article          # 收藏了文章
+        #   - collected_pin              # 收藏了想法
+        #   # === 点赞 ===
+        #   - voteup_answer              # 赞同了回答
+        #   - voteup_article             # 赞同了文章
+        #   # === 关注 ===
+        #   - followed_question          # 关注了问题

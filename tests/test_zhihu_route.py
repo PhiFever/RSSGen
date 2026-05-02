@@ -4,8 +4,22 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from RSSGen.routes.zhihu import ZhihuRoute, TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN
+from RSSGen.routes.zhihu import (
+    ZhihuRoute,
+    TYPE_ANSWER,
+    TYPE_ARTICLE,
+    TYPE_PIN,
+    TYPE_COLLECTED_ANSWER,
+    TYPE_COLLECTED_ARTICLE,
+    TYPE_VOTEUP_ANSWER,
+    TYPE_FOLLOWED_QUESTION,
+)
 from RSSGen.sign.zhihu.sign import X_ZSE_93_VERSION, X_ZSE_96_PREFIX, get_signature
+
+
+def _act(target, verb="", action_text=""):
+    """把 target 包装成 activity dict，便于复用旧 fixture 数据"""
+    return {"target": target, "verb": verb, "action_text": action_text}
 
 
 @pytest.fixture
@@ -37,14 +51,14 @@ class TestZhihuRouteMakeFeedItem:
     def test_answer_type_extracts_question_title(self, route):
         target = {
             "id": "123",
-            "type": TYPE_ANSWER,
+            "type": "answer",
             "content": "<p>回答内容</p>",
             "created_time": 1700000000,
             "author": {"name": "作者"},
             "question": {"id": "456", "title": "问题标题"},
         }
 
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION"))
 
         assert item.title == "问题标题"
         assert item.link == "https://www.zhihu.com/question/456/answer/123"
@@ -54,14 +68,14 @@ class TestZhihuRouteMakeFeedItem:
     def test_article_type_extracts_target_title(self, route):
         target = {
             "id": "789",
-            "type": TYPE_ARTICLE,
+            "type": "article",
             "title": "文章标题",
             "content": "<p>文章内容</p>",
             "created_time": 1700000000,
             "author": {"name": "作者"},
         }
 
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_ARTICLE"))
 
         assert item.title == "文章标题"
         assert item.link == "https://zhuanlan.zhihu.com/p/789"
@@ -69,13 +83,13 @@ class TestZhihuRouteMakeFeedItem:
     def test_pin_type_uses_excerpt_as_title(self, route):
         target = {
             "id": "111",
-            "type": TYPE_PIN,
+            "type": "pin",
             "excerpt": "这是一条想法的摘要内容",
             "created_time": 1700000000,
             "author": {"name": "作者"},
         }
 
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN"))
 
         assert "摘要内容" in item.title
         assert item.link == "https://www.zhihu.com/pin/111"
@@ -84,62 +98,125 @@ class TestZhihuRouteMakeFeedItem:
         """excerpt 为 None 时回退到 excerpt_title"""
         target = {
             "id": "222",
-            "type": TYPE_PIN,
+            "type": "pin",
             "excerpt": None,
             "excerpt_title": "5.2早安<br>大家好",
             "created": 1700000000,
             "author": {"name": "作者"},
         }
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN"))
         assert "5.2早安" in item.title
         assert "<br>" not in item.title
 
-    def test_answer_type_sets_categories(self, route):
+    def test_answer_verb_sets_answer_category(self, route):
         target = {
             "id": "123",
-            "type": TYPE_ANSWER,
+            "type": "answer",
             "content": "<p>内容</p>",
             "created_time": 1700000000,
             "author": {"name": "作者"},
             "question": {"id": "456", "title": "问题标题"},
         }
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION"))
         assert item.categories == [TYPE_ANSWER]
+        # 自己创作 → guid 沿用 target_id，title 不加前缀
+        assert item.guid == "123"
+        assert not item.title.startswith("[")
 
-    def test_article_type_sets_categories(self, route):
+    def test_collect_verb_sets_collected_answer_category(self, route):
+        """收藏回答 → category=collected_answer，title 加动作前缀，guid 加 category 前缀"""
+        target = {
+            "id": "123",
+            "type": "answer",
+            "content": "<p>内容</p>",
+            "created_time": 1600000000,
+            "author": {"name": "原作者"},
+            "question": {"id": "456", "title": "问题标题"},
+        }
+        item = route._make_feed_item(
+            {
+                "target": target,
+                "verb": "MEMBER_COLLECT_ANSWER",
+                "action_text": "收藏了回答",
+                "created_time": 1700000000,
+            }
+        )
+        assert item.categories == [TYPE_COLLECTED_ANSWER]
+        assert item.title == "[收藏了回答] 问题标题"
+        assert item.guid == "collected_answer_123"
+        # pub_date 用 act.created_time（收藏时刻），不是 target.created_time
+        assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+
+    def test_collect_article_verb(self, route):
         target = {
             "id": "789",
-            "type": TYPE_ARTICLE,
+            "type": "article",
             "title": "文章标题",
             "content": "<p>内容</p>",
             "created_time": 1700000000,
             "author": {"name": "作者"},
         }
-        item = route._make_feed_item(target)
-        assert item.categories == [TYPE_ARTICLE]
+        item = route._make_feed_item(
+            _act(target, "MEMBER_COLLECT_ARTICLE", "收藏了文章")
+        )
+        assert item.categories == [TYPE_COLLECTED_ARTICLE]
+        assert item.title == "[收藏了文章] 文章标题"
 
-    def test_pin_type_sets_categories(self, route):
+    def test_voteup_answer_verb(self, route):
+        """点赞回答 → category=voteup_answer"""
         target = {
-            "id": "111",
-            "type": TYPE_PIN,
-            "excerpt": "想法摘要",
+            "id": "888",
+            "type": "answer",
+            "content": "<p>内容</p>",
             "created_time": 1700000000,
             "author": {"name": "作者"},
+            "question": {"id": "999", "title": "被赞同的问题"},
         }
-        item = route._make_feed_item(target)
-        assert item.categories == [TYPE_PIN]
+        item = route._make_feed_item(
+            _act(target, "MEMBER_VOTEUP_ANSWER", "赞同了回答")
+        )
+        assert item.categories == [TYPE_VOTEUP_ANSWER]
+        assert item.title == "[赞同了回答] 被赞同的问题"
+        assert item.guid == "voteup_answer_888"
 
-    def test_pub_date_from_created_time(self, route):
+    def test_followed_question_via_empty_verb(self, route):
+        """关注问题 verb 为空、target.type=question → category=followed_question"""
+        target = {
+            "id": "2033612101923464726",
+            "type": "question",
+            "title": "张雪回应 820 赛道熄火",
+            "detail": "<p>问题描述</p>",
+            "excerpt": "问题摘要",
+            "created": 1777630907,
+            "author": {"name": "提问者"},
+        }
+        item = route._make_feed_item(
+            {
+                "target": target,
+                "verb": "",
+                "action_text": "关注了问题",
+                "created_time": 1777708519,
+            }
+        )
+        assert item.categories == [TYPE_FOLLOWED_QUESTION]
+        assert item.title == "[关注了问题] 张雪回应 820 赛道熄火"
+        assert item.link == "https://www.zhihu.com/question/2033612101923464726"
+        assert item.guid == "followed_question_2033612101923464726"
+        # content 在没有 content 字段时回退到 detail
+        assert item.content == "<p>问题描述</p>"
+
+    def test_pub_date_from_target_created_time(self, route):
+        """没有 act.created_time 时回退到 target.created_time"""
         target = {
             "id": "123",
-            "type": TYPE_ANSWER,
+            "type": "answer",
             "created_time": 1700000000,
             "content": "",
             "author": {"name": "a"},
             "question": {"id": "1", "title": "t"},
         }
 
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION"))
 
         assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
 
@@ -147,13 +224,13 @@ class TestZhihuRouteMakeFeedItem:
         """pin 类型用 created 字段而非 created_time"""
         target = {
             "id": "111",
-            "type": TYPE_PIN,
+            "type": "pin",
             "excerpt": "想法",
             "created_time": None,
             "created": 1700000000,
             "author": {"name": "a"},
         }
-        item = route._make_feed_item(target)
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN"))
         assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
 
 
@@ -282,6 +359,98 @@ class TestZhihuRouteFetchFilter:
             items = await route.fetch(path_params=["test_user"])
 
         assert len(items) == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_include_excludes_collected_when_only_answer(self):
+        """include=[answer] 时，target.type=answer 但 verb=COLLECT 的活动被排除"""
+        route = ZhihuRoute({
+            "cookie": "d_c0=test",
+            "feeds": [{"user_id": "test_user", "include": ["answer"]}],
+        })
+
+        activities = [
+            {  # 自己回答 → category=answer，命中 include
+                "id": "act1",
+                "verb": "MEMBER_ANSWER_QUESTION",
+                "action_text": "回答了问题",
+                "target": {
+                    "id": "1",
+                    "type": "answer",
+                    "content": "<p>自己写的回答</p>",
+                    "created_time": 1700000000,
+                    "author": {"name": "用户"},
+                    "question": {"id": "10", "title": "问题A"},
+                },
+            },
+            {  # 收藏的回答 → category=collected_answer，被排除
+                "id": "act2",
+                "verb": "MEMBER_COLLECT_ANSWER",
+                "action_text": "收藏了回答",
+                "target": {
+                    "id": "2",
+                    "type": "answer",
+                    "content": "<p>别人的回答</p>",
+                    "created_time": 1700000100,
+                    "author": {"name": "他人"},
+                    "question": {"id": "20", "title": "问题B"},
+                },
+            },
+        ]
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
+        ):
+            items = await route.fetch(path_params=["test_user"])
+
+        assert len(items) == 1
+        assert items[0].title == "问题A"
+        assert items[0].categories == [TYPE_ANSWER]
+
+    @pytest.mark.asyncio
+    async def test_fetch_include_collected_answer(self):
+        """include=[collected_answer] 时只返回收藏的回答"""
+        route = ZhihuRoute({
+            "cookie": "d_c0=test",
+            "feeds": [{"user_id": "test_user", "include": ["collected_answer"]}],
+        })
+
+        activities = [
+            {
+                "id": "act1",
+                "verb": "MEMBER_ANSWER_QUESTION",
+                "action_text": "回答了问题",
+                "target": {
+                    "id": "1",
+                    "type": "answer",
+                    "content": "",
+                    "created_time": 1700000000,
+                    "author": {"name": "u"},
+                    "question": {"id": "10", "title": "Q1"},
+                },
+            },
+            {
+                "id": "act2",
+                "verb": "MEMBER_COLLECT_ANSWER",
+                "action_text": "收藏了回答",
+                "target": {
+                    "id": "2",
+                    "type": "answer",
+                    "content": "",
+                    "created_time": 1700000100,
+                    "author": {"name": "u2"},
+                    "question": {"id": "20", "title": "Q2"},
+                },
+            },
+        ]
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
+        ):
+            items = await route.fetch(path_params=["test_user"])
+
+        assert len(items) == 1
+        assert items[0].categories == [TYPE_COLLECTED_ANSWER]
+        assert items[0].title.startswith("[收藏了回答]")
 
     @pytest.mark.asyncio
     async def test_fetch_include_from_kwargs(self):
