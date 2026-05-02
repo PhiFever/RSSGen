@@ -102,6 +102,7 @@ class ZhihuRoute(Route):
             pub_date=pub_date,
             author=author,
             guid=target_id,
+            categories=[target_type],
         )
 
     def _get_d_c0(self) -> str:

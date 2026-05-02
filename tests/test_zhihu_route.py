@@ -80,6 +80,41 @@ class TestZhihuRouteMakeFeedItem:
         assert "摘要内容" in item.title
         assert item.link == "https://www.zhihu.com/pin/111"
 
+    def test_answer_type_sets_categories(self, route):
+        target = {
+            "id": "123",
+            "type": TYPE_ANSWER,
+            "content": "<p>内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+            "question": {"id": "456", "title": "问题标题"},
+        }
+        item = route._make_feed_item(target)
+        assert item.categories == [TYPE_ANSWER]
+
+    def test_article_type_sets_categories(self, route):
+        target = {
+            "id": "789",
+            "type": TYPE_ARTICLE,
+            "title": "文章标题",
+            "content": "<p>内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+        }
+        item = route._make_feed_item(target)
+        assert item.categories == [TYPE_ARTICLE]
+
+    def test_pin_type_sets_categories(self, route):
+        target = {
+            "id": "111",
+            "type": TYPE_PIN,
+            "excerpt": "想法摘要",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+        }
+        item = route._make_feed_item(target)
+        assert item.categories == [TYPE_PIN]
+
     def test_pub_date_from_created_time(self, route):
         target = {
             "id": "123",
