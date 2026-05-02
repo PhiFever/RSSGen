@@ -80,6 +80,20 @@ class TestZhihuRouteMakeFeedItem:
         assert "摘要内容" in item.title
         assert item.link == "https://www.zhihu.com/pin/111"
 
+    def test_pin_falls_back_to_excerpt_title(self, route):
+        """excerpt 为 None 时回退到 excerpt_title"""
+        target = {
+            "id": "222",
+            "type": TYPE_PIN,
+            "excerpt": None,
+            "excerpt_title": "5.2早安<br>大家好",
+            "created": 1700000000,
+            "author": {"name": "作者"},
+        }
+        item = route._make_feed_item(target)
+        assert "5.2早安" in item.title
+        assert "<br>" not in item.title
+
     def test_answer_type_sets_categories(self, route):
         target = {
             "id": "123",
@@ -127,6 +141,19 @@ class TestZhihuRouteMakeFeedItem:
 
         item = route._make_feed_item(target)
 
+        assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+
+    def test_pin_uses_created_field_for_pub_date(self, route):
+        """pin 类型用 created 字段而非 created_time"""
+        target = {
+            "id": "111",
+            "type": TYPE_PIN,
+            "excerpt": "想法",
+            "created_time": None,
+            "created": 1700000000,
+            "author": {"name": "a"},
+        }
+        item = route._make_feed_item(target)
         assert item.pub_date == datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
 
 

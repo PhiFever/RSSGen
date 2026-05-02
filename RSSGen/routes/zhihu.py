@@ -64,7 +64,7 @@ class ZhihuRoute(Route):
         """根据 target dict 构造 FeedItem"""
         target_id = target.get("id", "")
         target_type = target.get("type", "unknown")
-        created_time = target.get("created_time", 0)
+        created_time = target.get("created_time") or target.get("created", 0)
 
         if target_type == TYPE_ANSWER:
             question = target.get("question", {})
@@ -75,8 +75,8 @@ class ZhihuRoute(Route):
             title = target.get("title", "")
             link = f"https://zhuanlan.zhihu.com/p/{target_id}"
         elif target_type == TYPE_PIN:
-            excerpt = target.get("excerpt", "")
-            title = excerpt[:50] if excerpt else "想法"
+            excerpt = target.get("excerpt_title") or target.get("excerpt") or ""
+            title = re.sub(r"<[^>]+>", "", excerpt)[:50] if excerpt else "想法"
             link = f"https://www.zhihu.com/pin/{target_id}"
         else:
             title = target.get("title", target.get("excerpt", "未知内容")[:50])
