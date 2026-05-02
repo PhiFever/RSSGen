@@ -3,11 +3,10 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "requests>=2.33.1",
-#     "mini-racer==0.14.1",
 # ]
 # ///
 """
-知乎 x-zse-96 签名生成 Demo
+知乎 x-zse-96 签名生成 Demo (纯 Python 实现)
 
 使用方法:
 uv run demo.py --url "<知乎API URL>"
@@ -21,44 +20,23 @@ import urllib.parse
 from pathlib import Path
 
 import requests
-from py_mini_racer import MiniRacer
+
+# 把仓库根目录加入 sys.path，以便导入 RSSGen.sign.zhihu.sign
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from RSSGen.sign.zhihu import sign as zhihu_sign
 
 # ============================================
 # 在这里填写你的知乎 Cookie (登录后从浏览器复制)
 # ============================================
 COOKIE = """
+把你的知乎 Cookie 粘贴到这里 (登录后从浏览器复制；至少需要 d_c0 和 z_c0)
 """
 # ============================================
 
 
-# 签名 JS 文件路径
-SIGN_JS_PATH = Path(__file__).parent / "zhihu_sign.js"
-
-# 初始化 V8 引擎并加载签名 JS（惰性初始化）
-_v8_ctx = None
-
-
 def get_signature(url: str, d_c0: str) -> dict:
-    """通过 PyMiniRacer (V8) 执行签名生成"""
-    global _v8_ctx
-    if _v8_ctx is None:
-        js_code = SIGN_JS_PATH.read_text()
-        _v8_ctx = MiniRacer()
-        _v8_ctx.eval(js_code)
-
-    result = _v8_ctx.call(
-        "tv",
-        url,
-        "",
-        {"zse93": "101_3_3.0", "dc0": d_c0, "xZst81": None},
-        ""
-    )
-
-    return {
-        "source": result["source"],
-        "x_zse_93": "101_3_3.0",
-        "x_zse_96": "2.0_" + result["signature"]
-    }
+    """通过纯 Python 实现生成签名，无 V8 依赖"""
+    return zhihu_sign.get_signature(url, d_c0)
 
 
 def parse_cookies(cookie_str: str) -> dict:
