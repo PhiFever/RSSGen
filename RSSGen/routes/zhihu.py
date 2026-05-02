@@ -120,28 +120,42 @@ class ZhihuRoute(Route):
             return match.group(1)
         raise ValueError("Cookie 中缺少 d_c0 字段")
 
-    async def _fetch_activities(self, user_id: str, limit: int = 5):
-        """请求知乎用户动态 API"""
-        url = f"https://www.zhihu.com/api/v3/moments/{user_id}/activities"
-        url_with_params = f"{url}?limit={limit}&desktop=true"
-
+    async def _fetch_activities(self, user_id: str, limit: int) -> list[dict]:
+        """请求知乎用户动态 API，按 paging.next 翻页累积，直到达到 limit 或 is_end"""
+        # 第一页固定 limit=5，与浏览器观察到的请求一致；后续页 URL 由 paging.next 提供
+        next_url = (
+            f"https://www.zhihu.com/api/v3/moments/{user_id}/activities"
+            f"?limit=5&desktop=true"
+        )
         d_c0 = self._get_d_c0()
-        signature = get_signature(url_with_params, d_c0)
-
-        headers = {
-            "accept": "*/*",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "x-requested-with": "fetch",
-            "x-zse-93": signature["x_zse_93"],
-            "x-zse-96": signature["x_zse_96"],
-            "referer": f"https://www.zhihu.com/people/{user_id}",
-        }
-
         cookies = parse_cookie_string(self.config.get("cookie", ""))
+        referer = f"https://www.zhihu.com/people/{user_id}"
 
+        activities: list[dict] = []
         async with AsyncSession() as session:
-            resp = await session.get(url_with_params, headers=headers, cookies=cookies)
-            return resp
+            while next_url and len(activities) < limit:
+                signature = get_signature(next_url, d_c0)
+                headers = {
+                    "accept": "*/*",
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "x-requested-with": "fetch",
+                    "x-zse-93": signature["x_zse_93"],
+                    "x-zse-96": signature["x_zse_96"],
+                    "referer": referer,
+                }
+                resp = await session.get(next_url, headers=headers, cookies=cookies)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
+
+                data = resp.json()
+                activities.extend(data.get("data", []))
+
+                paging = data.get("paging", {})
+                if paging.get("is_end"):
+                    break
+                next_url = paging.get("next")
+
+        return activities[:limit]
 
     async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])
@@ -158,13 +172,7 @@ class ZhihuRoute(Route):
 
         logger.info(f"开始抓取知乎用户 {user_id}，limit={limit}")
 
-        resp = await self._fetch_activities(user_id, limit)
-
-        if resp.status_code != 200:
-            raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
-
-        data = resp.json()
-        activities = data.get("data", [])
+        activities = await self._fetch_activities(user_id, limit)
 
         items = []
         for act in activities:
@@ -176,5 +184,5 @@ class ZhihuRoute(Route):
                 continue
             items.append(self._make_feed_item(target))
 
-        logger.info(f"抓取完成 {user_id}: {len(items)} 条动态")
+        logger.info(f"抓取完成 {user_id}: 累计 {len(activities)} 条动态，过滤后 {len(items)} 条")
         return items
