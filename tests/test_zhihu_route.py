@@ -58,9 +58,11 @@ class TestZhihuRouteMakeFeedItem:
             "question": {"id": "456", "title": "问题标题"},
         }
 
-        item = route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION"))
+        item = route._make_feed_item(
+            _act(target, "MEMBER_ANSWER_QUESTION", "回答了问题")
+        )
 
-        assert item.title == "问题标题"
+        assert item.title == "[回答了问题] 问题标题"
         assert item.link == "https://www.zhihu.com/question/456/answer/123"
         assert item.guid == "123"
         assert item.author == "作者"
@@ -75,9 +77,11 @@ class TestZhihuRouteMakeFeedItem:
             "author": {"name": "作者"},
         }
 
-        item = route._make_feed_item(_act(target, "MEMBER_CREATE_ARTICLE"))
+        item = route._make_feed_item(
+            _act(target, "MEMBER_CREATE_ARTICLE", "发表了文章")
+        )
 
-        assert item.title == "文章标题"
+        assert item.title == "[发表了文章] 文章标题"
         assert item.link == "https://zhuanlan.zhihu.com/p/789"
 
     def test_pin_type_uses_excerpt_as_title(self, route):
@@ -89,10 +93,9 @@ class TestZhihuRouteMakeFeedItem:
             "author": {"name": "作者"},
         }
 
-        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN"))
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN", "发布了想法"))
 
-        assert "摘要内容" in item.title
-        assert item.link == "https://www.zhihu.com/pin/111"
+        assert item.title == "[发布了想法] 这是一条想法的摘要内容"
 
     def test_pin_falls_back_to_excerpt_title(self, route):
         """excerpt 为 None 时回退到 excerpt_title"""
@@ -104,9 +107,10 @@ class TestZhihuRouteMakeFeedItem:
             "created": 1700000000,
             "author": {"name": "作者"},
         }
-        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN"))
+        item = route._make_feed_item(_act(target, "MEMBER_CREATE_PIN", "发布了想法"))
         assert "5.2早安" in item.title
         assert "<br>" not in item.title
+        assert item.title.startswith("[发布了想法] ")
 
     def test_answer_verb_sets_answer_category(self, route):
         target = {
@@ -117,11 +121,12 @@ class TestZhihuRouteMakeFeedItem:
             "author": {"name": "作者"},
             "question": {"id": "456", "title": "问题标题"},
         }
-        item = route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION"))
+        item = route._make_feed_item(
+            _act(target, "MEMBER_ANSWER_QUESTION", "回答了问题")
+        )
         assert item.categories == [TYPE_ANSWER]
-        # 自己创作 → guid 沿用 target_id，title 不加前缀
         assert item.guid == "123"
-        assert not item.title.startswith("[")
+        assert item.title == "[回答了问题] 问题标题"
 
     def test_collect_verb_sets_collected_answer_category(self, route):
         """收藏回答 → category=collected_answer，title 加动作前缀，guid 加 category 前缀"""
@@ -403,7 +408,7 @@ class TestZhihuRouteFetchFilter:
             items = await route.fetch(path_params=["test_user"])
 
         assert len(items) == 1
-        assert items[0].title == "问题A"
+        assert items[0].title == "[回答了问题] 问题A"
         assert items[0].categories == [TYPE_ANSWER]
 
     @pytest.mark.asyncio

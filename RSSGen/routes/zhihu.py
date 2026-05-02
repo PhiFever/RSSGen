@@ -123,11 +123,10 @@ class ZhihuRoute(Route):
             title = target.get("title", target.get("excerpt", "未知内容")[:50])
             link = f"https://www.zhihu.com/{target_type}/{target_id}"
 
-        # 非"自己创作"的活动加 action 前缀，避免 RSS 阅读器中混淆
-        if category not in (TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN):
-            action_text = act.get("action_text", "")
-            if action_text:
-                title = f"[{action_text}] {title}"
+        # 所有活动都加 action 前缀，方便在 RSS 阅读器中一眼辨别动作类型
+        action_text = act.get("action_text", "")
+        if action_text:
+            title = f"[{action_text}] {title}"
 
         # guid：自己创作沿用 target_id（兼容旧订阅去重）；其他 case 加 category 前缀
         guid = (
