@@ -4,7 +4,8 @@ import pytest
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from RSSGen.routes.zhihu import ZhihuRoute, ZhihuSigner, TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN, X_ZSE_93_VERSION, X_ZSE_96_PREFIX
+from RSSGen.routes.zhihu import ZhihuRoute, TYPE_ANSWER, TYPE_ARTICLE, TYPE_PIN
+from RSSGen.sign.zhihu.sign import X_ZSE_93_VERSION, X_ZSE_96_PREFIX, get_signature
 
 
 @pytest.fixture
@@ -150,8 +151,7 @@ class TestZhihuRouteFetchWithSigner:
         url = "https://www.zhihu.com/api/v3/moments/test_user/activities"
         d_c0 = route_with_dc0._get_d_c0()
 
-        signer = ZhihuSigner()
-        sig = signer.get_signature(url, d_c0)
+        sig = get_signature(url, d_c0)
 
         assert sig["x_zse_93"] == X_ZSE_93_VERSION
         assert sig["x_zse_96"].startswith(X_ZSE_96_PREFIX)

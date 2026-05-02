@@ -2,51 +2,18 @@
 
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 from curl_cffi.requests import AsyncSession
 from loguru import logger
-from py_mini_racer import MiniRacer
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
 from RSSGen.core.utils import lookup_alias, parse_cookie_string
-
-SIGN_JS_PATH = Path(__file__).parent.parent / "sign" / "zhihu" / "zhihu_sign.js"
-
-# 签名版本常量
-X_ZSE_93_VERSION = "101_3_3.0"
-X_ZSE_96_PREFIX = "2.0_"
+from RSSGen.sign.zhihu.sign import get_signature
 
 # 动态类型常量
 TYPE_ANSWER = "answer"
 TYPE_ARTICLE = "article"
 TYPE_PIN = "pin"
-
-
-class ZhihuSigner:
-    """知乎签名生成器（PyMiniRacer V8 引擎）"""
-
-    _ctx: MiniRacer | None = None
-
-    def __init__(self):
-        if ZhihuSigner._ctx is None:
-            js_code = SIGN_JS_PATH.read_text(encoding="utf-8")
-            ZhihuSigner._ctx = MiniRacer()
-            ZhihuSigner._ctx.eval(js_code)
-
-    def get_signature(self, url: str, d_c0: str) -> dict:
-        """生成 x-zse-96 签名"""
-        result = ZhihuSigner._ctx.call(
-            "tv",
-            url,
-            "",
-            {"zse93": X_ZSE_93_VERSION, "dc0": d_c0, "xZst81": None},
-            ""
-        )
-        return {
-            "x_zse_93": X_ZSE_93_VERSION,
-            "x_zse_96": X_ZSE_96_PREFIX + result["signature"]
-        }
 
 
 class ZhihuRoute(Route):
@@ -149,8 +116,7 @@ class ZhihuRoute(Route):
         url_with_params = f"{url}?limit={limit}&desktop=true"
 
         d_c0 = self._get_d_c0()
-        signer = ZhihuSigner()
-        signature = signer.get_signature(url_with_params, d_c0)
+        signature = get_signature(url_with_params, d_c0)
 
         headers = {
             "accept": "*/*",

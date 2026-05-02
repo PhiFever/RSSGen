@@ -312,9 +312,14 @@ def gen_source(url: str, body: Optional[str], zse93: str, dc0: str, x_zst81: Opt
     return '+'.join(parts)
 
 
+# 签名版本常量
+X_ZSE_93_VERSION = "101_3_3.0"
+X_ZSE_96_PREFIX = "2.0_"
+
+
 def get_signature(url: str, d_c0: str, body: str = "") -> dict:
     """生成知乎签名 (纯 Python 实现)"""
-    zse93 = "101_3_3.0"
+    zse93 = X_ZSE_93_VERSION
 
     source = gen_source(
         url=url,
@@ -330,7 +335,7 @@ def get_signature(url: str, d_c0: str, body: str = "") -> dict:
     return {
         "source": source,
         "x_zse_93": zse93,
-        "x_zse_96": "2.0_" + signature
+        "x_zse_96": X_ZSE_96_PREFIX + signature
     }
 
 
