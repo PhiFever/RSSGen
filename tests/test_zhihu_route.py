@@ -181,6 +181,141 @@ class TestZhihuRouteFetch:
         assert items[1].title == "文章标题"
 
 
+class TestZhihuRouteFetchFilter:
+    @pytest.mark.asyncio
+    async def test_fetch_filters_by_include(self):
+        """配置 include=[answer] 时只返回 answer 类型"""
+        route = ZhihuRoute({
+            "cookie": "d_c0=test",
+            "feeds": [{"user_id": "test_user", "include": ["answer"]}],
+        })
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "act1",
+                    "type": "feed",
+                    "target": {
+                        "id": "1",
+                        "type": TYPE_ANSWER,
+                        "content": "<p>回答</p>",
+                        "created_time": 1700000000,
+                        "author": {"name": "A"},
+                        "question": {"id": "10", "title": "问题"},
+                    },
+                },
+                {
+                    "id": "act2",
+                    "type": "feed",
+                    "target": {
+                        "id": "2",
+                        "type": TYPE_PIN,
+                        "excerpt": "想法内容",
+                        "created_time": 1700000100,
+                        "author": {"name": "A"},
+                    },
+                },
+            ]
+        }
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=mock_response
+        ):
+            items = await route.fetch(path_params=["test_user"])
+
+        assert len(items) == 1
+        assert items[0].categories == [TYPE_ANSWER]
+
+    @pytest.mark.asyncio
+    async def test_fetch_returns_all_when_no_include(self):
+        """不配置 include 时返回全部类型"""
+        route = ZhihuRoute({"cookie": "d_c0=test"})
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "act1",
+                    "type": "feed",
+                    "target": {
+                        "id": "1",
+                        "type": TYPE_ANSWER,
+                        "content": "<p>回答</p>",
+                        "created_time": 1700000000,
+                        "author": {"name": "A"},
+                        "question": {"id": "10", "title": "问题"},
+                    },
+                },
+                {
+                    "id": "act2",
+                    "type": "feed",
+                    "target": {
+                        "id": "2",
+                        "type": TYPE_PIN,
+                        "excerpt": "想法",
+                        "created_time": 1700000100,
+                        "author": {"name": "A"},
+                    },
+                },
+            ]
+        }
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=mock_response
+        ):
+            items = await route.fetch(path_params=["test_user"])
+
+        assert len(items) == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_include_from_kwargs(self):
+        """refresher 通过 kwargs 透传 include"""
+        route = ZhihuRoute({"cookie": "d_c0=test"})
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "id": "act1",
+                    "type": "feed",
+                    "target": {
+                        "id": "1",
+                        "type": TYPE_ANSWER,
+                        "content": "<p>回答</p>",
+                        "created_time": 1700000000,
+                        "author": {"name": "A"},
+                        "question": {"id": "10", "title": "问题"},
+                    },
+                },
+                {
+                    "id": "act2",
+                    "type": "feed",
+                    "target": {
+                        "id": "2",
+                        "type": TYPE_ARTICLE,
+                        "title": "文章",
+                        "content": "<p>内容</p>",
+                        "created_time": 1700000100,
+                        "author": {"name": "A"},
+                    },
+                },
+            ]
+        }
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=mock_response
+        ):
+            items = await route.fetch(
+                path_params=["test_user"], include=[TYPE_PIN]
+            )
+
+        assert len(items) == 0  # kwargs 中 include=[pin]，但数据中没有 pin
+
+
 class TestZhihuRouteFetchWithSigner:
     @pytest.mark.asyncio
     async def test_fetch_with_real_signature_calls_api(self):

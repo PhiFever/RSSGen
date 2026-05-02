@@ -105,6 +105,13 @@ class ZhihuRoute(Route):
             categories=[target_type],
         )
 
+    def _get_feed_include(self, user_id: str) -> list[str] | None:
+        """从 self.config 的 feeds 列表中查找指定用户的 include 配置"""
+        for feed in self.config.get("feeds", []):
+            if feed.get("user_id") == user_id:
+                return feed.get("include")
+        return None
+
     def _get_d_c0(self) -> str:
         """从 cookie 提取 d_c0"""
         cookie_str = self.config.get("cookie", "")
@@ -144,6 +151,11 @@ class ZhihuRoute(Route):
         user_id = path_params[0]
         limit = int(kwargs.get("limit", 20))
 
+        # 优先从 kwargs 获取（refresher 透传），其次从 self.config 查找
+        include = kwargs.get("include")
+        if include is None:
+            include = self._get_feed_include(user_id)
+
         logger.info(f"开始抓取知乎用户 {user_id}，limit={limit}")
 
         resp = await self._fetch_activities(user_id, limit)
@@ -157,8 +169,12 @@ class ZhihuRoute(Route):
         items = []
         for act in activities:
             target = act.get("target", {})
-            if target:
-                items.append(self._make_feed_item(target))
+            if not target:
+                continue
+            target_type = target.get("type", "unknown")
+            if include and target_type not in include:
+                continue
+            items.append(self._make_feed_item(target))
 
         logger.info(f"抓取完成 {user_id}: {len(items)} 条动态")
         return items
