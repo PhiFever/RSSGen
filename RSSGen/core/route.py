@@ -13,6 +13,7 @@ class FeedItem:
     author: str | None = None
     guid: str | None = None  # 默认用 link
     enclosures: list[dict] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
 
 
 @dataclass
