@@ -132,7 +132,12 @@ class TestZhihuRouteFetch:
         }
 
         with (
-            patch.object(route, "_fetch_activities", new_callable=AsyncMock, return_value=mock_response),
+            patch.object(
+                route,
+                "_fetch_activities",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
         ):
             items = await route.fetch(path_params=["kvxjr369f"])
 

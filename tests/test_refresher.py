@@ -11,6 +11,7 @@ from RSSGen.core.refresher import BackgroundRefresher
 
 # ── fixtures ──────────────────────────────────────────────
 
+
 @pytest.fixture
 def multi_route_config():
     """两个 enabled 路由的配置"""
@@ -55,6 +56,7 @@ def caches():
 
 # ── build_cache_key ───────────────────────────────────────
 
+
 class TestBuildCacheKey:
     def test_basic(self):
         key = BackgroundRefresher.build_cache_key("afdian", ["author1"])
@@ -66,6 +68,7 @@ class TestBuildCacheKey:
 
 
 # ── trigger ───────────────────────────────────────────────
+
 
 class TestTrigger:
     @pytest.mark.asyncio
@@ -116,6 +119,7 @@ class TestTrigger:
 
 # ── _refresh_one ──────────────────────────────────────────
 
+
 class TestRefreshOne:
     @pytest.mark.asyncio
     async def test_success_updates_status(self, caches, multi_route_config):
@@ -162,6 +166,7 @@ class TestRefreshOne:
 
 # ── start / stop ──────────────────────────────────────────
 
+
 class TestStartStop:
     @pytest.mark.asyncio
     async def test_start_creates_per_route_tasks(self, caches, multi_route_config):
@@ -201,6 +206,7 @@ class TestStartStop:
 
 # ── 预热判定 ──────────────────────────────────────────────
 
+
 class TestPreheatDecision:
     @pytest.mark.asyncio
     async def test_preheat_skipped_when_disabled(self, caches, multi_route_config):
@@ -214,7 +220,9 @@ class TestPreheatDecision:
             mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_preheat_skipped_when_already_has_data(self, caches, multi_route_config):
+    async def test_preheat_skipped_when_already_has_data(
+        self, caches, multi_route_config
+    ):
         """preheat_on_startup=true 但已有数据时跳过预热"""
         multi_route_config["routes"]["afdian"]["preheat_on_startup"] = True
         feed_cache, article_store = caches
@@ -226,7 +234,9 @@ class TestPreheatDecision:
             mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_preheat_runs_when_enabled_and_no_data(self, caches, multi_route_config):
+    async def test_preheat_runs_when_enabled_and_no_data(
+        self, caches, multi_route_config
+    ):
         """preheat_on_startup=true 且无数据时执行预热"""
         multi_route_config["routes"]["afdian"]["preheat_on_startup"] = True
         multi_route_config["routes"]["afdian"]["refresh_interval"] = 0  # 不跑定时刷新
@@ -242,6 +252,7 @@ class TestPreheatDecision:
 
 
 # ── refresh_interval 控制 ─────────────────────────────────
+
 
 class TestRefreshInterval:
     @pytest.mark.asyncio
@@ -268,6 +279,7 @@ class TestRefreshInterval:
 
 # ── preinit ───────────────────────────────────────────────
 
+
 class TestPreinit:
     @pytest.mark.asyncio
     async def test_preinit_skipped_when_url_is_none(self, caches, multi_route_config):
@@ -288,7 +300,9 @@ class TestPreinit:
         refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
 
         with (
-            patch.object(refresher, "_preinit_curl_cffi", new_callable=AsyncMock) as mock_preinit,
+            patch.object(
+                refresher, "_preinit_curl_cffi", new_callable=AsyncMock
+            ) as mock_preinit,
             patch.object(refresher, "_run_route_loop", new_callable=AsyncMock),
         ):
             await refresher.start()
@@ -297,6 +311,7 @@ class TestPreinit:
 
 
 # ── feed_id_field 泛化 ────────────────────────────────────
+
 
 class TestFeedIdField:
     @pytest.mark.asyncio
@@ -311,7 +326,10 @@ class TestFeedIdField:
         mock_route_cls = MagicMock()
         mock_route_cls.feed_id_field = "custom_key"
 
-        with patch("RSSGen.core.refresher.get_registry", return_value={"afdian": mock_route_cls}):
+        with patch(
+            "RSSGen.core.refresher.get_registry",
+            return_value={"afdian": mock_route_cls},
+        ):
             feed_conf = refresher._find_feed_config("afdian", "author1")
             assert feed_conf is not None
             assert feed_conf["custom_key"] == "author1"
@@ -319,14 +337,23 @@ class TestFeedIdField:
 
 # ── get_status 按路由分组 ─────────────────────────────────
 
+
 class TestGetStatus:
     def test_status_returns_route_grouped_dict(self, caches, multi_route_config):
         feed_cache, article_store = caches
         refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
 
         refresher._error_status = {
-            "afdian/author1": {"last_success": "2026-01-01T00:00:00", "error": None, "item_count": 5},
-            "zhihu/user1": {"last_success": "2026-01-01T00:00:00", "error": None, "item_count": 3},
+            "afdian/author1": {
+                "last_success": "2026-01-01T00:00:00",
+                "error": None,
+                "item_count": 5,
+            },
+            "zhihu/user1": {
+                "last_success": "2026-01-01T00:00:00",
+                "error": None,
+                "item_count": 3,
+            },
         }
 
         status = refresher.get_status()
@@ -338,12 +365,18 @@ class TestGetStatus:
 
 # ── fetch_kwargs 透传 ─────────────────────────────────────
 
+
 class TestFetchKwargsPassthrough:
     @pytest.mark.asyncio
     async def test_extra_fields_passed_to_fetch(self, caches, multi_route_config):
         """feed_conf 中除 user_id/alias 外的字段透传给 fetch"""
         multi_route_config["routes"]["afdian"]["feeds"] = [
-            {"user_id": "author1", "alias": "作者A", "limit": 15, "custom_param": "value"}
+            {
+                "user_id": "author1",
+                "alias": "作者A",
+                "limit": 15,
+                "custom_param": "value",
+            }
         ]
         feed_cache, article_store = caches
         refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)

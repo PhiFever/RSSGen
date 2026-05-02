@@ -92,13 +92,9 @@ class AfdianRoute(Route):
                 return
 
             # 诊断日志：每页第一条和最后一条帖子的原始字段
-            logger.debug(
-                f"列表页 {page} 首帖: {_summarize_post(post_list[0])}"
-            )
+            logger.debug(f"列表页 {page} 首帖: {_summarize_post(post_list[0])}")
             if len(post_list) > 1:
-                logger.debug(
-                    f"列表页 {page} 尾帖: {_summarize_post(post_list[-1])}"
-                )
+                logger.debug(f"列表页 {page} 尾帖: {_summarize_post(post_list[-1])}")
 
             if limit and total_yielded + len(post_list) >= limit:
                 chunk = post_list[: limit - total_yielded]
@@ -144,7 +140,10 @@ class AfdianRoute(Route):
         if not path_params:
             raise ValueError("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
         author_slug = path_params[0]
-        display_name = lookup_alias(self.config.get("feeds"), "user_id", author_slug) or author_slug
+        display_name = (
+            lookup_alias(self.config.get("feeds"), "user_id", author_slug)
+            or author_slug
+        )
         return FeedInfo(
             title=f"爱发电 - {display_name}",
             link=f"{HOST_URL}/a/{author_slug}",

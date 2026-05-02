@@ -78,7 +78,11 @@ class BackgroundRefresher:
             if feed_conf:
                 feed_id_field = self._get_feed_id_field(route_name)
                 for key, value in feed_conf.items():
-                    if key != feed_id_field and key != "alias" and key not in fetch_kwargs:
+                    if (
+                        key != feed_id_field
+                        and key != "alias"
+                        and key not in fetch_kwargs
+                    ):
                         fetch_kwargs[key] = value
 
         asyncio.create_task(
@@ -87,7 +91,9 @@ class BackgroundRefresher:
 
     def _get_feed_id_field(self, route_name: str) -> str:
         route_cls = get_registry().get(route_name)
-        return getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+        return (
+            getattr(route_cls, "feed_id_field", "user_id") if route_cls else "user_id"
+        )
 
     def _find_feed_config(self, route_name: str, feed_id: str) -> dict | None:
         feeds = self.config.get("routes", {}).get(route_name, {}).get("feeds", [])
@@ -181,7 +187,9 @@ class BackgroundRefresher:
         for feed_conf in feeds:
             feed_id = feed_conf.get(feed_id_field)
             if not feed_id:
-                logger.warning(f"[{route_name}] feed 配置缺少 {feed_id_field} 字段，跳过: {feed_conf}")
+                logger.warning(
+                    f"[{route_name}] feed 配置缺少 {feed_id_field} 字段，跳过: {feed_conf}"
+                )
                 continue
             # 构造 fetch_kwargs：透传 feed_conf 中除 feed_id_field 和 alias 之外的字段
             fetch_kwargs = {}

@@ -28,7 +28,9 @@ class ZhihuRoute(Route):
             raise ValueError("需要指定用户 ID，如 /feed/zhihu/{user_id}")
 
         user_id = path_params[0]
-        display_name = lookup_alias(self.config.get("feeds"), "user_id", user_id) or user_id
+        display_name = (
+            lookup_alias(self.config.get("feeds"), "user_id", user_id) or user_id
+        )
         return FeedInfo(
             title=f"知乎动态 - {display_name}",
             link=f"https://www.zhihu.com/people/{user_id}",
