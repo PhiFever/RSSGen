@@ -60,3 +60,7 @@ routes:
       - user_id: "your_user_id"   # 用户主页 URL token
         alias: "用户别名"           # 别名，用于易读的 feed title
         limit: 20                  # 获取最新 20 篇
+        # include:                 # 可选：只返回指定活动类型，不配置则返回全部
+        #   - answer               # 回答
+        #   - article              # 专栏文章
+        #   - pin                  # 想法
