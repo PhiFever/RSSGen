@@ -70,3 +70,7 @@ routes:
 |------|------|------|
 | `format` | 输出格式，`atom`（默认）或 `rss` | `?format=rss` |
 | `limit` | 返回条目数量，默认 20 | `?limit=10` |
+
+## 致谢
+
+感谢 [cv-cat/ZhihuApis: 知乎算法逆向](https://github.com/cv-cat/ZhihuApis) 关于知乎路由的启发

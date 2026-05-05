@@ -3,12 +3,56 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+import nh3
 from feedgen.feed import FeedGenerator
 from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem
 
 _EPOCH = datetime.fromtimestamp(0, tz=timezone.utc)
+
+# HTML 消毒器：剥离危险标签和事件处理器，只允许安全标签和 URL scheme
+_HTML_CLEANER = nh3.Cleaner(
+    tags={
+        "p",
+        "br",
+        "img",
+        "a",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "li",
+        "blockquote",
+        "pre",
+        "code",
+        "table",
+        "thead",
+        "tbody",
+        "tr",
+        "th",
+        "td",
+        "strong",
+        "em",
+        "b",
+        "i",
+        "u",
+        "s",
+        "span",
+        "div",
+        "sub",
+        "sup",
+        "hr",
+        "dl",
+        "dt",
+        "dd",
+    },
+    url_schemes={"http", "https", "mailto"},
+)
 
 
 def generate_feed(info: FeedInfo, items: list[FeedItem], format: str = "atom") -> str:
@@ -41,7 +85,8 @@ def generate_feed(info: FeedInfo, items: list[FeedItem], format: str = "atom") -
         if item.link:
             fe.link(href=item.link)
         if item.content:
-            fe.content(item.content, type="html")
+            safe_content = _HTML_CLEANER.clean(item.content)
+            fe.content(safe_content, type="html")
         if item.author:
             fe.author(name=item.author)
         for cat in item.categories:

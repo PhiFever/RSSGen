@@ -177,9 +177,7 @@ class TestZhihuRouteMakeFeedItem:
             "author": {"name": "作者"},
             "question": {"id": "999", "title": "被赞同的问题"},
         }
-        item = route._make_feed_item(
-            _act(target, "MEMBER_VOTEUP_ANSWER", "赞同了回答")
-        )
+        item = route._make_feed_item(_act(target, "MEMBER_VOTEUP_ANSWER", "赞同了回答"))
         assert item.categories == [TYPE_VOTEUP_ANSWER]
         assert item.title == "[赞同了回答] 被赞同的问题"
         assert item.guid == "voteup_answer_888"
@@ -288,10 +286,12 @@ class TestZhihuRouteFetchFilter:
     @pytest.mark.asyncio
     async def test_fetch_filters_by_include(self):
         """配置 include=[answer] 时只返回 answer 类型"""
-        route = ZhihuRoute({
-            "cookie": "d_c0=test",
-            "feeds": [{"user_id": "test_user", "include": ["answer"]}],
-        })
+        route = ZhihuRoute(
+            {
+                "cookie": "d_c0=test",
+                "feeds": [{"user_id": "test_user", "include": ["answer"]}],
+            }
+        )
 
         activities = [
             {
@@ -368,10 +368,12 @@ class TestZhihuRouteFetchFilter:
     @pytest.mark.asyncio
     async def test_fetch_include_excludes_collected_when_only_answer(self):
         """include=[answer] 时，target.type=answer 但 verb=COLLECT 的活动被排除"""
-        route = ZhihuRoute({
-            "cookie": "d_c0=test",
-            "feeds": [{"user_id": "test_user", "include": ["answer"]}],
-        })
+        route = ZhihuRoute(
+            {
+                "cookie": "d_c0=test",
+                "feeds": [{"user_id": "test_user", "include": ["answer"]}],
+            }
+        )
 
         activities = [
             {  # 自己回答 → category=answer，命中 include
@@ -414,10 +416,12 @@ class TestZhihuRouteFetchFilter:
     @pytest.mark.asyncio
     async def test_fetch_include_collected_answer(self):
         """include=[collected_answer] 时只返回收藏的回答"""
-        route = ZhihuRoute({
-            "cookie": "d_c0=test",
-            "feeds": [{"user_id": "test_user", "include": ["collected_answer"]}],
-        })
+        route = ZhihuRoute(
+            {
+                "cookie": "d_c0=test",
+                "feeds": [{"user_id": "test_user", "include": ["collected_answer"]}],
+            }
+        )
 
         activities = [
             {
@@ -492,9 +496,7 @@ class TestZhihuRouteFetchFilter:
         with patch.object(
             route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
         ):
-            items = await route.fetch(
-                path_params=["test_user"], include=[TYPE_PIN]
-            )
+            items = await route.fetch(path_params=["test_user"], include=[TYPE_PIN])
 
         assert len(items) == 0  # kwargs 中 include=[pin]，但数据中没有 pin
 
@@ -526,9 +528,7 @@ def _patch_async_session(monkeypatch, responses):
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=session)
     cm.__aexit__ = AsyncMock(return_value=None)
-    monkeypatch.setattr(
-        "RSSGen.routes.zhihu.AsyncSession", MagicMock(return_value=cm)
-    )
+    monkeypatch.setattr("RSSGen.routes.zhihu.AsyncSession", MagicMock(return_value=cm))
     return session
 
 
@@ -579,9 +579,7 @@ class TestZhihuRouteFetchActivitiesPagination:
     @pytest.mark.asyncio
     async def test_uses_paging_next_url(self, monkeypatch, route_with_dc0):
         """第二次请求使用 paging.next 中的完整 URL"""
-        next_url = (
-            "https://www.zhihu.com/api/v3/moments/u/activities?offset=1777652939991&page_num=1"
-        )
+        next_url = "https://www.zhihu.com/api/v3/moments/u/activities?offset=1777652939991&page_num=1"
         page1 = _make_page([{"id": "a"}], next_url=next_url)
         page2 = _make_page([{"id": "b"}], next_url=None, is_end=True)
         session = _patch_async_session(monkeypatch, [page1, page2])

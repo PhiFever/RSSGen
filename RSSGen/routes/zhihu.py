@@ -1,5 +1,6 @@
 """知乎用户动态路由"""
 
+import html
 import re
 from datetime import datetime, timezone
 
@@ -88,12 +89,14 @@ class ZhihuRoute(Route):
             if block_type == "image":
                 url = block.get("original_url") or block.get("url", "")
                 if url:
-                    parts.append(f'<img src="{url}" />')
+                    parts.append(f'<img src="{html.escape(url, quote=True)}" />')
             elif block_type == "link_card":
                 url = block.get("url", "")
                 title = block.get("data_draft_title") or url
                 if url:
-                    parts.append(f'<a href="{url}">{title}</a>')
+                    parts.append(
+                        f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
+                    )
         return "<br/>".join(parts)
 
     def _make_feed_item(self, act: dict) -> FeedItem:
@@ -242,5 +245,7 @@ class ZhihuRoute(Route):
                 continue
             items.append(self._make_feed_item(act))
 
-        logger.info(f"抓取完成 {user_id}: 累计 {len(activities)} 条动态，过滤后 {len(items)} 条")
+        logger.info(
+            f"抓取完成 {user_id}: 累计 {len(activities)} 条动态，过滤后 {len(items)} 条"
+        )
         return items
