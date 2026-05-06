@@ -4,6 +4,7 @@ import html
 import re
 from datetime import datetime, timezone
 
+from bs4 import BeautifulSoup
 from curl_cffi.requests import AsyncSession
 from loguru import logger
 
@@ -58,6 +59,34 @@ class ZhihuRoute(Route):
 
     name = "zhihu"
     description = "知乎用户动态订阅"
+
+    @staticmethod
+    def _fix_lazy_images(html: str) -> str:
+        """修复知乎懒加载图片，将 SVG 占位符替换为真实 URL"""
+        if not html:
+            return html
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for img in soup.find_all("img"):
+            src = img.get("src", "")
+            # 检测 SVG 占位符
+            if src.startswith("data:image/svg+xml"):
+                # 优先使用 data-actualsrc，其次是 data-original
+                actual_src = img.get("data-actualsrc") or img.get("data-original")
+                if actual_src:
+                    img["src"] = actual_src
+                    # 移除懒加载相关属性
+                    img.attrs.pop("data-actualsrc", None)
+                    img.attrs.pop("data-original", None)
+                    if "lazy" in img.get("class", []):
+                        img["class"].remove("lazy")
+
+        # 移除 <noscript> 标签（其内容已包含真实图片，但会被 RSS 阅读器忽略）
+        for noscript in soup.find_all("noscript"):
+            noscript.decompose()
+
+        return str(soup)
 
     async def feed_info(self, **kwargs) -> FeedInfo:
         path_params: list[str] = kwargs.get("path_params", [])
@@ -155,6 +184,8 @@ class ZhihuRoute(Route):
             content = self._render_pin_content(raw_content)
         else:
             content = raw_content or target.get("detail") or target.get("excerpt", "")
+        # 修复懒加载图片占位符
+        content = self._fix_lazy_images(content)
         author = target.get("author", {}).get("name", "")
 
         return FeedItem(

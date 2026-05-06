@@ -32,6 +32,42 @@ def route_with_dc0():
     return ZhihuRoute({"cookie": "d_c0=test_value"})
 
 
+class TestZhihuFixLazyImages:
+    def test_fixes_svg_placeholder_with_data_actualsrc(self, route):
+        html = '<img src="data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100\' height=\'50\'></svg>" data-actualsrc="https://pic.zhimg.com/test_b.jpg" class="lazy">'
+        result = route._fix_lazy_images(html)
+        assert "https://pic.zhimg.com/test_b.jpg" in result
+        assert "data:image/svg+xml" not in result
+        assert "lazy" not in result
+
+    def test_fixes_svg_placeholder_with_data_original(self, route):
+        html = '<img src="data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100\' height=\'50\'></svg>" data-original="https://pic.zhimg.com/test_r.jpg">'
+        result = route._fix_lazy_images(html)
+        assert "https://pic.zhimg.com/test_r.jpg" in result
+        assert "data:image/svg+xml" not in result
+
+    def test_prioritizes_data_actualsrc_over_data_original(self, route):
+        html = '<img src="data:image/svg+xml" data-actualsrc="https://pic.zhimg.com/actual.jpg" data-original="https://pic.zhimg.com/original.jpg">'
+        result = route._fix_lazy_images(html)
+        assert "actual.jpg" in result
+        assert "original.jpg" not in result
+
+    def test_removes_noscript_tags(self, route):
+        html = '<figure><noscript><img src="https://pic.zhimg.com/real.jpg"></noscript><img src="data:image/svg+xml" data-actualsrc="https://pic.zhimg.com/real.jpg"></figure>'
+        result = route._fix_lazy_images(html)
+        assert "<noscript>" not in result
+        assert "https://pic.zhimg.com/real.jpg" in result
+
+    def test_preserves_normal_images(self, route):
+        html = '<img src="https://pic.zhimg.com/normal.jpg">'
+        result = route._fix_lazy_images(html)
+        assert "https://pic.zhimg.com/normal.jpg" in result
+
+    def test_handles_empty_html(self, route):
+        assert route._fix_lazy_images("") == ""
+        assert route._fix_lazy_images(None) is None
+
+
 class TestZhihuRouteFeedInfo:
     @pytest.mark.asyncio
     async def test_feed_info_returns_correct_title_and_link(self, route):
