@@ -88,6 +88,18 @@ class ZhihuRoute(Route):
 
         return str(soup)
 
+    @staticmethod
+    def _format_question_description(detail: str) -> str:
+        """将问题描述 HTML 转换为引用块格式"""
+        if not detail:
+            return ""
+
+        # 修复懒加载图片
+        detail = ZhihuRoute._fix_lazy_images(detail)
+
+        # 用 blockquote 标签包裹整个问题描述
+        return f"<h3>【问题描述】</h3>\n<blockquote>\n{detail}\n</blockquote>"
+
     async def feed_info(self, **kwargs) -> FeedInfo:
         path_params: list[str] = kwargs.get("path_params", [])
         if not path_params:
@@ -186,6 +198,14 @@ class ZhihuRoute(Route):
             content = raw_content or target.get("detail") or target.get("excerpt", "")
         # 修复懒加载图片占位符
         content = self._fix_lazy_images(content)
+
+        # answer 类型：在正文前添加问题描述
+        if target_type == "answer":
+            question_detail = target.get("question", {}).get("detail", "")
+            question_desc = self._format_question_description(question_detail)
+            if question_desc:
+                content = f"{question_desc}\n<br/>\n{content}"
+
         author = target.get("author", {}).get("name", "")
 
         return FeedItem(

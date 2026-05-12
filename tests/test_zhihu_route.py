@@ -68,6 +68,39 @@ class TestZhihuFixLazyImages:
         assert route._fix_lazy_images(None) is None
 
 
+class TestZhihuFormatQuestionDescription:
+    def test_returns_empty_for_empty_input(self, route):
+        assert route._format_question_description("") == ""
+        assert route._format_question_description(None) == ""
+
+    def test_wraps_content_in_blockquote(self, route):
+        detail = "<p>这是一个简单的问题描述</p>"
+        result = route._format_question_description(detail)
+        assert "<h3>【问题描述】</h3>" in result
+        assert "<blockquote>" in result
+        assert "</blockquote>" in result
+        assert "这是一个简单的问题描述" in result
+
+    def test_preserves_link_structure(self, route):
+        detail = '<p><a href="https://example.com">链接文字</a></p>'
+        result = route._format_question_description(detail)
+        assert '<a href="https://example.com">' in result
+        assert "链接文字" in result
+
+    def test_fixes_lazy_images_in_description(self, route):
+        detail = '<img src="data:image/svg+xml" data-actualsrc="https://pic.zhimg.com/real.jpg">'
+        result = route._format_question_description(detail)
+        assert "https://pic.zhimg.com/real.jpg" in result
+        assert "data:image/svg+xml" not in result
+
+    def test_handles_complex_html_with_images(self, route):
+        detail = '<p>问题描述文本</p><figure><img src="https://pic.zhimg.com/test.jpg"/></figure>'
+        result = route._format_question_description(detail)
+        assert "<blockquote>" in result
+        assert "问题描述文本" in result
+        assert "https://pic.zhimg.com/test.jpg" in result
+
+
 class TestZhihuRouteFeedInfo:
     @pytest.mark.asyncio
     async def test_feed_info_returns_correct_title_and_link(self, route):
@@ -102,6 +135,69 @@ class TestZhihuRouteMakeFeedItem:
         assert item.link == "https://www.zhihu.com/question/456/answer/123"
         assert item.guid == "123"
         assert item.author == "作者"
+
+    def test_answer_type_includes_question_description(self, route):
+        """answer 类型在正文前添加问题描述"""
+        target = {
+            "id": "123",
+            "type": "answer",
+            "content": "<p>回答内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+            "question": {
+                "id": "456",
+                "title": "问题标题",
+                "detail": "<p>问题描述文本</p>",
+            },
+        }
+
+        item = route._make_feed_item(
+            _act(target, "MEMBER_ANSWER_QUESTION", "回答了问题")
+        )
+
+        assert "<h3>【问题描述】</h3>" in item.content
+        assert "<blockquote>" in item.content
+        assert "问题描述文本" in item.content
+        assert "回答内容" in item.content
+        # 问题描述应在回答内容之前
+        assert item.content.index("【问题描述】") < item.content.index("回答内容")
+
+    def test_answer_type_without_question_detail(self, route):
+        """answer 类型无问题描述时直接返回回答内容"""
+        target = {
+            "id": "123",
+            "type": "answer",
+            "content": "<p>回答内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+            "question": {"id": "456", "title": "问题标题", "detail": ""},
+        }
+
+        item = route._make_feed_item(
+            _act(target, "MEMBER_ANSWER_QUESTION", "回答了问题")
+        )
+
+        assert "【问题描述】" not in item.content
+        assert item.content == "<p>回答内容</p>"
+
+    def test_article_type_does_not_include_question_description(self, route):
+        """article 类型不添加问题描述"""
+        target = {
+            "id": "789",
+            "type": "article",
+            "title": "文章标题",
+            "content": "<p>文章内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+        }
+
+        item = route._make_feed_item(
+            _act(target, "MEMBER_CREATE_ARTICLE", "发表了文章")
+        )
+
+        assert "【问题描述】" not in item.content
+        assert "<blockquote>" not in item.content
+        assert item.content == "<p>文章内容</p>"
 
     def test_article_type_extracts_target_title(self, route):
         target = {
