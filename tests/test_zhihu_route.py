@@ -13,6 +13,7 @@ from RSSGen.routes.zhihu import (
     TYPE_COLLECTED_ARTICLE,
     TYPE_VOTEUP_ANSWER,
     TYPE_FOLLOWED_QUESTION,
+    _is_self_interaction,
 )
 from RSSGen.sign.zhihu.sign import X_ZSE_93_VERSION, X_ZSE_96_PREFIX, get_signature
 
@@ -631,6 +632,174 @@ class TestZhihuRouteFetchFilter:
             items = await route.fetch(path_params=["test_user"], include=[TYPE_PIN])
 
         assert len(items) == 0  # kwargs 中 include=[pin]，但数据中没有 pin
+
+
+class TestIsSelfInteraction:
+    """_is_self_interaction：仅自互动 verb + actor==target.author 时返回 True"""
+
+    def test_collect_own_answer_is_self_interaction(self):
+        act = {
+            "verb": "MEMBER_COLLECT_ANSWER",
+            "actor": {"id": "U1"},
+            "target": {"author": {"id": "U1"}},
+        }
+        assert _is_self_interaction(act) is True
+
+    def test_collect_other_answer_is_not_self_interaction(self):
+        act = {
+            "verb": "MEMBER_COLLECT_ANSWER",
+            "actor": {"id": "U1"},
+            "target": {"author": {"id": "U2"}},
+        }
+        assert _is_self_interaction(act) is False
+
+    def test_voteup_own_article_is_self_interaction(self):
+        act = {
+            "verb": "MEMBER_VOTEUP_ARTICLE",
+            "actor": {"id": "X"},
+            "target": {"author": {"id": "X"}},
+        }
+        assert _is_self_interaction(act) is True
+
+    def test_create_verb_is_never_self_interaction(self):
+        """创作类 verb 即使 actor==target.author 也不算自互动"""
+        act = {
+            "verb": "MEMBER_ANSWER_QUESTION",
+            "actor": {"id": "U1"},
+            "target": {"author": {"id": "U1"}},
+        }
+        assert _is_self_interaction(act) is False
+
+    def test_empty_verb_is_not_self_interaction(self):
+        """关注问题等空 verb 场景不算自互动"""
+        act = {
+            "verb": "",
+            "actor": {"id": "U1"},
+            "target": {"author": {"id": "U1"}},
+        }
+        assert _is_self_interaction(act) is False
+
+    def test_missing_actor_returns_false(self):
+        act = {"verb": "MEMBER_COLLECT_ANSWER", "target": {"author": {"id": "U1"}}}
+        assert _is_self_interaction(act) is False
+
+    def test_missing_target_author_returns_false(self):
+        act = {"verb": "MEMBER_COLLECT_ANSWER", "actor": {"id": "U1"}, "target": {}}
+        assert _is_self_interaction(act) is False
+
+
+class TestZhihuRouteFetchSelfInteractionFilter:
+    """include_self_interaction 路由级开关"""
+
+    @staticmethod
+    def _activities_pair():
+        """返回 [自己创作的回答, 收藏自己的回答, 收藏他人的回答] 三条动态"""
+        author = {"id": "USER_A", "name": "本人"}
+        return [
+            {  # 自己创作的回答
+                "id": "act1",
+                "verb": "MEMBER_ANSWER_QUESTION",
+                "action_text": "回答了问题",
+                "actor": {"id": "USER_A"},
+                "target": {
+                    "id": "1",
+                    "type": "answer",
+                    "content": "<p>原创回答</p>",
+                    "created_time": 1700000000,
+                    "author": author,
+                    "question": {"id": "10", "title": "问题A"},
+                },
+            },
+            {  # 收藏自己的回答 → 自互动，默认应被过滤
+                "id": "act2",
+                "verb": "MEMBER_COLLECT_ANSWER",
+                "action_text": "收藏了回答",
+                "actor": {"id": "USER_A"},
+                "target": {
+                    "id": "1",
+                    "type": "answer",
+                    "content": "<p>原创回答</p>",
+                    "created_time": 1700001000,
+                    "author": author,
+                    "question": {"id": "10", "title": "问题A"},
+                },
+            },
+            {  # 收藏他人的回答 → 非自互动，永远保留
+                "id": "act3",
+                "verb": "MEMBER_COLLECT_ANSWER",
+                "action_text": "收藏了回答",
+                "actor": {"id": "USER_A"},
+                "target": {
+                    "id": "2",
+                    "type": "answer",
+                    "content": "<p>他人回答</p>",
+                    "created_time": 1700002000,
+                    "author": {"id": "USER_B", "name": "他人"},
+                    "question": {"id": "20", "title": "问题B"},
+                },
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_filters_self_interaction_by_default(self):
+        route = ZhihuRoute({"cookie": "d_c0=test"})
+        activities = self._activities_pair()
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
+        ):
+            items = await route.fetch(path_params=["USER_A"])
+
+        # 自己收藏自己的回答被过滤掉，剩下原创回答 + 收藏他人回答
+        assert len(items) == 2
+        titles = [it.title for it in items]
+        assert "[回答了问题] 问题A" in titles
+        assert "[收藏了回答] 问题B" in titles
+        # 确认被过滤的不是 problem B
+        assert all("问题A" not in t or t.startswith("[回答了问题]") for t in titles)
+
+    @pytest.mark.asyncio
+    async def test_keeps_self_interaction_when_explicitly_enabled(self):
+        route = ZhihuRoute(
+            {"cookie": "d_c0=test", "include_self_interaction": True}
+        )
+        activities = self._activities_pair()
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
+        ):
+            items = await route.fetch(path_params=["USER_A"])
+
+        assert len(items) == 3
+
+    @pytest.mark.asyncio
+    async def test_create_verb_is_not_filtered_even_if_authors_match(self):
+        """作者自己的原创动态绝不能因为 actor==target.author 被误过滤"""
+        route = ZhihuRoute({"cookie": "d_c0=test"})
+        activities = [
+            {
+                "id": "act1",
+                "verb": "MEMBER_ANSWER_QUESTION",
+                "action_text": "回答了问题",
+                "actor": {"id": "USER_A"},
+                "target": {
+                    "id": "1",
+                    "type": "answer",
+                    "content": "<p>原创回答</p>",
+                    "created_time": 1700000000,
+                    "author": {"id": "USER_A", "name": "本人"},
+                    "question": {"id": "10", "title": "问题A"},
+                },
+            },
+        ]
+
+        with patch.object(
+            route, "_fetch_activities", new_callable=AsyncMock, return_value=activities
+        ):
+            items = await route.fetch(path_params=["USER_A"])
+
+        assert len(items) == 1
+        assert items[0].title == "[回答了问题] 问题A"
 
 
 class TestZhihuRouteFetchWithSigner:

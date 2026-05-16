@@ -44,6 +44,18 @@ _TARGET_TYPE_FALLBACK = {
     "question": TYPE_FOLLOWED_QUESTION,
 }
 
+# 仅这些 verb 在 actor == target.author 时算作"自互动"；
+# 创作类（ANSWER/CREATE_*）和关注问题不属于这个范畴
+_SELF_INTERACTABLE_VERBS = frozenset(
+    {
+        "MEMBER_COLLECT_ANSWER",
+        "MEMBER_COLLECT_ARTICLE",
+        "MEMBER_COLLECT_PIN",
+        "MEMBER_VOTEUP_ANSWER",
+        "MEMBER_VOTEUP_ARTICLE",
+    }
+)
+
 
 def _derive_category(act: dict) -> str:
     """从 activity 派生 category：先看 verb，再用 target.type 兜底"""
@@ -52,6 +64,15 @@ def _derive_category(act: dict) -> str:
         return _VERB_CATEGORY_MAP[verb]
     target_type = act.get("target", {}).get("type", "unknown")
     return _TARGET_TYPE_FALLBACK.get(target_type, target_type)
+
+
+def _is_self_interaction(act: dict) -> bool:
+    """判定 activity 是否为作者对自己内容的互动（收藏/点赞自己创作的内容）"""
+    if act.get("verb") not in _SELF_INTERACTABLE_VERBS:
+        return False
+    actor_id = (act.get("actor") or {}).get("id")
+    target_author_id = (act.get("target") or {}).get("author", {}).get("id")
+    return bool(actor_id) and actor_id == target_author_id
 
 
 class ZhihuRoute(Route):
@@ -283,6 +304,11 @@ class ZhihuRoute(Route):
         if include is None:
             include = self._get_feed_include(user_id)
 
+        # 路由级开关：是否保留作者对自己内容的互动（默认过滤）
+        include_self_interaction = bool(
+            self.config.get("include_self_interaction", False)
+        )
+
         logger.info(f"开始抓取知乎用户 {user_id}，limit={limit}")
 
         activities = await self._fetch_activities(user_id, limit)
@@ -290,6 +316,8 @@ class ZhihuRoute(Route):
         items = []
         for act in activities:
             if not act.get("target"):
+                continue
+            if not include_self_interaction and _is_self_interaction(act):
                 continue
             category = _derive_category(act)
             if include and category not in include:

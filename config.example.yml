@@ -53,6 +53,9 @@ routes:
     # rate_limit: 0.5          # 可选：该路由的请求间隔
     # proxy: null               # 可选：该路由的代理
     # impersonate: chrome131    # 可选：该路由的浏览器指纹
+    # 是否保留作者对自己内容的互动（收藏/点赞自己的回答、文章、想法）。
+    # 默认 false：这类活动会与作者本人的原创动态产生重复条目，过滤掉更清爽
+    include_self_interaction: false
     # === 后台刷新配置（冷启动优化）===
     preheat_on_startup: false   # 是否在启动时预热，false = 仅后台定时刷新
     refresh_interval: 14400     # 后台刷新间隔，默认 4 小时（秒）
