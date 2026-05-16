@@ -802,6 +802,78 @@ class TestZhihuRouteFetchSelfInteractionFilter:
         assert items[0].title == "[回答了问题] 问题A"
 
 
+class TestZhihuApiChangeWarnings:
+    """探针：当知乎 API 出现未识别的字段/类型时，必须打 warning 让我们能在日志中发现"""
+
+    def test_derive_category_warns_on_unknown_type(self):
+        """verb 和 target.type 都未识别时应打 warning"""
+        from RSSGen.routes import zhihu as zhihu_module
+
+        act = {
+            "verb": "MEMBER_FUTURE_ACTION",
+            "target": {"type": "future_type"},
+            "action_text": "做了某事",
+        }
+        with patch.object(zhihu_module, "logger") as mock_logger:
+            category = zhihu_module._derive_category(act)
+        assert category == "future_type"
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args[0][0]
+        assert "MEMBER_FUTURE_ACTION" in msg
+        assert "future_type" in msg
+
+    def test_derive_category_does_not_warn_on_known_types(self):
+        """已知 verb / fallback type 不应打 warning"""
+        from RSSGen.routes import zhihu as zhihu_module
+
+        with patch.object(zhihu_module, "logger") as mock_logger:
+            zhihu_module._derive_category(
+                {"verb": "MEMBER_ANSWER_QUESTION", "target": {"type": "answer"}}
+            )
+            zhihu_module._derive_category(
+                {"verb": "", "target": {"type": "question"}}
+            )
+        mock_logger.warning.assert_not_called()
+
+    def test_render_pin_content_warns_on_unknown_block_type(self, route):
+        """pin block 出现未识别的 type 时应打 warning"""
+        from RSSGen.routes import zhihu as zhihu_module
+
+        blocks = [{"type": "future_block_type", "foo": "bar"}]
+        with patch.object(zhihu_module, "logger") as mock_logger:
+            route._render_pin_content(blocks)
+        mock_logger.warning.assert_called_once()
+        assert "future_block_type" in mock_logger.warning.call_args[0][0]
+
+    def test_render_pin_content_does_not_warn_on_text_block(self, route):
+        """无 type 字段的纯文本 block 不应打 warning"""
+        from RSSGen.routes import zhihu as zhihu_module
+
+        with patch.object(zhihu_module, "logger") as mock_logger:
+            route._render_pin_content([{"content": "纯文本内容"}])
+        mock_logger.warning.assert_not_called()
+
+    def test_make_feed_item_warns_when_title_is_empty(self, route):
+        """title 抓不到（如 question.title 字段不存在）时应打 warning"""
+        from RSSGen.routes import zhihu as zhihu_module
+
+        # question 字段存在但没有 title → title 为空
+        target = {
+            "id": "123",
+            "type": "answer",
+            "content": "<p>内容</p>",
+            "created_time": 1700000000,
+            "author": {"name": "作者"},
+            "question": {"id": "456"},  # 缺 title
+        }
+        with patch.object(zhihu_module, "logger") as mock_logger:
+            route._make_feed_item(_act(target, "MEMBER_ANSWER_QUESTION", "回答了问题"))
+        mock_logger.warning.assert_called_once()
+        msg = mock_logger.warning.call_args[0][0]
+        assert "title" in msg.lower() or "title" in msg
+        assert "123" in msg
+
+
 class TestZhihuRouteFetchWithSigner:
     @pytest.mark.asyncio
     async def test_fetch_with_real_signature_calls_api(self):

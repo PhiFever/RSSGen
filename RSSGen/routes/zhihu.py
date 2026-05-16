@@ -63,7 +63,14 @@ def _derive_category(act: dict) -> str:
     if verb in _VERB_CATEGORY_MAP:
         return _VERB_CATEGORY_MAP[verb]
     target_type = act.get("target", {}).get("type", "unknown")
-    return _TARGET_TYPE_FALLBACK.get(target_type, target_type)
+    if target_type in _TARGET_TYPE_FALLBACK:
+        return _TARGET_TYPE_FALLBACK[target_type]
+    # 既不在 verb 映射也不在 target.type 兜底：知乎可能新增了动作或内容类型
+    logger.warning(
+        f"未识别的知乎动态: verb={verb!r}, target.type={target_type!r}, "
+        f"action_text={act.get('action_text', '')!r}"
+    )
+    return target_type
 
 
 def _is_self_interaction(act: dict) -> bool:
@@ -159,6 +166,9 @@ class ZhihuRoute(Route):
                     parts.append(
                         f'<a href="{html.escape(url, quote=True)}">{html.escape(title)}</a>'
                     )
+            elif block_type:
+                # 文本 block 没有 type 字段，所以仅在 type 非空且未识别时告警
+                logger.warning(f"未识别的知乎 pin block 类型: {block_type!r}")
         return "<br/>".join(parts)
 
     def _make_feed_item(self, act: dict) -> FeedItem:
@@ -187,6 +197,13 @@ class ZhihuRoute(Route):
         else:
             title = target.get("title", target.get("excerpt", "未知内容")[:50])
             link = f"https://www.zhihu.com/{target_type}/{target_id}"
+
+        # 空 title 通常意味着抓取字段的位置变了（如 question.title 改名）
+        if not title:
+            logger.warning(
+                f"知乎动态条目 title 为空: target_id={target_id!r}, "
+                f"target.type={target_type!r}, verb={act.get('verb', '')!r}"
+            )
 
         # 所有活动都加 action 前缀，方便在 RSS 阅读器中一眼辨别动作类型
         action_text = act.get("action_text", "")
