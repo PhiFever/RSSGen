@@ -233,10 +233,10 @@ class BackgroundRefresher:
 
                 try:
                     route = route_cls(merged_config)
-                    info = await route.feed_info(**kwargs)
                     items = await route.fetch(
                         article_store=self.article_store, **kwargs
                     )
+                    info = await route.feed_info(**kwargs)
                     xml = generate_feed(info, items, format="atom")
                     await self.feed_cache.set(cache_key, xml)
 

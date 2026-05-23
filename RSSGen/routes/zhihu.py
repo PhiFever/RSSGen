@@ -9,7 +9,7 @@ from curl_cffi.requests import AsyncSession
 from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
-from RSSGen.core.utils import lookup_alias, parse_cookie_string
+from RSSGen.core.utils import parse_cookie_string
 from RSSGen.sign.zhihu.sign import get_signature
 
 # 动态 category 常量（按 verb + target.type 派生，比 target.type 更细分）
@@ -134,13 +134,19 @@ class ZhihuRoute(Route):
             raise ValueError("需要指定用户 ID，如 /feed/zhihu/{user_id}")
 
         user_id = path_params[0]
-        display_name = (
-            lookup_alias(self.config.get("feeds"), "user_id", user_id) or user_id
-        )
+
+        actor = getattr(self, "_actor", None)
+        if actor:
+            display_name = actor.get("name", user_id)
+            description = actor.get("headline", "") or f"知乎用户 {display_name} 的最新动态"
+        else:
+            display_name = user_id
+            description = f"知乎用户 {display_name} 的最新动态"
+
         return FeedInfo(
             title=f"知乎动态 - {display_name}",
             link=f"https://www.zhihu.com/people/{user_id}",
-            description=f"知乎用户 {display_name} 的最新动态",
+            description=description,
         )
 
     @staticmethod
@@ -306,7 +312,10 @@ class ZhihuRoute(Route):
                     break
                 next_url = paging.get("next")
 
-        return activities[:limit]
+        result = activities[:limit]
+        if result:
+            self._actor = result[0].get("actor")
+        return result
 
     async def fetch(self, article_store=None, **kwargs) -> list[FeedItem]:
         path_params: list[str] = kwargs.get("path_params", [])

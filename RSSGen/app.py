@@ -99,8 +99,8 @@ async def feed(route_name: str, path: str, request: Request):
         return Response(content=xml, media_type="application/xml; charset=utf-8")
 
     try:
-        info = await route.feed_info(**kwargs)
         items = await route.fetch(article_store=article_store, **kwargs)
+        info = await route.feed_info(**kwargs)
     except Exception as e:
         logger.exception(f"路由 {route_name} 抓取失败")
         raise HTTPException(status_code=502, detail=f"抓取失败: {e}")

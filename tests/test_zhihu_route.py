@@ -104,12 +104,32 @@ class TestZhihuFormatQuestionDescription:
 
 class TestZhihuRouteFeedInfo:
     @pytest.mark.asyncio
-    async def test_feed_info_returns_correct_title_and_link(self, route):
+    async def test_feed_info_fallback_without_actor(self, route):
+        """fetch() 未调用时，feed_info 使用 user_id 作为 fallback"""
         info = await route.feed_info(path_params=["kvxjr369f"])
 
         assert info.title == "知乎动态 - kvxjr369f"
         assert info.link == "https://www.zhihu.com/people/kvxjr369f"
         assert "kvxjr369f" in info.description
+
+    @pytest.mark.asyncio
+    async def test_feed_info_uses_actor_name(self, route):
+        """fetch() 填充 _actor 后，feed_info 使用 actor.name"""
+        route._actor = {"name": "张三", "headline": "知乎签名档"}
+        info = await route.feed_info(path_params=["kvxjr369f"])
+
+        assert info.title == "知乎动态 - 张三"
+        assert info.link == "https://www.zhihu.com/people/kvxjr369f"
+        assert info.description == "知乎签名档"
+
+    @pytest.mark.asyncio
+    async def test_feed_info_actor_empty_headline_fallback(self, route):
+        """actor.headline 为空时使用默认描述"""
+        route._actor = {"name": "李四", "headline": ""}
+        info = await route.feed_info(path_params=["kvxjr369f"])
+
+        assert info.title == "知乎动态 - 李四"
+        assert info.description == "知乎用户 李四 的最新动态"
 
     @pytest.mark.asyncio
     async def test_feed_info_requires_user_id(self, route):
