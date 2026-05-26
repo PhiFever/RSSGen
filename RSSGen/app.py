@@ -92,12 +92,6 @@ async def feed(route_name: str, path: str, request: Request):
     route = route_cls(merged_config)
     fmt = request.query_params.get("format", "atom")
 
-    if refresher and route_config.get("enabled", False):
-        await refresher.trigger(route_name, path_parts, dict(request.query_params))
-        info = await route.feed_info(**kwargs)
-        xml = generate_feed(info, [], format=fmt)
-        return Response(content=xml, media_type="application/xml; charset=utf-8")
-
     try:
         items = await route.fetch(article_store=article_store, **kwargs)
         info = await route.feed_info(**kwargs)
