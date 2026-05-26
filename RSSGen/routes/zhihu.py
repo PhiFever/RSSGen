@@ -333,10 +333,12 @@ class ZhihuRoute(Route):
         user_id = path_params[0]
         limit = int(kwargs.get("limit", 20))
 
-        # 优先从 kwargs 获取（refresher 透传），其次从 self.config 查找
+        # 优先级：kwargs（refresher 透传）→ feed 级 include → 路由级 default_include
         include = kwargs.get("include")
         if include is None:
             include = self._get_feed_include(user_id)
+        if include is None:
+            include = self.config.get("default_include")
 
         # 路由级开关：是否保留作者对自己内容的互动（默认过滤）
         include_self_interaction = bool(
