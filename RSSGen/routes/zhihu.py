@@ -5,10 +5,11 @@ import re
 from datetime import datetime, timezone
 
 from bs4 import BeautifulSoup
-from curl_cffi.requests import AsyncSession
 from loguru import logger
 
 from RSSGen.core.route import FeedInfo, FeedItem, Route
+from RSSGen.core.scraper import Scraper
+from RSSGen.core.utils import lookup_alias, parse_cookie_string
 from RSSGen.core.utils import parse_cookie_string
 from RSSGen.sign.zhihu.sign import get_signature
 
@@ -277,6 +278,15 @@ class ZhihuRoute(Route):
             return match.group(1)
         raise ValueError("Cookie 中缺少 d_c0 字段")
 
+    def _get_scraper(self) -> Scraper:
+        return Scraper(
+            {
+                "cookies": parse_cookie_string(self.config.get("cookie", "")),
+                "rate_limit": self.config.get("rate_limit", 1.0),
+                "proxy": self.config.get("proxy"),
+            }
+        )
+
     async def _fetch_activities(self, user_id: str, limit: int) -> list[dict]:
         """请求知乎用户动态 API，按 paging.next 翻页累积，直到达到 limit 或 is_end"""
         # 第一页固定 limit=5，与浏览器观察到的请求一致；后续页 URL 由 paging.next 提供
@@ -285,32 +295,30 @@ class ZhihuRoute(Route):
             f"?limit=5&desktop=true"
         )
         d_c0 = self._get_d_c0()
-        cookies = parse_cookie_string(self.config.get("cookie", ""))
         referer = f"https://www.zhihu.com/people/{user_id}"
+        # 复用 Scraper：自动模拟 chrome131 TLS 指纹（含 UA）、限速、代理
+        scraper = self._get_scraper()
 
         activities: list[dict] = []
-        async with AsyncSession() as session:
-            while next_url and len(activities) < limit:
-                signature = get_signature(next_url, d_c0)
-                headers = {
-                    "accept": "*/*",
-                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "x-requested-with": "fetch",
-                    "x-zse-93": signature["x_zse_93"],
-                    "x-zse-96": signature["x_zse_96"],
-                    "referer": referer,
-                }
-                resp = await session.get(next_url, headers=headers, cookies=cookies)
-                if resp.status_code != 200:
-                    raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
+        while next_url and len(activities) < limit:
+            signature = get_signature(next_url, d_c0)
+            headers = {
+                "accept": "*/*",
+                "x-requested-with": "fetch",
+                "x-zse-93": signature["x_zse_93"],
+                "x-zse-96": signature["x_zse_96"],
+            }
+            resp = await scraper.get(next_url, referer=referer, headers=headers)
+            if resp.status_code != 200:
+                raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
 
-                data = resp.json()
-                activities.extend(data.get("data", []))
+            data = resp.json()
+            activities.extend(data.get("data", []))
 
-                paging = data.get("paging", {})
-                if paging.get("is_end"):
-                    break
-                next_url = paging.get("next")
+            paging = data.get("paging", {})
+            if paging.get("is_end"):
+                break
+            next_url = paging.get("next")
 
         result = activities[:limit]
         if result:
