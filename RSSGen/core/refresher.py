@@ -77,13 +77,11 @@ class BackgroundRefresher:
             feed_conf = self._find_feed_config(route_name, path_params[0])
             if feed_conf:
                 feed_id_field = self._get_feed_id_field(route_name)
-                for key, value in feed_conf.items():
-                    if (
-                        key != feed_id_field
-                        and key != "alias"
-                        and key not in fetch_kwargs
-                    ):
-                        fetch_kwargs[key] = value
+                # query_params 优先级高于 feed_config，故仅在缺省时补
+                for key, value in self._passthrough_fields(
+                    feed_conf, feed_id_field
+                ).items():
+                    fetch_kwargs.setdefault(key, value)
 
         asyncio.create_task(
             self._refresh_one(route_name, path_params, fetch_kwargs=fetch_kwargs)
@@ -102,6 +100,13 @@ class BackgroundRefresher:
             if fc.get(feed_id_field) == feed_id:
                 return fc
         return None
+
+    @staticmethod
+    def _passthrough_fields(feed_conf: dict, feed_id_field: str) -> dict:
+        """提取 feed_conf 中可透传给 fetch 的字段（排除 feed_id 与 alias）"""
+        return {
+            k: v for k, v in feed_conf.items() if k != feed_id_field and k != "alias"
+        }
 
     def get_status(self) -> dict:
         """返回按路由分组的状态"""
@@ -191,11 +196,7 @@ class BackgroundRefresher:
                     f"[{route_name}] feed 配置缺少 {feed_id_field} 字段，跳过: {feed_conf}"
                 )
                 continue
-            # 构造 fetch_kwargs：透传 feed_conf 中除 feed_id_field 和 alias 之外的字段
-            fetch_kwargs = {}
-            for key, value in feed_conf.items():
-                if key != feed_id_field and key != "alias":
-                    fetch_kwargs[key] = value
+            fetch_kwargs = self._passthrough_fields(feed_conf, feed_id_field)
             await self._refresh_one(route_name, [feed_id], fetch_kwargs=fetch_kwargs)
         logger.info(f"[{route_name}] {label}完成")
 

@@ -1,6 +1,7 @@
 """FastAPI 主服务"""
 
 import sys
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
@@ -21,8 +22,6 @@ logger.add(
     level="INFO",
 )
 
-app = FastAPI(title="RSSGen", description="自托管 RSS 源生成框架")
-
 feed_cache: Cache | None = None
 article_cache: Cache | None = None
 article_store: SqliteArticleStore | None = None
@@ -30,8 +29,8 @@ refresher: BackgroundRefresher | None = None
 config: dict = {}
 
 
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global config, feed_cache, article_cache, article_store, refresher
     config = load_config()
     discover_routes()
@@ -50,14 +49,17 @@ async def startup():
         refresher = BackgroundRefresher(feed_cache, article_store, config)
         await refresher.start()
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown():
-    global refresher, article_store
     if refresher:
         await refresher.stop()
     if article_store:
         await article_store.close()
+
+
+app = FastAPI(
+    title="RSSGen", description="自托管 RSS 源生成框架", lifespan=lifespan
+)
 
 
 @app.get("/")

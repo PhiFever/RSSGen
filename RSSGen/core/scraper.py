@@ -15,13 +15,16 @@ class Scraper:
         self.impersonate: str = config.get("impersonate", "chrome131")
         self.extra_headers: dict = config.get("extra_headers", {})
         self._last_request_time: float = 0
+        self._rate_limit_lock = asyncio.Lock()
 
     async def _rate_limit_wait(self):
-        now = time.monotonic()
-        elapsed = now - self._last_request_time
-        if elapsed < self.rate_limit:
-            await asyncio.sleep(self.rate_limit - elapsed)
-        self._last_request_time = time.monotonic()
+        # 持锁串行化限速点：并发请求共享同一实例时也能保证最小请求间隔
+        async with self._rate_limit_lock:
+            now = time.monotonic()
+            elapsed = now - self._last_request_time
+            if elapsed < self.rate_limit:
+                await asyncio.sleep(self.rate_limit - elapsed)
+            self._last_request_time = time.monotonic()
 
     async def _request(
         self, method: str, url: str, referer: str | None = None, **kwargs
@@ -30,6 +33,7 @@ class Scraper:
         headers = dict(self.extra_headers)
         if referer:
             headers["referer"] = referer
+        headers.update(kwargs.pop("headers", None) or {})
         async with AsyncSession(
             proxy=self.proxy,
             cookies=self.cookies,

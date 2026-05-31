@@ -910,19 +910,18 @@ class TestZhihuRouteFetchWithSigner:
         assert sig["x_zse_96"].startswith(X_ZSE_96_PREFIX)
 
 
-def _patch_async_session(monkeypatch, responses):
-    """把 RSSGen.routes.zhihu.AsyncSession 替换为按 responses 顺序返回的 mock。
+def _patch_scraper(monkeypatch, responses):
+    """把 RSSGen.routes.zhihu.Scraper 替换为按 responses 顺序返回的 mock。
 
-    responses: list of MagicMock，每个元素是单次 session.get 的返回值。
-    返回创建的 session mock 以便断言 get 调用。
+    responses: list of MagicMock，每个元素是单次 scraper.get 的返回值。
+    返回创建的 scraper mock 以便断言 get 调用。
     """
-    session = AsyncMock()
-    session.get = AsyncMock(side_effect=responses)
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=session)
-    cm.__aexit__ = AsyncMock(return_value=None)
-    monkeypatch.setattr("RSSGen.routes.zhihu.AsyncSession", MagicMock(return_value=cm))
-    return session
+    scraper = AsyncMock()
+    scraper.get = AsyncMock(side_effect=responses)
+    monkeypatch.setattr(
+        "RSSGen.routes.zhihu.Scraper", MagicMock(return_value=scraper)
+    )
+    return scraper
 
 
 def _make_page(data: list[dict], next_url: str | None, is_end: bool = False):
@@ -947,12 +946,12 @@ class TestZhihuRouteFetchActivitiesPagination:
             [{"id": str(i)} for i in range(8, 15)],
             next_url="https://www.zhihu.com/api/v3/moments/u/activities?offset=B&page_num=2",
         )
-        session = _patch_async_session(monkeypatch, [page1, page2])
+        scraper = _patch_scraper(monkeypatch, [page1, page2])
 
         result = await route_with_dc0._fetch_activities("u", limit=10)
 
         assert len(result) == 10
-        assert session.get.call_count == 2
+        assert scraper.get.call_count == 2
 
     @pytest.mark.asyncio
     async def test_stops_when_is_end_true(self, monkeypatch, route_with_dc0):
@@ -962,12 +961,12 @@ class TestZhihuRouteFetchActivitiesPagination:
             next_url=None,
             is_end=True,
         )
-        session = _patch_async_session(monkeypatch, [page1])
+        scraper = _patch_scraper(monkeypatch, [page1])
 
         result = await route_with_dc0._fetch_activities("u", limit=20)
 
         assert len(result) == 3
-        assert session.get.call_count == 1
+        assert scraper.get.call_count == 1
 
     @pytest.mark.asyncio
     async def test_uses_paging_next_url(self, monkeypatch, route_with_dc0):
@@ -975,14 +974,14 @@ class TestZhihuRouteFetchActivitiesPagination:
         next_url = "https://www.zhihu.com/api/v3/moments/u/activities?offset=1777652939991&page_num=1"
         page1 = _make_page([{"id": "a"}], next_url=next_url)
         page2 = _make_page([{"id": "b"}], next_url=None, is_end=True)
-        session = _patch_async_session(monkeypatch, [page1, page2])
+        scraper = _patch_scraper(monkeypatch, [page1, page2])
 
         result = await route_with_dc0._fetch_activities("u", limit=20)
 
         assert len(result) == 2
         # 第一次用首页 URL（带 limit=5），第二次必须是 paging.next 提供的 URL
-        first_call_url = session.get.call_args_list[0].args[0]
-        second_call_url = session.get.call_args_list[1].args[0]
+        first_call_url = scraper.get.call_args_list[0].args[0]
+        second_call_url = scraper.get.call_args_list[1].args[0]
         assert "limit=5" in first_call_url
         assert second_call_url == next_url
 
@@ -990,18 +989,18 @@ class TestZhihuRouteFetchActivitiesPagination:
     async def test_stops_when_next_is_missing(self, monkeypatch, route_with_dc0):
         """paging.next 为空时停止（即使 is_end 不是 True）"""
         page1 = _make_page([{"id": "a"}], next_url=None, is_end=False)
-        session = _patch_async_session(monkeypatch, [page1])
+        scraper = _patch_scraper(monkeypatch, [page1])
 
         result = await route_with_dc0._fetch_activities("u", limit=20)
 
         assert len(result) == 1
-        assert session.get.call_count == 1
+        assert scraper.get.call_count == 1
 
     @pytest.mark.asyncio
     async def test_raises_on_non_200(self, monkeypatch, route_with_dc0):
         """非 200 状态码抛 RuntimeError"""
         bad = MagicMock(status_code=403)
-        _patch_async_session(monkeypatch, [bad])
+        _patch_scraper(monkeypatch, [bad])
 
         with pytest.raises(RuntimeError, match="403"):
             await route_with_dc0._fetch_activities("u", limit=20)
