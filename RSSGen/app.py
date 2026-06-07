@@ -11,6 +11,7 @@ from RSSGen.config import load_config
 from RSSGen.core.cache import Cache
 from RSSGen.core.feed import generate_feed
 from RSSGen.core.article_store import SqliteArticleStore
+from RSSGen.core.notifier import Notifier
 from RSSGen.core.refresher import BackgroundRefresher
 from RSSGen.routes import discover_routes, get_registry
 
@@ -26,12 +27,13 @@ feed_cache: Cache | None = None
 article_cache: Cache | None = None
 article_store: SqliteArticleStore | None = None
 refresher: BackgroundRefresher | None = None
+notifier: Notifier | None = None
 config: dict = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global config, feed_cache, article_cache, article_store, refresher
+    global config, feed_cache, article_cache, article_store, refresher, notifier
     config = load_config()
     discover_routes()
     logger.info(f"已加载路由: {list(get_registry().keys())}")
@@ -44,9 +46,11 @@ async def lifespan(app: FastAPI):
     article_store = SqliteArticleStore(sqlite_path)
     await article_store.init()
 
+    notifier = Notifier(config)
+
     routes_config = config.get("routes", {})
     if any(r.get("enabled", False) for r in routes_config.values()):
-        refresher = BackgroundRefresher(feed_cache, article_store, config)
+        refresher = BackgroundRefresher(feed_cache, article_store, config, notifier)
         await refresher.start()
 
     yield
@@ -77,6 +81,9 @@ async def feed(route_name: str, path: str, request: Request):
     route_cls = registry.get(route_name)
     if not route_cls:
         raise HTTPException(status_code=404, detail=f"路由不存在: {route_name}")
+
+    if notifier and notifier.is_route_disabled(route_name):
+        raise HTTPException(status_code=502, detail=f"路由 {route_name} 已禁用（业务错误），重启后恢复")
 
     path_parts = [p for p in path.split("/") if p]
     cache_key = BackgroundRefresher.build_cache_key(route_name, path_parts)
