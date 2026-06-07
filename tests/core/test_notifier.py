@@ -1,5 +1,8 @@
 """notifier 模块单元测试"""
 
+import sys
+from unittest.mock import MagicMock
+
 import pytest
 
 from RSSGen.core.notifier import Notifier
@@ -107,17 +110,12 @@ class TestNotifier:
 
     @pytest.mark.asyncio
     async def test_notify_with_mock_apprise(self, monkeypatch):
-        """测试通知发送（mock apprise）"""
-        mock_notify_called = False
+        """测试通知发送，验证消息内容包含路由、状态码和错误信息"""
+        captured_messages = []
 
         def mock_notify(message):
-            nonlocal mock_notify_called
-            mock_notify_called = True
+            captured_messages.append(message)
             return True
-
-        # Mock apprise 模块
-        import sys
-        from unittest.mock import MagicMock
 
         mock_apprise_module = MagicMock()
         mock_apprise_instance = MagicMock()
@@ -135,25 +133,53 @@ class TestNotifier:
 
         await notifier.notify("afdian", 403, "Forbidden")
 
-        assert mock_notify_called is True
+        assert len(captured_messages) == 1
+        message = captured_messages[0]
+        assert "afdian" in message
+        assert "403" in message
+        assert "Forbidden" in message
 
     @pytest.mark.asyncio
-    async def test_notify_integration_flow(self):
-        """测试通知集成流程"""
+    async def test_state_combination_smoke(self):
+        """状态组合冒烟测试：业务错误判断 + 路由禁用的组合使用"""
         config = {
             "notifier": {
-                "enabled": False,  # 禁用通知，避免实际发送
+                "enabled": False,
                 "service_urls": ["tgram://token/chat_id"],
             }
         }
         notifier = Notifier(config)
 
-        # 测试业务错误判断
+        # 业务错误判断
         assert notifier.is_business_error(403) is True
         assert notifier.is_business_error(500) is False
 
-        # 测试路由禁用
+        # 路由禁用状态变化
         assert notifier.is_route_disabled("afdian") is False
         notifier.disable_route("afdian")
         assert notifier.is_route_disabled("afdian") is True
         assert notifier.is_route_disabled("zhihu") is False
+
+    @pytest.mark.asyncio
+    async def test_send_notification_exception_handled(self, monkeypatch):
+        """测试 _send_notification 中 apprise.notify 抛异常时不向上传播"""
+
+        def mock_notify_raises(message):
+            raise RuntimeError("network error")
+
+        mock_apprise_module = MagicMock()
+        mock_apprise_instance = MagicMock()
+        mock_apprise_instance.notify = mock_notify_raises
+        mock_apprise_module.Apprise.return_value = mock_apprise_instance
+        monkeypatch.setitem(sys.modules, "apprise", mock_apprise_module)
+
+        config = {
+            "notifier": {
+                "enabled": True,
+                "service_urls": ["tgram://token/chat_id"],
+            }
+        }
+        notifier = Notifier(config)
+
+        # 不应抛出异常，内部 try/except 会捕获并记录日志
+        await notifier.notify("afdian", 403, "Forbidden")
