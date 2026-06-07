@@ -173,6 +173,9 @@ class BackgroundRefresher:
 
             while True:
                 await asyncio.sleep(refresh_interval)
+                if self.notifier.is_route_disabled(route_name):
+                    logger.warning(f"[{route_name}] 路由已禁用，停止定时刷新循环")
+                    return
                 try:
                     await self._refresh_feeds("定时刷新", route_name)
                 except Exception:
@@ -273,26 +276,21 @@ class BackgroundRefresher:
             }
 
             # 检查是否是业务错误，如果是则发送通知并禁用路由
-            if last_error and self._is_business_error(last_error):
-                status_code = self._get_status_code(last_error)
+            status_code = self._extract_status_code(last_error)
+            if status_code and self.notifier.is_business_error(status_code):
                 await self.notifier.notify(route_name, status_code, str(last_error))
                 self.notifier.disable_route(route_name)
                 logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}），重启后恢复")
         finally:
             self._pending.discard(cache_key)
 
-    def _is_business_error(self, error: Exception) -> bool:
-        """判断是否是业务错误"""
-        from curl_cffi.requests.exceptions import HTTPError
-
-        if isinstance(error, HTTPError) and error.response:
-            return self.notifier.is_business_error(error.response.status_code)
-        return False
-
-    def _get_status_code(self, error: Exception) -> int:
-        """从异常中获取状态码"""
+    @staticmethod
+    def _extract_status_code(error: Exception | None) -> int | None:
+        """从异常中提取 HTTP 状态码，非 HTTP 异常返回 None"""
+        if error is None:
+            return None
         from curl_cffi.requests.exceptions import HTTPError
 
         if isinstance(error, HTTPError) and error.response:
             return error.response.status_code
-        return 0
+        return None
