@@ -104,3 +104,56 @@ class TestNotifier:
         notifier = Notifier({"notifier": {"enabled": True, "service_urls": []}})
         # 不应抛出异常
         await notifier.notify("afdian", 403, "Forbidden")
+
+    @pytest.mark.asyncio
+    async def test_notify_with_mock_apprise(self, monkeypatch):
+        """测试通知发送（mock apprise）"""
+        mock_notify_called = False
+
+        def mock_notify(message):
+            nonlocal mock_notify_called
+            mock_notify_called = True
+            return True
+
+        # Mock apprise 模块
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_apprise_module = MagicMock()
+        mock_apprise_instance = MagicMock()
+        mock_apprise_instance.notify = mock_notify
+        mock_apprise_module.Apprise.return_value = mock_apprise_instance
+        monkeypatch.setitem(sys.modules, "apprise", mock_apprise_module)
+
+        config = {
+            "notifier": {
+                "enabled": True,
+                "service_urls": ["tgram://token/chat_id"],
+            }
+        }
+        notifier = Notifier(config)
+
+        await notifier.notify("afdian", 403, "Forbidden")
+
+        assert mock_notify_called is True
+
+    @pytest.mark.asyncio
+    async def test_notify_integration_flow(self):
+        """测试通知集成流程"""
+        config = {
+            "notifier": {
+                "enabled": False,  # 禁用通知，避免实际发送
+                "service_urls": ["tgram://token/chat_id"],
+            }
+        }
+        notifier = Notifier(config)
+
+        # 测试业务错误判断
+        assert notifier.is_business_error(403) is True
+        assert notifier.is_business_error(500) is False
+
+        # 测试路由禁用
+        assert notifier.is_route_disabled("afdian") is False
+        notifier.disable_route("afdian")
+        assert notifier.is_route_disabled("afdian") is True
+        assert notifier.is_route_disabled("zhihu") is False
