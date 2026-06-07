@@ -28,6 +28,16 @@ refresher:
   retry_base_delay: 5   # 重试基础延迟（秒），指数退避
   preinit_url: "https://cn.bing.com/"  # HTTP 客户端预初始化 URL，null/空字符串则跳过
 
+# 通知配置（当获取上游数据失败时发送通知）
+notifier:
+  enabled: false  # 是否启用通知
+  service_urls:   # 通知服务 URL 列表（Apprise 格式）
+    - "tgram://bot_token/chat_id"
+    - "mailto://user:pass@gmail.com"
+  # business_error_codes:  # 可选，自定义业务错误状态码（默认 [400, 401, 403, 404, 410, 422, 451]）
+  #   - 403
+  #   - 401
+
 # ============ 路由配置 ============
 
 routes:
