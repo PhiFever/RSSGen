@@ -998,9 +998,18 @@ class TestZhihuRouteFetchActivitiesPagination:
 
     @pytest.mark.asyncio
     async def test_raises_on_non_200(self, monkeypatch, route_with_dc0):
-        """非 200 状态码抛 RuntimeError"""
-        bad = MagicMock(status_code=403)
+        """非 200 状态码抛 HTTPError"""
+        from curl_cffi.requests.exceptions import HTTPError
+
+        bad = MagicMock()
+        bad.status_code = 403
+        bad.ok = False
+        bad.reason = "Forbidden"
+        # raise_for_status 需要访问 response 属性
+        bad.raise_for_status.side_effect = HTTPError(
+            f"HTTP Error {bad.status_code}: {bad.reason}", 0, bad
+        )
         _patch_scraper(monkeypatch, [bad])
 
-        with pytest.raises(RuntimeError, match="403"):
+        with pytest.raises(HTTPError):
             await route_with_dc0._fetch_activities("u", limit=20)
