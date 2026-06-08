@@ -25,3 +25,9 @@ miniflux-db/
 .claude/
 .idea/
 .vscode/
+
+# Go-specific
+*.exe
+*.test
+*.out
+vendor/

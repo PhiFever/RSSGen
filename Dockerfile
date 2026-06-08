@@ -1,34 +1,38 @@
-# 多阶段构建：builder 用带 uv 的镜像，最终镜像不含 uv，仅含运行时与 .venv
+# Go 版本 Dockerfile - 多阶段构建，最终 scratch 镜像
 
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+FROM golang:1.22-alpine AS builder
 
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    UV_NO_DEV=1 \
-    UV_PYTHON_DOWNLOADS=0
+# 安装 CA 证书和时区数据
+RUN apk add --no-cache ca-certificates tzdata
 
 WORKDIR /app
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --locked --no-install-project
+# 先复制依赖文件，利用 Docker 缓存
+COPY go.mod go.sum ./
+RUN go mod download
 
-COPY . /app
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
+# 复制源代码并构建
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+    -ldflags="-s -w" \
+    -o /rssgen \
+    ./cmd/rssgen
 
+# 最终 scratch 镜像
+FROM scratch
 
-FROM python:3.12-slim-bookworm
+# 复制 CA 证书（HTTPS 请求需要）
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-RUN groupadd --system --gid 999 nonroot \
- && useradd --system --gid 999 --uid 999 --create-home nonroot
+# 复制时区数据
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-COPY --from=builder --chown=nonroot:nonroot /app /app
+# 复制编译好的二进制文件
+COPY --from=builder /rssgen /rssgen
 
-ENV PATH="/app/.venv/bin:$PATH"
+# 复制配置文件模板
+COPY config.example.yml /config.yml
 
-WORKDIR /app
-USER nonroot
+EXPOSE 8000
 
-CMD ["uvicorn", "RSSGen.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/rssgen"]
