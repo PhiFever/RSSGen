@@ -173,9 +173,6 @@ class BackgroundRefresher:
 
             while True:
                 await asyncio.sleep(refresh_interval)
-                if self.notifier.is_route_disabled(route_name):
-                    logger.warning(f"[{route_name}] 路由已禁用，停止定时刷新循环")
-                    return
                 try:
                     await self._refresh_feeds("定时刷新", route_name)
                 except Exception:
@@ -214,9 +211,9 @@ class BackgroundRefresher:
             return
         self._pending.add(cache_key)
 
-        # 检查路由是否被禁用
-        if self.notifier.is_route_disabled(route_name):
-            logger.warning(f"路由 {route_name} 已被禁用，跳过刷新")
+        # 检查该 feed 是否被禁用
+        if self.notifier.is_feed_disabled(cache_key):
+            logger.warning(f"feed {cache_key} 已被禁用，跳过刷新")
             self._pending.discard(cache_key)
             return
 
@@ -275,12 +272,12 @@ class BackgroundRefresher:
                 "item_count": 0,
             }
 
-            # 检查是否是业务错误，如果是则发送通知并禁用路由
+            # 检查是否是业务错误，如果是则发送通知并禁用该 feed
             status_code = self._extract_status_code(last_error)
             if status_code and self.notifier.is_business_error(status_code):
-                await self.notifier.notify(route_name, status_code, str(last_error))
-                self.notifier.disable_route(route_name)
-                logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}），重启后恢复")
+                await self.notifier.notify(cache_key, status_code, str(last_error))
+                self.notifier.disable_feed(cache_key)
+                logger.warning(f"feed {cache_key} 已禁用（业务错误 {status_code}），重启后恢复")
         finally:
             self._pending.discard(cache_key)
 

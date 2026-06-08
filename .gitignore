@@ -17,3 +17,4 @@ miniflux-db/
 .worktrees/
 
 .idea/
+.claude/settings.local.json

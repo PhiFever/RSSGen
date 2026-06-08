@@ -82,11 +82,11 @@ async def feed(route_name: str, path: str, request: Request):
     if not route_cls:
         raise HTTPException(status_code=404, detail=f"路由不存在: {route_name}")
 
-    if notifier and notifier.is_route_disabled(route_name):
-        raise HTTPException(status_code=502, detail=f"路由 {route_name} 已禁用（业务错误），重启后恢复")
-
     path_parts = [p for p in path.split("/") if p]
     cache_key = BackgroundRefresher.build_cache_key(route_name, path_parts)
+
+    if notifier and notifier.is_feed_disabled(cache_key):
+        raise HTTPException(status_code=502, detail=f"订阅源 {cache_key} 已禁用（业务错误），重启后恢复")
 
     cached = await feed_cache.get(cache_key)
     if cached:

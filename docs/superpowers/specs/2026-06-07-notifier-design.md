@@ -9,22 +9,23 @@
 ### 1. 通知触发条件
 - **区分错误类型**：按 HTTP 状态码区分业务错误和临时错误
 - **仅在重试全部失败后**：当后台刷新器的 3 次重试都失败后，才发送通知
-- **暂时禁用路由**：业务错误后禁用路由，防止持续报错，重启可恢复
+- **暂时禁用出错的 feed**：业务错误后仅禁用出错的那个 feed（feed 级，按 `cache_key`=`route/feed_id` 区分），同路由下其他 feed 不受影响，防止持续报错，重启可恢复
 
 ### 2. 错误类型定义
 - **业务错误**：HTTP 4xx 状态码（400, 401, 403, 404, 410, 422, 451）
 - **临时错误**：HTTP 5xx 状态码和网络错误
 
 ### 3. 通知内容
-- **基础信息**：路由名称、HTTP 状态码、错误消息、失败时间
+- **基础信息**：订阅源标识（`cache_key`，形如 `route/feed_id`）、HTTP 状态码、错误消息、失败时间
 - **格式**：纯文本
 
 ### 4. 向 Miniflux 报错
 - **HTTP 502 错误**：直接返回 502，Miniflux 会记录错误并可能停止轮询
 
-### 5. 路由禁用机制
-- **内存中禁用**：记录在 `disabled_routes` 集合中
-- **仅重启恢复**：只能通过重启 RSSGen 来恢复被禁用的路由
+### 5. Feed 禁用机制
+- **feed 级粒度**：以 `cache_key`（`route/feed_id`）为单位禁用，单个 feed 出错不波及同路由其他 feed
+- **内存中禁用**：记录在 `disabled_feeds` 集合中
+- **仅重启恢复**：只能通过重启 RSSGen 来恢复被禁用的 feed
 
 ### 6. Apprise 配置
 - **全局配置**：在 `config.yml` 中配置一个全局的 Apprise URL，所有路由共用
@@ -57,7 +58,7 @@ RSSGen/
 ```
 Miniflux 拉取 → GET /feed/{route_name}/{path}
     ↓
-检查路由是否被禁用
+检查该 feed（cache_key）是否被禁用
     ↓
 如果被禁用，返回 HTTP 502
     ↓
@@ -71,7 +72,7 @@ Miniflux 拉取 → GET /feed/{route_name}/{path}
     ↓
 重试全部失败后：
     - 发送 Apprise 通知
-    - 禁用路由
+    - 禁用该 feed
     - 返回 HTTP 502
 ```
 
@@ -104,28 +105,28 @@ class Notifier:
         self.enabled = config.get("enabled", False)
         self.service_urls = config.get("service_urls", [])
         self.business_error_codes = set(config.get("business_error_codes", [400, 401, 403, 404, 410, 422, 451]))
-        self.disabled_routes: set[str] = set()  # 被禁用的路由集合
+        self.disabled_feeds: set[str] = set()  # 被禁用的 feed 集合（cache_key）
         self._apprise = None  # apprise 实例（懒加载）
     
     def is_business_error(self, status_code: int) -> bool:
         """判断是否为业务错误"""
         return status_code in self.business_error_codes
     
-    def is_route_disabled(self, route_key: str) -> bool:
-        """检查路由是否被禁用"""
-        return route_key in self.disabled_routes
+    def is_feed_disabled(self, feed_key: str) -> bool:
+        """检查 feed 是否被禁用（feed_key 即 cache_key：route/feed_id）"""
+        return feed_key in self.disabled_feeds
     
-    def disable_route(self, route_key: str):
-        """禁用路由"""
-        self.disabled_routes.add(route_key)
+    def disable_feed(self, feed_key: str):
+        """禁用单个 feed（feed_key 即 cache_key：route/feed_id）"""
+        self.disabled_feeds.add(feed_key)
     
-    async def notify(self, route_key: str, status_code: int, error_message: str):
+    async def notify(self, feed_key: str, status_code: int, error_message: str):
         """发送通知"""
         if not self.enabled or not self.service_urls:
             return
         
         # 构建通知内容
-        message = f"[RSSGen] 路由 {route_key} 获取失败\n"
+        message = f"[RSSGen] 订阅源 {feed_key} 获取失败\n"
         message += f"状态码: {status_code}\n"
         message += f"错误: {error_message}\n"
         message += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -166,10 +167,10 @@ notifier 捕获 HTTPError，获取状态码
     ↓
 判断是否是业务错误（4xx）
     ↓
-如果是业务错误，发送通知 + 禁用路由
+如果是业务错误，发送通知 + 禁用该 feed
 ```
 
-## 通知发送与路由禁用
+## 通知发送与 feed 禁用
 
 ### 通知发送流程
 
@@ -180,24 +181,26 @@ refresher._refresh_one()
     ↓ 获取状态码 status_code = e.response.status_code
     ↓ 检查 notifier.is_business_error(status_code)
     ↓ 如果是业务错误
-    ↓ notifier.notify(route_name, status_code, str(e))
-    ↓ notifier.disable_route(route_name)
+    ↓ cache_key = build_cache_key(route_name, path_params)
+    ↓ notifier.notify(cache_key, status_code, str(e))
+    ↓ notifier.disable_feed(cache_key)
     ↓ 记录日志
 ```
 
-### 路由禁用检查
+### feed 禁用检查
 
 ```
 app.py GET /feed/{route_name}/{path}
-    ↓ 检查 notifier.is_route_disabled(route_name)
+    ↓ cache_key = build_cache_key(route_name, path_parts)
+    ↓ 检查 notifier.is_feed_disabled(cache_key)
     ↓ 如果被禁用
-    ↓ raise HTTPException(status_code=502, detail=f"路由 {route_name} 已禁用")
+    ↓ raise HTTPException(status_code=502, detail=f"订阅源 {cache_key} 已禁用")
 ```
 
 ### 通知内容格式
 
 ```python
-message = f"[RSSGen] 路由 {route_name} 获取失败\n"
+message = f"[RSSGen] 订阅源 {cache_key} 获取失败\n"
 message += f"状态码: {status_code}\n"
 message += f"错误: {error_message}\n"
 message += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -205,7 +208,7 @@ message += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 示例输出：
 ```
-[RSSGen] 路由 afdian 获取失败
+[RSSGen] 订阅源 afdian/Alice 获取失败
 状态码: 403
 错误: HTTP Error 403: Forbidden
 时间: 2026-06-07 20:30:00
@@ -215,7 +218,7 @@ message += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 当通知发送成功时，记录 INFO 日志：
 ```python
-logger.info(f"已发送通知: 路由 {route_name} 业务错误 {status_code}")
+logger.info("已发送通知")
 ```
 
 当通知发送失败时，记录 ERROR 日志（但不影响主流程）：
@@ -223,9 +226,9 @@ logger.info(f"已发送通知: 路由 {route_name} 业务错误 {status_code}")
 logger.error(f"发送通知失败: {e}")
 ```
 
-当路由被禁用时，记录 WARNING 日志：
+当 feed 被禁用时，记录 WARNING 日志：
 ```python
-logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}），重启后恢复")
+logger.warning(f"feed {cache_key} 已禁用（业务错误 {status_code}），重启后恢复")
 ```
 
 ## 测试策略
@@ -234,8 +237,8 @@ logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}）�
 
 1. **notifier 模块测试**：
    - 测试 `is_business_error()` 方法
-   - 测试 `is_route_disabled()` 方法
-   - 测试 `disable_route()` 方法
+   - 测试 `is_feed_disabled()` 方法
+   - 测试 `disable_feed()` 方法（含 feed 级隔离）
    - 测试 `notify()` 方法（mock apprise）
 
 2. **错误处理统一测试**：
@@ -244,22 +247,22 @@ logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}）�
 
 ### 集成测试
 
-1. **通知发送测试**：
+1. **通知发送测试**（`tests/test_refresher.py::TestNotifierIntegration`）：
    - 模拟 HTTP 403 错误
    - 验证通知是否发送
-   - 验证路由是否被禁用
+   - 验证出错的 feed 是否被禁用，且同路由其他 feed 不受影响
 
-2. **路由禁用测试**：
-   - 验证禁用的路由返回 502
-   - 验证重启后路由恢复
+2. **feed 禁用测试**（`tests/test_app_feed.py`）：
+   - 验证禁用的 feed 返回 502
+   - 验证同路由未禁用的 feed 不受影响
 
 ### 测试覆盖
 
 - **正常流程**：通知未启用时不发送通知
-- **业务错误**：发送通知 + 禁用路由
-- **临时错误**：不发送通知，不禁用路由
+- **业务错误**：发送通知 + 禁用该 feed
+- **临时错误**：不发送通知，不禁用 feed
 - **通知失败**：记录错误日志，不影响主流程
-- **路由禁用**：返回 HTTP 502
+- **feed 禁用**：返回 HTTP 502
 
 ## 依赖
 
@@ -289,7 +292,7 @@ dependencies = [
 
 ### 阶段 4：集成通知逻辑
 1. 修改 `RSSGen/core/refresher.py`，集成 notifier
-2. 修改 `RSSGen/app.py`，检查路由禁用状态
+2. 修改 `RSSGen/app.py`，检查 feed 禁用状态
 
 ### 阶段 5：测试
 1. 编写单元测试

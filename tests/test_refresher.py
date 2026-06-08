@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from RSSGen.core.cache import Cache
+from RSSGen.core.notifier import Notifier
 from RSSGen.core.refresher import BackgroundRefresher
 
 
@@ -388,3 +389,105 @@ class TestFetchKwargsPassthrough:
             assert call_kwargs["custom_param"] == "value"
             assert "user_id" not in call_kwargs  # feed_id_field 不透传
             assert "alias" not in call_kwargs  # alias 不透传
+
+
+# ── notifier 集成：业务错误禁用 feed ──────────────────────
+
+
+def _http_error(status_code: int):
+    """构造携带 status_code 的 curl_cffi HTTPError"""
+    from curl_cffi.requests.exceptions import HTTPError
+
+    resp = MagicMock()
+    resp.status_code = status_code
+    return HTTPError(f"HTTP Error {status_code}", 0, resp)
+
+
+def _spy_notifier():
+    notifier = Notifier({"notifier": {"enabled": False}})
+    notifier.notify = AsyncMock()
+    return notifier
+
+
+def _failing_registry(error: Exception):
+    mock_route = MagicMock()
+    mock_route.fetch = AsyncMock(side_effect=error)
+    return {"afdian": MagicMock(return_value=mock_route)}, mock_route
+
+
+class TestNotifierIntegration:
+    @pytest.mark.asyncio
+    async def test_business_error_disables_only_that_feed(
+        self, caches, multi_route_config
+    ):
+        """业务错误(403)重试全部失败后：只禁用该 feed 并发送通知"""
+        feed_cache, article_store = caches
+        notifier = _spy_notifier()
+        refresher = BackgroundRefresher(
+            feed_cache, article_store, multi_route_config, notifier
+        )
+        registry, _ = _failing_registry(_http_error(403))
+
+        with patch("RSSGen.core.refresher.get_registry", return_value=registry):
+            await refresher._refresh_one("afdian", ["author1"], fetch_kwargs={})
+
+        # 只有出错的 feed 被禁用
+        assert notifier.is_feed_disabled("afdian/author1") is True
+        # 同路由下其他 feed 不受牵连（feed 级隔离，与旧的 route 级禁用形成对比）
+        assert notifier.is_feed_disabled("afdian/author2") is False
+        # 通知携带 feed 标识与状态码
+        notifier.notify.assert_awaited_once()
+        args = notifier.notify.call_args.args
+        assert args[0] == "afdian/author1"
+        assert args[1] == 403
+
+    @pytest.mark.asyncio
+    async def test_temporary_error_keeps_feed_enabled(
+        self, caches, multi_route_config
+    ):
+        """临时错误(503)：不禁用、不通知，仅记录错误"""
+        feed_cache, article_store = caches
+        notifier = _spy_notifier()
+        refresher = BackgroundRefresher(
+            feed_cache, article_store, multi_route_config, notifier
+        )
+        registry, _ = _failing_registry(_http_error(503))
+
+        with patch("RSSGen.core.refresher.get_registry", return_value=registry):
+            await refresher._refresh_one("afdian", ["author1"], fetch_kwargs={})
+
+        assert notifier.is_feed_disabled("afdian/author1") is False
+        notifier.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_network_error_keeps_feed_enabled(self, caches, multi_route_config):
+        """网络错误(非 HTTPError)：无状态码，不禁用、不通知"""
+        feed_cache, article_store = caches
+        notifier = _spy_notifier()
+        refresher = BackgroundRefresher(
+            feed_cache, article_store, multi_route_config, notifier
+        )
+        registry, _ = _failing_registry(ConnectionError("dns fail"))
+
+        with patch("RSSGen.core.refresher.get_registry", return_value=registry):
+            await refresher._refresh_one("afdian", ["author1"], fetch_kwargs={})
+
+        assert notifier.is_feed_disabled("afdian/author1") is False
+        notifier.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_disabled_feed_skips_fetch(self, caches, multi_route_config):
+        """已禁用的 feed：跳过刷新，不调用 fetch"""
+        feed_cache, article_store = caches
+        notifier = Notifier({"notifier": {"enabled": False}})
+        notifier.disable_feed("afdian/author1")
+        refresher = BackgroundRefresher(
+            feed_cache, article_store, multi_route_config, notifier
+        )
+        registry, mock_route = _failing_registry(RuntimeError("should not run"))
+        mock_route.fetch = AsyncMock(return_value=[])
+
+        with patch("RSSGen.core.refresher.get_registry", return_value=registry):
+            await refresher._refresh_one("afdian", ["author1"], fetch_kwargs={})
+
+        mock_route.fetch.assert_not_called()

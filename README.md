@@ -71,6 +71,30 @@ routes:
 | `format` | 输出格式，`atom`（默认）或 `rss` | `?format=rss` |
 | `limit` | 返回条目数量，默认 20 | `?limit=10` |
 
+## 故障通知
+
+当后台刷新某个订阅源连续重试均失败、且为**业务错误**（默认 4xx：400/401/403/404/410/422/451）时，RSSGen 会：
+
+1. 通过 [Apprise](https://github.com/caronc/apprise) 发送一条通知（Telegram、邮件等）；
+2. **禁用该订阅源**（feed 级，仅影响出错的那个 feed，同一路由下其他 feed 不受影响），后续 Miniflux 拉取该地址将返回 HTTP 502；
+3. 重启 RSSGen 后自动恢复（禁用状态仅存于内存）。
+
+临时错误（5xx、网络错误）只会重试，不触发通知或禁用。
+
+**配置（config.yml）：**
+
+```yaml
+notifier:
+  enabled: true            # 是否启用通知
+  service_urls:            # 通知服务 URL 列表（Apprise 格式）
+    - "tgram://bot_token/chat_id"
+    - "mailto://user:pass@gmail.com"
+  # business_error_codes:  # 可选，自定义业务错误状态码（默认 [400, 401, 403, 404, 410, 422, 451]）
+  #   - 403
+```
+
+`service_urls` 支持的服务格式见 [Apprise 文档](https://github.com/caronc/apprise/wiki)。
+
 ## 致谢
 
 感谢 [cv-cat/ZhihuApis: 知乎算法逆向](https://github.com/cv-cat/ZhihuApis) 关于知乎路由的启发

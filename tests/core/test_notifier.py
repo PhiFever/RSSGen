@@ -17,7 +17,7 @@ class TestNotifier:
         assert notifier.enabled is False
         assert notifier.service_urls == []
         assert notifier.business_error_codes == {400, 401, 403, 404, 410, 422, 451}
-        assert notifier.disabled_routes == set()
+        assert notifier.disabled_feeds == set()
 
     def test_init_with_config(self):
         """测试带配置初始化"""
@@ -66,33 +66,36 @@ class TestNotifier:
         assert notifier.is_business_error(400) is False
         assert notifier.is_business_error(401) is False
 
-    def test_is_route_disabled(self):
-        """测试路由禁用检查"""
+    def test_is_feed_disabled(self):
+        """测试 feed 禁用检查（键为 cache_key: route/feed_id）"""
         notifier = Notifier({})
 
         # 初始状态
-        assert notifier.is_route_disabled("afdian") is False
-        assert notifier.is_route_disabled("zhihu") is False
+        assert notifier.is_feed_disabled("afdian/author1") is False
+        assert notifier.is_feed_disabled("zhihu/user1") is False
 
-    def test_disable_route(self):
-        """测试禁用路由"""
+    def test_disable_feed_isolates_same_route(self):
+        """禁用某 feed 只影响该 feed，不波及同路由下其他 feed"""
         notifier = Notifier({})
 
-        notifier.disable_route("afdian")
-        assert notifier.is_route_disabled("afdian") is True
-        assert notifier.is_route_disabled("zhihu") is False
+        notifier.disable_feed("zhihu/user1")
+        assert notifier.is_feed_disabled("zhihu/user1") is True
+        # 同一路由的另一个 feed 不应被禁用（feed 级隔离的核心）
+        assert notifier.is_feed_disabled("zhihu/user2") is False
+        # 其他路由也不受影响
+        assert notifier.is_feed_disabled("afdian/author1") is False
 
-        notifier.disable_route("zhihu")
-        assert notifier.is_route_disabled("afdian") is True
-        assert notifier.is_route_disabled("zhihu") is True
+        notifier.disable_feed("afdian/author1")
+        assert notifier.is_feed_disabled("zhihu/user1") is True
+        assert notifier.is_feed_disabled("afdian/author1") is True
 
-    def test_disable_route_idempotent(self):
-        """测试禁用路由幂等性"""
+    def test_disable_feed_idempotent(self):
+        """测试禁用 feed 幂等性"""
         notifier = Notifier({})
 
-        notifier.disable_route("afdian")
-        notifier.disable_route("afdian")
-        assert notifier.is_route_disabled("afdian") is True
+        notifier.disable_feed("afdian/author1")
+        notifier.disable_feed("afdian/author1")
+        assert notifier.is_feed_disabled("afdian/author1") is True
 
     @pytest.mark.asyncio
     async def test_notify_disabled(self):
@@ -141,7 +144,7 @@ class TestNotifier:
 
     @pytest.mark.asyncio
     async def test_state_combination_smoke(self):
-        """状态组合冒烟测试：业务错误判断 + 路由禁用的组合使用"""
+        """状态组合冒烟测试：业务错误判断 + feed 禁用的组合使用"""
         config = {
             "notifier": {
                 "enabled": False,
@@ -154,11 +157,11 @@ class TestNotifier:
         assert notifier.is_business_error(403) is True
         assert notifier.is_business_error(500) is False
 
-        # 路由禁用状态变化
-        assert notifier.is_route_disabled("afdian") is False
-        notifier.disable_route("afdian")
-        assert notifier.is_route_disabled("afdian") is True
-        assert notifier.is_route_disabled("zhihu") is False
+        # feed 禁用状态变化
+        assert notifier.is_feed_disabled("afdian/author1") is False
+        notifier.disable_feed("afdian/author1")
+        assert notifier.is_feed_disabled("afdian/author1") is True
+        assert notifier.is_feed_disabled("zhihu/user1") is False
 
     @pytest.mark.asyncio
     async def test_send_notification_exception_handled(self, monkeypatch):

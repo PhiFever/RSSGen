@@ -19,27 +19,27 @@ class Notifier:
         self.business_error_codes = set(
             notifier_config.get("business_error_codes", self.DEFAULT_BUSINESS_ERROR_CODES)
         )
-        self.disabled_routes: set[str] = set()
+        self.disabled_feeds: set[str] = set()
         self._apprise = None
 
     def is_business_error(self, status_code: int) -> bool:
         """判断是否为业务错误"""
         return status_code in self.business_error_codes
 
-    def is_route_disabled(self, route_key: str) -> bool:
-        """检查路由是否被禁用"""
-        return route_key in self.disabled_routes
+    def is_feed_disabled(self, feed_key: str) -> bool:
+        """检查 feed 是否被禁用（feed_key 即 cache_key：route/feed_id）"""
+        return feed_key in self.disabled_feeds
 
-    def disable_route(self, route_key: str):
-        """禁用路由"""
-        self.disabled_routes.add(route_key)
+    def disable_feed(self, feed_key: str):
+        """禁用单个 feed（feed_key 即 cache_key：route/feed_id）"""
+        self.disabled_feeds.add(feed_key)
 
-    async def notify(self, route_key: str, status_code: int, error_message: str):
+    async def notify(self, feed_key: str, status_code: int, error_message: str):
         """发送通知"""
         if not self.enabled or not self.service_urls:
             return
 
-        message = f"[RSSGen] 路由 {route_key} 获取失败\n"
+        message = f"[RSSGen] 订阅源 {feed_key} 获取失败\n"
         message += f"状态码: {status_code}\n"
         message += f"错误: {error_message}\n"
         message += f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -56,11 +56,10 @@ class Notifier:
                 for url in self.service_urls:
                     self._apprise.add(url)
 
-            # apprise.notify 是同步方法，需要在事件循环中运行
+            # apprise.notify 是同步阻塞方法，放到线程池执行避免阻塞事件循环
             import asyncio
 
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, self._apprise.notify, message)
+            result = await asyncio.to_thread(self._apprise.notify, message)
 
             if result:
                 logger.info("已发送通知")
