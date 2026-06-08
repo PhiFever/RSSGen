@@ -46,10 +46,9 @@ type ScraperConfig struct {
 
 // RefresherConfig 是后台刷新器配置。
 type RefresherConfig struct {
-	StartupDelay   int    `yaml:"startup_delay"`
-	MaxRetries     int    `yaml:"max_retries"`
-	RetryBaseDelay int    `yaml:"retry_base_delay"`
-	PreinitURL     string `yaml:"preinit_url"`
+	StartupDelay   int `yaml:"startup_delay"`
+	MaxRetries     int `yaml:"max_retries"`
+	RetryBaseDelay int `yaml:"retry_base_delay"`
 }
 
 // NotifierConfig 是通知配置。
@@ -60,21 +59,24 @@ type NotifierConfig struct {
 
 // RouteConfig 是单个路由的配置（通用字段，各路由可自行扩展）。
 type RouteConfig struct {
-	Enabled           bool            `yaml:"enabled"`
-	Cookie            string          `yaml:"cookie"`
-	RateLimit         *float64        `yaml:"rate_limit,omitempty"`
-	Proxy             *string         `yaml:"proxy,omitempty"`
-	Impersonate       *string         `yaml:"impersonate,omitempty"`
-	PreheatOnStartup  bool            `yaml:"preheat_on_startup"`
-	RefreshInterval   int             `yaml:"refresh_interval"`
-	Feeds             []FeedConfig    `yaml:"feeds"`
+	Enabled              bool            `yaml:"enabled"`
+	Cookie               string          `yaml:"cookie"`
+	RateLimit            *float64        `yaml:"rate_limit,omitempty"`
+	Proxy                *string         `yaml:"proxy,omitempty"`
+	Impersonate          *string         `yaml:"impersonate,omitempty"`
+	PreheatOnStartup     bool            `yaml:"preheat_on_startup"`
+	RefreshInterval      int             `yaml:"refresh_interval"`
+	Feeds                []FeedConfig    `yaml:"feeds"`
+	DefaultInclude       []string        `yaml:"default_include,omitempty"`
+	IncludeSelfInteraction *bool         `yaml:"include_self_interaction,omitempty"`
 }
 
 // FeedConfig 是路由中单个 feed 的配置。
 type FeedConfig struct {
-	UserID string `yaml:"user_id"`
-	Alias  string `yaml:"alias"`
-	Limit  int    `yaml:"limit"`
+	UserID  string   `yaml:"user_id"`
+	Alias   string   `yaml:"alias"`
+	Limit   int      `yaml:"limit"`
+	Include []string `yaml:"include,omitempty"`
 }
 
 // Load 从指定路径加载 YAML 配置文件并返回 Config 结构体。
@@ -112,7 +114,7 @@ func setDefaults(cfg *Config) {
 		cfg.Scraper.RateLimit = 1.0
 	}
 	if cfg.Scraper.Impersonate == "" {
-		cfg.Scraper.Impersonate = "chrome131"
+		cfg.Scraper.Impersonate = "chrome_131"
 	}
 	if cfg.Refresher.StartupDelay == 0 {
 		cfg.Refresher.StartupDelay = 5

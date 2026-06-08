@@ -18,3 +18,4 @@ miniflux-db/
 
 .idea/
 .claude/settings.local.json
+rssgen

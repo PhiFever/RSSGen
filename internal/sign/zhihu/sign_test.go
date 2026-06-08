@@ -126,7 +126,7 @@ type sm4BlockVector struct {
 
 func loadSM4BlockVectors(t *testing.T) []sm4BlockVector {
 	t.Helper()
-	path := filepath.Join(findRepoRoot(t), "zhihu_sign_demo", "sm4_block_vectors.json")
+	path := filepath.Join("testdata", "sm4_block_vectors.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("读取 sm4_block_vectors.json: %v", err)
@@ -151,7 +151,7 @@ type encryptCorpusEntry struct {
 
 func loadEncryptCorpus32(t *testing.T) []encryptCorpusEntry {
 	t.Helper()
-	path := filepath.Join(findRepoRoot(t), "zhihu_sign_demo", "encrypt_corpus.json")
+	path := filepath.Join("testdata", "encrypt_corpus.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("读取 encrypt_corpus.json: %v", err)
@@ -178,21 +178,3 @@ func byteArrayFromInts(ints []int) []byte {
 	return b
 }
 
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	// 从当前测试文件向上找到包含 zhihu_sign_demo 的目录
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("获取工作目录: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "zhihu_sign_demo")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("未找到仓库根目录（包含 zhihu_sign_demo）")
-		}
-		dir = parent
-	}
-}

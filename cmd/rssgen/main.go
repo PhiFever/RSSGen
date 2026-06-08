@@ -270,6 +270,16 @@ func mergeConfig(cfg *config.Config, routeName string) map[string]interface{} {
 	if rc.Impersonate != nil {
 		result["impersonate"] = *rc.Impersonate
 	}
+	if len(rc.DefaultInclude) > 0 {
+		defaultInc := make([]interface{}, len(rc.DefaultInclude))
+		for i, v := range rc.DefaultInclude {
+			defaultInc[i] = v
+		}
+		result["default_include"] = defaultInc
+	}
+	if rc.IncludeSelfInteraction != nil {
+		result["include_self_interaction"] = *rc.IncludeSelfInteraction
+	}
 
 	// 将 feeds 转为通用格式
 	if len(rc.Feeds) > 0 {
@@ -283,6 +293,13 @@ func mergeConfig(cfg *config.Config, routeName string) map[string]interface{} {
 			}
 			if f.Limit > 0 {
 				feedMap["limit"] = f.Limit
+			}
+			if len(f.Include) > 0 {
+				include := make([]interface{}, len(f.Include))
+				for j, v := range f.Include {
+					include[j] = v
+				}
+				feedMap["include"] = include
 			}
 			feeds[i] = feedMap
 		}
