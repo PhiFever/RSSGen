@@ -16,6 +16,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     #    "mini-racer>=0.14.1",
     "nh3>=0.3.5",
+    "apprise>=1.11.0",
 ]
 
 [dependency-groups]

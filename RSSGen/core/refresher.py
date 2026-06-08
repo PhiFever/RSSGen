@@ -9,6 +9,7 @@ from loguru import logger
 
 from RSSGen.core.cache import Cache
 from RSSGen.core.feed import generate_feed
+from RSSGen.core.notifier import Notifier
 from RSSGen.routes import get_registry
 
 DEFAULT_STARTUP_DELAY = 5
@@ -17,10 +18,11 @@ DEFAULT_RETRY_BASE_DELAY = 5
 
 
 class BackgroundRefresher:
-    def __init__(self, feed_cache: Cache, article_store, config: dict):
+    def __init__(self, feed_cache: Cache, article_store, config: dict, notifier: Notifier | None = None):
         self.feed_cache = feed_cache
         self.article_store = article_store
         self.config = config
+        self.notifier = notifier or Notifier(config)
         self._tasks: dict[str, asyncio.Task] = {}
         self._pending: set[str] = set()
         self._error_status: dict[str, dict] = {}
@@ -171,6 +173,9 @@ class BackgroundRefresher:
 
             while True:
                 await asyncio.sleep(refresh_interval)
+                if self.notifier.is_route_disabled(route_name):
+                    logger.warning(f"[{route_name}] 路由已禁用，停止定时刷新循环")
+                    return
                 try:
                     await self._refresh_feeds("定时刷新", route_name)
                 except Exception:
@@ -208,6 +213,12 @@ class BackgroundRefresher:
         if cache_key in self._pending:
             return
         self._pending.add(cache_key)
+
+        # 检查路由是否被禁用
+        if self.notifier.is_route_disabled(route_name):
+            logger.warning(f"路由 {route_name} 已被禁用，跳过刷新")
+            self._pending.discard(cache_key)
+            return
 
         route_cls = get_registry().get(route_name)
         if not route_cls:
@@ -254,6 +265,7 @@ class BackgroundRefresher:
                         f"刷新失败 {cache_key} (第{attempt + 1}次): {e}"
                     )
 
+            # 所有重试都失败了
             logger.error(f"刷新失败 {cache_key}: 所有 {self.max_retries} 次重试均失败")
             self._error_status[cache_key] = {
                 "last_success": self._error_status.get(cache_key, {}).get(
@@ -262,5 +274,23 @@ class BackgroundRefresher:
                 "error": str(last_error),
                 "item_count": 0,
             }
+
+            # 检查是否是业务错误，如果是则发送通知并禁用路由
+            status_code = self._extract_status_code(last_error)
+            if status_code and self.notifier.is_business_error(status_code):
+                await self.notifier.notify(route_name, status_code, str(last_error))
+                self.notifier.disable_route(route_name)
+                logger.warning(f"路由 {route_name} 已禁用（业务错误 {status_code}），重启后恢复")
         finally:
             self._pending.discard(cache_key)
+
+    @staticmethod
+    def _extract_status_code(error: Exception | None) -> int | None:
+        """从异常中提取 HTTP 状态码，非 HTTP 异常返回 None"""
+        if error is None:
+            return None
+        from curl_cffi.requests.exceptions import HTTPError
+
+        if isinstance(error, HTTPError) and error.response:
+            return error.response.status_code
+        return None

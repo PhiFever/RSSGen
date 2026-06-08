@@ -309,8 +309,7 @@ class ZhihuRoute(Route):
                 "x-zse-96": signature["x_zse_96"],
             }
             resp = await scraper.get(next_url, referer=referer, headers=headers)
-            if resp.status_code != 200:
-                raise RuntimeError(f"知乎 API 错误: {resp.status_code}")
+            resp.raise_for_status()
 
             data = resp.json()
             activities.extend(data.get("data", []))
