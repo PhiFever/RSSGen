@@ -520,6 +520,155 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	}
 }
 
+// --- Preheat 已有数据跳过 / 无数据执行（迁移自 Python TestPreheatDecision） ---
+
+// mockArticleStore 用于测试的最小 ArticleStore 实现。
+type mockArticleStore struct {
+	data map[string]bool // routeName -> hasArticles
+}
+
+func (m *mockArticleStore) Get(routeName, articleID string) (string, bool, error) {
+	return "", false, nil
+}
+func (m *mockArticleStore) Save(routeName, articleID, content string) error { return nil }
+func (m *mockArticleStore) HasArticles(routeName string) (bool, error) {
+	if m.data == nil {
+		return false, nil
+	}
+	return m.data[routeName], nil
+}
+
+func TestPreheatSkippedWhenAlreadyHasData(t *testing.T) {
+	route.Register("_test_preheat_skip", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_preheat_skip"}
+	})
+	defer delete(route.GetRegistry(), "_test_preheat_skip")
+
+	fetchCount := 0
+	route.Register("_test_preheat_count", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_preheat_count",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				fetchCount++
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_preheat_count")
+
+	store := &mockArticleStore{data: map[string]bool{"_test_preheat_count": true}}
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		ArticleStore: store,
+		StartupDelay: 0,
+		RoutesConfig: map[string]config.RouteConfig{
+			"_test_preheat_count": {
+				Enabled:          true,
+				RefreshInterval:  60,
+				PreheatOnStartup: true,
+				Feeds:            []config.FeedConfig{{UserID: "u1"}},
+			},
+		},
+	})
+
+	ref.Start()
+	time.Sleep(100 * time.Millisecond)
+	ref.Stop()
+
+	if fetchCount != 0 {
+		t.Errorf("已有数据时预热应跳过, 实际 Fetch 调用 %d 次", fetchCount)
+	}
+}
+
+func TestPreheatRunsWhenEnabledAndNoData(t *testing.T) {
+	fetchCount := 0
+	route.Register("_test_preheat_run", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_preheat_run",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				fetchCount++
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_preheat_run")
+
+	store := &mockArticleStore{data: map[string]bool{}} // 无数据
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		ArticleStore: store,
+		StartupDelay: 1,
+		RoutesConfig: map[string]config.RouteConfig{
+			"_test_preheat_run": {
+				Enabled:          true,
+				RefreshInterval:  60,
+				PreheatOnStartup: true,
+				Feeds:            []config.FeedConfig{{UserID: "u1"}},
+			},
+		},
+	})
+
+	ref.Start()
+	time.Sleep(2 * time.Second) // startupDelay=1 + preheat 执行
+	ref.Stop()
+
+	if fetchCount == 0 {
+		t.Error("无数据且 preheat=true 时应执行预热, 实际 Fetch 调用 0 次")
+	}
+}
+
+func TestZeroIntervalSkipsRoute(t *testing.T) {
+	route.Register("_test_zero_iv", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_zero_iv"}
+	})
+	defer delete(route.GetRegistry(), "_test_zero_iv")
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		StartupDelay: 0,
+		RoutesConfig: map[string]config.RouteConfig{
+			"_test_zero_iv": {
+				Enabled:         true,
+				RefreshInterval: 0, // 间隔为 0
+				Feeds:           []config.FeedConfig{{UserID: "u1"}},
+			},
+		},
+	})
+
+	ref.Start()
+	time.Sleep(50 * time.Millisecond)
+	ref.Stop()
+	// 不 hang、不 panic 即为通过；RefreshInterval=0 的路由不应创建 goroutine
+}
+
+func TestNullIntervalSkipsRoute(t *testing.T) {
+	route.Register("_test_null_iv", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_null_iv"}
+	})
+	defer delete(route.GetRegistry(), "_test_null_iv")
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		StartupDelay: 0,
+		RoutesConfig: map[string]config.RouteConfig{
+			"_test_null_iv": {
+				Enabled: true,
+				// RefreshInterval 未设置，默认 0
+				Feeds: []config.FeedConfig{{UserID: "u1"}},
+			},
+		},
+	})
+
+	ref.Start()
+	time.Sleep(50 * time.Millisecond)
+	ref.Stop()
+	// 不 hang、不 panic 即为通过
+}
+
 // --- Trigger 参数透传（迁移自 Python TestFetchKwargsPassthrough） ---
 
 func TestTriggerInjectsFeedConfigParams(t *testing.T) {

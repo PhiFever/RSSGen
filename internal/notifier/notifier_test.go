@@ -161,6 +161,27 @@ func TestStateCombinationSmoke(t *testing.T) {
 	n.Notify("f2", 500, "临时错误")
 }
 
+// --- 通知异常处理（迁移自 Python test_send_notification_exception_handled） ---
+
+func TestSendNotificationExceptionHandled(t *testing.T) {
+	// 模拟飞书 Webhook 返回错误
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"code":1,"msg":"internal error"}`))
+	}))
+	defer server.Close()
+
+	n := New(Config{
+		Enabled: true,
+		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
+	})
+
+	// Notify 不应 panic，即使远端返回错误
+	n.Notify("key", 403, "业务错误")
+	time.Sleep(100 * time.Millisecond)
+	// 不 panic 即为通过；sendNotification 内部 slog.Error 处理错误
+}
+
 // --- 并发安全 ---
 
 func TestConcurrentDisableAndCheck(t *testing.T) {

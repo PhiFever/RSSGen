@@ -461,7 +461,7 @@ func renderPinContent(blocks []interface{}) string {
 			continue
 		}
 		if text, ok := blockMap["content"].(string); ok && text != "" {
-			parts = append(parts, html.EscapeString(text))
+			parts = append(parts, text)
 			continue
 		}
 		blockType, _ := blockMap["type"].(string)
