@@ -2,8 +2,11 @@
 package notifier
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // --- New / 初始化 ---
@@ -16,12 +19,26 @@ func TestNewDefault(t *testing.T) {
 }
 
 func TestNewWithConfig(t *testing.T) {
-	n := New(Config{Enabled: true, ServiceURLs: []string{"https://hooks.example.com"}})
+	n := New(Config{
+		Enabled:  true,
+		Services: []ServiceConfig{{Type: "feishu", WebhookURL: "https://hooks.example.com"}},
+	})
 	if !n.enabled {
 		t.Error("Enabled=true 应生效")
 	}
-	if len(n.serviceURLs) != 1 {
-		t.Errorf("serviceURLs 长度应为 1，实际 %d", len(n.serviceURLs))
+	if len(n.senders) != 1 {
+		t.Errorf("senders 长度应为 1，实际 %d", len(n.senders))
+	}
+}
+
+func TestNewWithUnknownServiceType(t *testing.T) {
+	n := New(Config{
+		Enabled:  true,
+		Services: []ServiceConfig{{Type: "unknown_type"}},
+	})
+	// 未知类型应被跳过，senders 为空
+	if len(n.senders) != 0 {
+		t.Errorf("未知类型应被跳过, senders 长度 = %d", len(n.senders))
 	}
 }
 
@@ -89,23 +106,44 @@ func TestNotifyDisabled(t *testing.T) {
 	n.Notify("key", 403, "业务错误")
 }
 
-func TestNotifyNoServiceURLs(t *testing.T) {
+func TestNotifyNoSenders(t *testing.T) {
 	n := New(Config{Enabled: true})
-	// 不应 panic；无 serviceURLs 时应静默跳过
+	// 不应 panic；无 senders 时应静默跳过
 	n.Notify("key", 500, "服务器错误")
 }
 
-func TestNotifyWithServiceURLs(t *testing.T) {
-	// 验证有 serviceURLs 时不会 panic（异步发送，无法捕获输出）
-	n := New(Config{Enabled: true, ServiceURLs: []string{"https://hooks.example.com"}})
+func TestNotifyWithFeishuService(t *testing.T) {
+	// 用 httptest 模拟飞书 Webhook，验证 Notify 能实际发送
+	var received bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = true
+		w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer server.Close()
+
+	n := New(Config{
+		Enabled: true,
+		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
+	})
 	n.Notify("key", 403, "错误")
-	// 异步 goroutine 可能还没执行完，这里只验证不 panic
+	// 等异步 goroutine 完成
+	time.Sleep(100 * time.Millisecond)
+	if !received {
+		t.Error("飞书 Webhook 应收到请求")
+	}
 }
 
 // --- 组合场景 ---
 
 func TestStateCombinationSmoke(t *testing.T) {
-	n := New(Config{Enabled: true, ServiceURLs: []string{"https://hooks.example.com"}})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer server.Close()
+	n := New(Config{
+		Enabled:  true,
+		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
+	})
 
 	// 初始状态
 	if n.IsFeedDisabled("f1") {

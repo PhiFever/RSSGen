@@ -56,9 +56,19 @@ func main() {
 	defer articleStore.Close()
 
 	// 初始化通知器
+	var notifierServices []notifier.ServiceConfig
+	for _, svc := range cfg.Notifier.Services {
+		notifierServices = append(notifierServices, notifier.ServiceConfig{
+			Type:       svc.Type,
+			WebhookURL: svc.WebhookURL,
+			Secret:     svc.Secret,
+		})
+	}
 	notif := notifier.New(notifier.Config{
-		Enabled:     cfg.Notifier.Enabled,
-		ServiceURLs: cfg.Notifier.ServiceURLs,
+		Enabled:            cfg.Notifier.Enabled,
+		ServiceURLs:        cfg.Notifier.ServiceURLs,
+		BusinessErrorCodes: cfg.Notifier.BusinessErrorCodes,
+		Services:           notifierServices,
 	})
 
 	// 初始化后台刷新器

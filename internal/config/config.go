@@ -53,8 +53,17 @@ type RefresherConfig struct {
 
 // NotifierConfig 是通知配置。
 type NotifierConfig struct {
-	Enabled     bool     `yaml:"enabled"`
-	ServiceURLs []string `yaml:"service_urls"`
+	Enabled            bool                   `yaml:"enabled"`
+	ServiceURLs        []string               `yaml:"service_urls"`        // 兼容旧配置（仅打日志）
+	BusinessErrorCodes []int                  `yaml:"business_error_codes"` // 自定义业务错误码，为空时使用默认值
+	Services           []NotifierServiceConfig `yaml:"services"`
+}
+
+// NotifierServiceConfig 是单个通知服务的配置。
+type NotifierServiceConfig struct {
+	Type       string `yaml:"type"`        // feishu, telegram, ...
+	WebhookURL string `yaml:"webhook_url"` // 飞书 Incoming Webhook URL
+	Secret     string `yaml:"secret"`      // 飞书签名密钥（可选）
 }
 
 // RouteConfig 是单个路由的配置（通用字段，各路由可自行扩展）。

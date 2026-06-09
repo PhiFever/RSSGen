@@ -11,17 +11,30 @@ import (
 // defaultBusinessErrorCodes 默认业务错误状态码。
 var defaultBusinessErrorCodes = []int{400, 401, 403, 404, 410, 422, 451}
 
+// ServiceConfig 是单个通知服务的配置。
+type ServiceConfig struct {
+	Type       string // feishu, ...
+	WebhookURL string
+	Secret     string // 飞书签名密钥（可选）
+}
+
 // Config 是通知器的配置。
 type Config struct {
 	Enabled            bool
-	ServiceURLs        []string
-	BusinessErrorCodes []int // 自定义业务错误码，为空时使用默认值
+	ServiceURLs        []string        // 兼容旧配置（仅打日志）
+	BusinessErrorCodes []int           // 自定义业务错误码，为空时使用默认值
+	Services           []ServiceConfig // 通知服务列表
+}
+
+// sender 是通知发送接口。
+type sender interface {
+	Send(message string) error
 }
 
 // Notifier 是通知管理器。
 type Notifier struct {
 	enabled            bool
-	serviceURLs        []string
+	senders            []sender
 	businessErrorCodes map[int]bool
 	disabledFeeds      map[string]bool
 	mu                 sync.RWMutex
@@ -37,9 +50,20 @@ func New(cfg Config) *Notifier {
 	for _, c := range codes {
 		codeSet[c] = true
 	}
+
+	var senders []sender
+	for _, svc := range cfg.Services {
+		switch svc.Type {
+		case "feishu":
+			senders = append(senders, newFeishuSender(svc.WebhookURL, svc.Secret))
+		default:
+			slog.Warn("未知的通知服务类型，已跳过", "type", svc.Type)
+		}
+	}
+
 	return &Notifier{
 		enabled:            cfg.Enabled,
-		serviceURLs:        cfg.ServiceURLs,
+		senders:            senders,
 		businessErrorCodes: codeSet,
 		disabledFeeds:      make(map[string]bool),
 	}
@@ -66,7 +90,7 @@ func (n *Notifier) DisableFeed(feedKey string) {
 
 // Notify 发送通知。
 func (n *Notifier) Notify(feedKey string, statusCode int, errorMessage string) {
-	if !n.enabled || len(n.serviceURLs) == 0 {
+	if !n.enabled || len(n.senders) == 0 {
 		return
 	}
 
@@ -83,12 +107,10 @@ func (n *Notifier) Notify(feedKey string, statusCode int, errorMessage string) {
 }
 
 func (n *Notifier) sendNotification(message string) {
-	// 简化实现：记录日志
-	// 生产环境应集成 nikoksr/notify 进行实际通知发送
 	slog.Info("发送通知", "message", message)
-
-	for _, serviceURL := range n.serviceURLs {
-		slog.Info("通知服务", "url", serviceURL)
-		// TODO: 集成 nikoksr/notify 进行实际通知发送
+	for _, s := range n.senders {
+		if err := s.Send(message); err != nil {
+			slog.Error("通知发送失败", "error", err)
+		}
 	}
 }
