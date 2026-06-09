@@ -67,12 +67,16 @@ func main() {
 	fmt.Println()
 
 	// 4. 创建 scraper（chrome_131 TLS 指纹）
-	cookies := parseCookieString(*cookie)
-	sc := scraper.New(scraper.Config{
+	cookies := scraper.ParseCookieString(*cookie)
+	sc, err := scraper.New(scraper.Config{
 		Cookies:     cookies,
 		RateLimit:   1.0,
 		Impersonate: "chrome_131",
 	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建 HTTP 客户端失败: %v\n", err)
+		os.Exit(1)
+	}
 
 	// 5. 发送请求（tls-client）
 	headers := map[string]string{
@@ -134,23 +138,3 @@ func extractDC0(cookie string) (string, error) {
 	return matches[1], nil
 }
 
-// parseCookieString 将 cookie 字符串解析为 map。
-func parseCookieString(cookie string) map[string]string {
-	result := make(map[string]string)
-	re := regexp.MustCompile(`([^=]+)=([^;]+)`)
-	for _, match := range re.FindAllStringSubmatch(cookie, -1) {
-		if len(match) >= 3 {
-			key := match[1]
-			value := match[2]
-			// 去除首尾空格
-			for len(key) > 0 && key[0] == ' ' {
-				key = key[1:]
-			}
-			for len(value) > 0 && value[len(value)-1] == ' ' {
-				value = value[:len(value)-1]
-			}
-			result[key] = value
-		}
-	}
-	return result
-}

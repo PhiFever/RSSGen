@@ -67,8 +67,13 @@ func (f *feishuSender) Send(message string) error {
 	}
 	defer resp.Body.Close()
 
+	// 统一读取 Body，避免双读风险
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取飞书响应失败: %w", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("飞书 Webhook 返回 %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -77,7 +82,7 @@ func (f *feishuSender) Send(message string) error {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(respBody, &result); err != nil {
 		return fmt.Errorf("解析飞书响应失败: %w", err)
 	}
 	if result.Code != 0 {

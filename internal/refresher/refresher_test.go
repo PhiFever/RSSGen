@@ -50,9 +50,9 @@ func TestBuildCacheKey(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := buildCacheKey(tt.routeName, tt.pathParams)
+		result := cache.BuildCacheKey(tt.routeName, tt.pathParams)
 		if result != tt.expected {
-			t.Errorf("buildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParams, result, tt.expected)
+			t.Errorf("BuildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParams, result, tt.expected)
 		}
 	}
 }

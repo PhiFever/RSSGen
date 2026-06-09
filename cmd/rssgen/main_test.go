@@ -50,13 +50,13 @@ func TestBuildCacheKey(t *testing.T) {
 	}{
 		{"afdian", []string{"user1"}, "afdian/user1"},
 		{"zhihu", []string{"user2"}, "zhihu/user2"},
-		{"test", []string{}, "test/"},
+		{"test", []string{}, "test"},
 	}
 
 	for _, tt := range tests {
-		result := buildCacheKey(tt.routeName, tt.pathParts)
+		result := cache.BuildCacheKey(tt.routeName, tt.pathParts)
 		if result != tt.expected {
-			t.Errorf("buildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParts, result, tt.expected)
+			t.Errorf("BuildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParts, result, tt.expected)
 		}
 	}
 }

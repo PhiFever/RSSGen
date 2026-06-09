@@ -122,7 +122,7 @@ func (r *Refresher) Stop() {
 
 // Trigger 动态触发：未知 feed 首次访问时调用，非阻塞。
 func (r *Refresher) Trigger(routeName string, pathParams []string, queryParams map[string]string) {
-	cacheKey := buildCacheKey(routeName, pathParams)
+	cacheKey := cache.BuildCacheKey(routeName, pathParams)
 
 	r.pendingMu.Lock()
 	if r.pending[cacheKey] {
@@ -224,7 +224,7 @@ func (r *Refresher) refreshFeeds(label string, routeName string, rc config.Route
 
 // refreshOne 刷新单个 feed。
 func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParams map[string]string) {
-	cacheKey := buildCacheKey(routeName, pathParams)
+	cacheKey := cache.BuildCacheKey(routeName, pathParams)
 
 	// 标记为 pending
 	r.pendingMu.Lock()
@@ -340,14 +340,6 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 	}
 }
 
-// buildCacheKey 构建缓存键。
-func buildCacheKey(routeName string, pathParams []string) string {
-	key := routeName
-	for _, p := range pathParams {
-		key += "/" + p
-	}
-	return key
-}
 
 // splitCacheKey 分割缓存键。
 func splitCacheKey(key string) (routeName, feedID string) {

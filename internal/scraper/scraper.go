@@ -118,7 +118,7 @@ var impersonateProfile = map[string]profiles.ClientProfile{
 }
 
 // New 创建一个新的 Scraper 实例。
-func New(cfg Config) *Scraper {
+func New(cfg Config) (*Scraper, error) {
 	imp := cfg.Impersonate
 	if imp == "" {
 		imp = "chrome_131"
@@ -136,12 +136,15 @@ func New(cfg Config) *Scraper {
 
 	// 创建 TLS 客户端
 	logger := httpclient.NewNoopLogger()
-	client, _ := httpclient.NewHttpClient(
+	client, err := httpclient.NewHttpClient(
 		logger,
 		httpclient.WithTimeoutSeconds(30),
 		httpclient.WithClientProfile(profile),
 		httpclient.WithNotFollowRedirects(),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 TLS 客户端失败: %w", err)
+	}
 
 	// 设置代理
 	if cfg.Proxy != "" {
@@ -157,7 +160,7 @@ func New(cfg Config) *Scraper {
 		client:       client,
 	}
 
-	return s
+	return s, nil
 }
 
 // rateLimitWait 等待直到满足最小请求间隔。

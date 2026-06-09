@@ -44,8 +44,6 @@ func main() {
 
 	// 初始化缓存
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
-	articleCache := cache.New(time.Duration(cfg.Cache.ArticleTTL) * time.Second)
-	_ = articleCache // 暂未使用
 
 	// 初始化 SQLite 存储
 	articleStore := store.New(cfg.Storage.SQLitePath)
@@ -166,11 +164,6 @@ func anyRouteEnabled(cfg *config.Config) bool {
 	return false
 }
 
-// buildCacheKey 构建缓存键。
-func buildCacheKey(routeName string, pathParts []string) string {
-	return routeName + "/" + strings.Join(pathParts, "/")
-}
-
 // splitPath 将路径分割为非空段。
 func splitPath(path string) []string {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
@@ -203,7 +196,7 @@ func makeFeedHandler(
 			return
 		}
 
-		cacheKey := buildCacheKey(routeName, pathParts)
+		cacheKey := cache.BuildCacheKey(routeName, pathParts)
 
 		// 检查 feed 是否被禁用
 		if notif.IsFeedDisabled(cacheKey) {

@@ -58,39 +58,6 @@ func TestFeedInfo(t *testing.T) {
 	}
 }
 
-func TestParseCookieString(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected map[string]string
-	}{
-		{
-			input:    "key1=val1; key2=val2",
-			expected: map[string]string{"key1": "val1", "key2": "val2"},
-		},
-		{
-			input:    "",
-			expected: map[string]string{},
-		},
-		{
-			input:    "  key=val  ",
-			expected: map[string]string{"key": "val"},
-		},
-	}
-
-	for _, tt := range tests {
-		result := parseCookieString(tt.input)
-		if len(result) != len(tt.expected) {
-			t.Errorf("parseCookieString(%q): len = %d, want %d", tt.input, len(result), len(tt.expected))
-			continue
-		}
-		for k, v := range tt.expected {
-			if result[k] != v {
-				t.Errorf("parseCookieString(%q)[%q] = %q, want %q", tt.input, k, result[k], v)
-			}
-		}
-	}
-}
-
 func TestFetchWithMockServer(t *testing.T) {
 	// 创建 mock HTTP 服务器
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,13 +163,12 @@ func (s *mockStore) HasArticles(routeName string) (bool, error) {
 }
 
 // makePost 构造帖子数据。
-func makePost(postID string) map[string]interface{} {
-	return map[string]interface{}{
-		"post_id":      postID,
-		"title":        "title-" + postID,
-		"publish_time": float64(1700000000),
-		"pics":         []interface{}{},
-		"user":         map[string]interface{}{"name": "作者"},
+func makePost(postID string) afdianPost {
+	return afdianPost{
+		PostID:      postID,
+		Title:       "title-" + postID,
+		PublishTime: 1700000000,
+		User:        afdianUser{Name: "作者"},
 	}
 }
 
@@ -216,8 +182,8 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid1", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{makePost("post1")}, nil
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("post1")}, nil
 	}
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		detailCalled = true
@@ -246,8 +212,8 @@ func TestFetchStoreMissCallsAPIAndSaves(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid1", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{makePost("post2")}, nil
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("post2")}, nil
 	}
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "<p>fresh</p>", nil
@@ -272,8 +238,8 @@ func TestFetchNoStoreStillWorks(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid1", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{makePost("post3")}, nil
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("post3")}, nil
 	}
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "<p>detail</p>", nil
@@ -297,8 +263,8 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{
 			makePost("p1"), makePost("p2"), makePost("p3"),
 			makePost("p4"), makePost("p5"),
 		}, nil
@@ -332,8 +298,8 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{
 			makePost("p1"), makePost("p2"), makePost("p3"), makePost("p4"),
 		}, nil
 	}
@@ -376,8 +342,8 @@ func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
-		return []map[string]interface{}{makePost("p1")}, nil
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("p1")}, nil
 	}
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "", &route.HTTPError{StatusCode: 403, URL: "test"}
@@ -412,7 +378,7 @@ func TestFetchGetPostListError(t *testing.T) {
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid", nil
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]map[string]interface{}, error) {
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
 		return nil, &route.HTTPError{StatusCode: 403, URL: "test"}
 	}
 

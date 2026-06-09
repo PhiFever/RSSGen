@@ -4,7 +4,6 @@ package afdian
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
@@ -13,6 +12,62 @@ import (
 )
 
 const hostURL = "https://afdian.com"
+
+// afdianResponse 爱发电 API 通用响应结构。
+type afdianResponse struct {
+	EC   int             `json:"ec"`
+	EM   string          `json:"em"`
+	Data json.RawMessage `json:"data"`
+}
+
+// afdianUser 爱发电用户信息。
+type afdianUser struct {
+	UserID string `json:"user_id"`
+	Name   string `json:"name"`
+}
+
+// afdianPost 爱发电帖子信息。
+type afdianPost struct {
+	PostID      string   `json:"post_id"`
+	Title       string   `json:"title"`
+	PublishTime float64  `json:"publish_time"`
+	PublishSN   string   `json:"publish_sn"`
+	Content     string   `json:"content"`
+	Pics        []string `json:"pics"`
+	User        afdianUser `json:"user"`
+}
+
+// afdianPostList 爱发电帖子列表响应。
+type afdianPostList struct {
+	List []afdianPost `json:"list"`
+}
+
+// afdianUserProfile 爱发电用户资料响应。
+type afdianUserProfile struct {
+	User afdianUser `json:"user"`
+}
+
+// afdianPostDetail 爱发电帖子详情响应。
+type afdianPostDetail struct {
+	Post struct {
+		Content string `json:"content"`
+	} `json:"post"`
+}
+
+// parseAfdianResponse 解析爱发电 API 响应，返回原始 data 字节。
+// 统一处理 JSON 解析和 ec 码校验。
+func parseAfdianResponse(body []byte) (json.RawMessage, error) {
+	var resp afdianResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("解析响应 JSON 失败: %w", err)
+	}
+
+	if resp.EC != 200 {
+		return nil, fmt.Errorf("爱发电 API 错误: ec=%d, em=%s", resp.EC, resp.EM)
+	}
+
+	return resp.Data, nil
+}
 
 func init() {
 	route.Register("afdian", func(cfg config.ResolvedRouteConfig) route.Route {
@@ -24,7 +79,7 @@ func init() {
 type Route struct {
 	cfg             config.ResolvedRouteConfig
 	getAuthorIDFn   func(sc *scraper.Scraper, authorSlug string) (string, error)
-	getPostListFn   func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]map[string]interface{}, error)
+	getPostListFn   func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
 	getPostDetailFn func(sc *scraper.Scraper, postID string) (string, error)
 }
 
@@ -37,9 +92,9 @@ func (r *Route) Name() string        { return "afdian" }
 func (r *Route) Description() string { return "爱发电创作者动态订阅" }
 func (r *Route) FeedIDField() string { return "user_id" }
 
-func (r *Route) getScraper() *scraper.Scraper {
+func (r *Route) getScraper() (*scraper.Scraper, error) {
 	return scraper.New(scraper.Config{
-		Cookies:     parseCookieString(r.cfg.Cookie),
+		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
 		RateLimit:   r.cfg.RateLimit,
 		Proxy:       r.cfg.Proxy,
 		Impersonate: r.cfg.Impersonate,
@@ -77,7 +132,10 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		limit = 20
 	}
 
-	sc := r.getScraper()
+	sc, err := r.getScraper()
+	if err != nil {
+		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
+	}
 
 	// 获取作者 ID
 	authorIDFn := r.getAuthorID
@@ -102,13 +160,10 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	// 获取每篇文章内容并构建 FeedItem
 	items := make([]route.FeedItem, 0, len(posts))
 	for _, post := range posts {
-		postID, _ := post["post_id"].(string)
-		title, _ := post["title"].(string)
-
 		// 获取文章内容
 		content := ""
 		if articleStore != nil {
-			cached, found, err := articleStore.Get("afdian", postID)
+			cached, found, err := articleStore.Get("afdian", post.PostID)
 			if err == nil && found && cached != "" {
 				content = cached
 			}
@@ -118,48 +173,40 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 			if r.getPostDetailFn != nil {
 				detailFn = r.getPostDetailFn
 			}
-			content, err = detailFn(sc, postID)
+			content, err = detailFn(sc, post.PostID)
 			if err != nil {
 				// 获取详情失败，使用空内容
 				content = ""
 			} else if articleStore != nil {
-				articleStore.Save("afdian", postID, content)
+				articleStore.Save("afdian", post.PostID, content)
 			}
 		}
 
 		// 解析发布时间
 		var pubDate *time.Time
-		if publishTime, ok := post["publish_time"].(float64); ok && publishTime > 0 {
-			t := time.Unix(int64(publishTime), 0).UTC()
+		if post.PublishTime > 0 {
+			t := time.Unix(int64(post.PublishTime), 0).UTC()
 			pubDate = &t
 		}
 
 		// 提取图片附件
 		var enclosures []route.Enclosure
-		if pics, ok := post["pics"].([]interface{}); ok {
-			for _, pic := range pics {
-				if picURL, ok := pic.(string); ok && picURL != "" {
-					enclosures = append(enclosures, route.Enclosure{
-						URL:  picURL,
-						Type: "image/jpeg",
-					})
-				}
+		for _, picURL := range post.Pics {
+			if picURL != "" {
+				enclosures = append(enclosures, route.Enclosure{
+					URL:  picURL,
+					Type: "image/jpeg",
+				})
 			}
 		}
 
-		// 提取作者名
-		author := ""
-		if user, ok := post["user"].(map[string]interface{}); ok {
-			author, _ = user["name"].(string)
-		}
-
 		item := route.FeedItem{
-			Title:      title,
-			Link:       fmt.Sprintf("%s/p/%s", hostURL, postID),
+			Title:      post.Title,
+			Link:       fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
 			Content:    content,
 			PubDate:    pubDate,
-			Author:     author,
-			GUID:       postID,
+			Author:     post.User.Name,
+			GUID:       post.PostID,
 			Enclosures: enclosures,
 		}
 		items = append(items, item)
@@ -182,36 +229,29 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 	}
 
-	var data map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
-		return "", fmt.Errorf("解析响应 JSON 失败: %w", err)
+	data, err := parseAfdianResponse(resp.Body)
+	if err != nil {
+		return "", err
 	}
-
-	if ec, ok := data["ec"].(float64); !ok || ec != 200 {
-		em, _ := data["em"].(string)
-		return "", fmt.Errorf("爱发电 API 错误: ec=%v, em=%s", data["ec"], em)
-	}
-
-	dataObj, ok := data["data"].(map[string]interface{})
-	if !ok {
+	if len(data) == 0 {
 		return "", fmt.Errorf("响应缺少 data 字段")
 	}
-	user, ok := dataObj["user"].(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("响应缺少 user 字段")
+
+	var profile afdianUserProfile
+	if err := json.Unmarshal(data, &profile); err != nil {
+		return "", fmt.Errorf("解析用户资料失败: %w", err)
 	}
-	userID, ok := user["user_id"].(string)
-	if !ok {
+	if profile.User.UserID == "" {
 		return "", fmt.Errorf("响应缺少 user_id 字段")
 	}
 
-	return userID, nil
+	return profile.User.UserID, nil
 }
 
 // getPostList 获取作者动态列表（简化版，只取第一页）。
-func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]map[string]interface{}, error) {
+func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error) {
 	referer := fmt.Sprintf("%s/a/%s", hostURL, authorSlug)
-	var allPosts []map[string]interface{}
+	var allPosts []afdianPost
 	publishSN := ""
 
 	for len(allPosts) < limit {
@@ -228,42 +268,30 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 			return allPosts, &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 		}
 
-		var data map[string]interface{}
-		if err := json.Unmarshal(resp.Body, &data); err != nil {
-			return allPosts, fmt.Errorf("解析响应 JSON 失败: %w", err)
+		data, err := parseAfdianResponse(resp.Body)
+		if err != nil {
+			return allPosts, err
 		}
-
-		if ec, ok := data["ec"].(float64); !ok || ec != 200 {
-			em, _ := data["em"].(string)
-			return allPosts, fmt.Errorf("爱发电 API 错误: ec=%v, em=%s", data["ec"], em)
-		}
-
-		dataObj, _ := data["data"].(map[string]interface{})
-		if dataObj == nil {
+		if len(data) == 0 {
 			break
 		}
 
-		listRaw, ok := dataObj["list"].([]interface{})
-		if !ok || len(listRaw) == 0 {
+		var postList afdianPostList
+		if err := json.Unmarshal(data, &postList); err != nil {
+			return allPosts, fmt.Errorf("解析帖子列表失败: %w", err)
+		}
+		if len(postList.List) == 0 {
 			break
 		}
 
-		for _, item := range listRaw {
-			if post, ok := item.(map[string]interface{}); ok {
-				allPosts = append(allPosts, post)
-			}
-		}
+		allPosts = append(allPosts, postList.List...)
 
 		// 获取最后一条的 publish_sn 用于翻页
-		lastPost, ok := listRaw[len(listRaw)-1].(map[string]interface{})
-		if !ok {
+		lastPost := postList.List[len(postList.List)-1]
+		if lastPost.PublishSN == "" {
 			break
 		}
-		sn, ok := lastPost["publish_sn"].(string)
-		if !ok || sn == "" {
-			break
-		}
-		publishSN = sn
+		publishSN = lastPost.PublishSN
 	}
 
 	// 截断到 limit
@@ -287,45 +315,18 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 	}
 
-	var data map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &data); err != nil {
-		return "", fmt.Errorf("解析响应 JSON 失败: %w", err)
+	data, err := parseAfdianResponse(resp.Body)
+	if err != nil {
+		return "", err
 	}
-
-	if ec, ok := data["ec"].(float64); !ok || ec != 200 {
-		em, _ := data["em"].(string)
-		return "", fmt.Errorf("爱发电 API 错误: ec=%v, em=%s", data["ec"], em)
-	}
-
-	dataObj, _ := data["data"].(map[string]interface{})
-	if dataObj == nil {
+	if len(data) == 0 {
 		return "", nil
 	}
-	post, _ := dataObj["post"].(map[string]interface{})
-	if post == nil {
-		return "", nil
+
+	var detail afdianPostDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		return "", fmt.Errorf("解析帖子详情失败: %w", err)
 	}
-	content, _ := post["content"].(string)
-	return content, nil
+	return detail.Post.Content, nil
 }
 
-// parseCookieString 解析 "key1=val1; key2=val2" 格式的 cookie 字符串。
-func parseCookieString(s string) map[string]string {
-	cookies := make(map[string]string)
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return cookies
-	}
-	pairs := strings.Split(s, ";")
-	for _, pair := range pairs {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			cookies[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-		}
-	}
-	return cookies
-}

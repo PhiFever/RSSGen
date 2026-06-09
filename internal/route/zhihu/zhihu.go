@@ -92,9 +92,9 @@ func (r *Route) Name() string        { return "zhihu" }
 func (r *Route) Description() string { return "知乎用户动态订阅" }
 func (r *Route) FeedIDField() string { return "user_id" }
 
-func (r *Route) getScraper() *scraper.Scraper {
+func (r *Route) getScraper() (*scraper.Scraper, error) {
 	return scraper.New(scraper.Config{
-		Cookies:     parseCookieString(r.cfg.Cookie),
+		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
 		RateLimit:   r.cfg.RateLimit,
 		Proxy:       r.cfg.Proxy,
 		Impersonate: r.cfg.Impersonate,
@@ -197,7 +197,10 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 		return nil, err
 	}
 
-	sc := r.getScraper()
+	sc, err := r.getScraper()
+	if err != nil {
+		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
+	}
 	referer := fmt.Sprintf("https://www.zhihu.com/people/%s", userID)
 
 	nextURL := fmt.Sprintf(
@@ -458,7 +461,7 @@ func renderPinContent(blocks []interface{}) string {
 			continue
 		}
 		if text, ok := blockMap["content"].(string); ok && text != "" {
-			parts = append(parts, text)
+			parts = append(parts, html.EscapeString(text))
 			continue
 		}
 		blockType, _ := blockMap["type"].(string)
@@ -596,26 +599,6 @@ func formatQuestionDescription(detail string) string {
 	return fmt.Sprintf("<h3>【问题描述】</h3>\n<blockquote>\n%s\n</blockquote>", detail)
 }
 
-// parseCookieString 解析 cookie 字符串。
-func parseCookieString(s string) map[string]string {
-	cookies := make(map[string]string)
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return cookies
-	}
-	pairs := strings.Split(s, ";")
-	for _, pair := range pairs {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) == 2 {
-			cookies[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
-		}
-	}
-	return cookies
-}
 
 // truncateRunes 按 rune（而非字节）截断字符串，避免切断多字节中文产生非法 UTF-8。
 func truncateRunes(s string, n int) string {

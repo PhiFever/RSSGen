@@ -4,7 +4,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +64,7 @@ func (s *ArticleStore) Init() error {
 	}
 
 	s.db = db
-	log.Printf("ArticleStore 初始化完成: %s", s.dbPath)
+	slog.Info("ArticleStore 初始化完成", "path", s.dbPath)
 	return nil
 }
 
@@ -94,7 +94,7 @@ func (s *ArticleStore) Get(route, itemID string) (content string, found bool, er
 		return "", false, nil
 	}
 	if err != nil {
-		log.Printf("ArticleStore.Get 失败 (%s/%s): %v", route, itemID, err)
+		slog.Warn("ArticleStore.Get 失败", "route", route, "itemID", itemID, "error", err)
 		return "", false, nil
 	}
 	return content, true, nil
@@ -115,7 +115,7 @@ func (s *ArticleStore) Save(route, itemID, content string) error {
 		route, itemID, content, now,
 	)
 	if err != nil {
-		log.Printf("ArticleStore.Save 失败 (%s/%s): %v", route, itemID, err)
+		slog.Warn("ArticleStore.Save 失败", "route", route, "itemID", itemID, "error", err)
 	}
 	return err
 }
@@ -139,7 +139,7 @@ func (s *ArticleStore) HasArticles(route string) (bool, error) {
 		return false, nil
 	}
 	if err != nil {
-		log.Printf("ArticleStore.HasArticles 失败 (%s): %v", route, err)
+		slog.Warn("ArticleStore.HasArticles 失败", "route", route, "error", err)
 		return false, nil
 	}
 	return true, nil
