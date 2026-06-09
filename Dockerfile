@@ -1,6 +1,6 @@
 # Go 版本 Dockerfile - 多阶段构建，最终 scratch 镜像
 
-FROM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 
 # 安装 CA 证书和时区数据
 RUN apk add --no-cache ca-certificates tzdata
@@ -11,9 +11,11 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
-# 复制源代码并构建
+# 复制源代码并构建（buildx 自动注入 TARGETOS/TARGETARCH，在 BUILDPLATFORM 上交叉编译）
+ARG TARGETOS
+ARG TARGETARCH
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w" \
     -o /rssgen \
     ./cmd/rssgen
