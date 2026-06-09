@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -111,12 +112,15 @@ func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 	userID := pathParams[0]
 
 	displayName := userID
-	description := fmt.Sprintf("知乎用户 %s 的最新动态", displayName)
 
 	if r.actor != nil {
 		if name, ok := r.actor["name"].(string); ok && name != "" {
 			displayName = name
 		}
+	}
+
+	description := fmt.Sprintf("知乎用户 %s 的最新动态", displayName)
+	if r.actor != nil {
 		if headline, ok := r.actor["headline"].(string); ok && headline != "" {
 			description = headline
 		}
@@ -324,6 +328,11 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		link = fmt.Sprintf("https://www.zhihu.com/%s/%s", targetType, targetID)
 	}
 
+	// 空 title 通常意味着抓取字段的位置变了（如 question.title 改名）
+	if title == "" {
+		slog.Warn("知乎动态条目 title 为空", "target_id", targetID, "target_type", targetType, "verb", act["verb"])
+	}
+
 	// 添加 action_text 前缀
 	actionText, _ := act["action_text"].(string)
 	if actionText != "" {
@@ -408,6 +417,7 @@ func deriveCategory(act map[string]interface{}) string {
 	if cat, ok := targetTypeFallback[targetType]; ok {
 		return cat
 	}
+	slog.Warn("未识别的知乎动态", "verb", verb, "target_type", targetType, "action_text", act["action_text"])
 	return targetType
 }
 

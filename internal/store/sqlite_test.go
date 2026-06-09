@@ -157,3 +157,127 @@ func TestNilDBGraceful(t *testing.T) {
 		t.Fatal("expected false on nil db")
 	}
 }
+
+// --- 迁移补充：Unicode+HTML 存取（迁移自 Python TestRoundTrip.unicode_and_html） ---
+
+func TestSaveAndGetUnicodeHTML(t *testing.T) {
+	s := New(tempDB(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer s.Close()
+
+	content := "<p>你好世界 🌍</p><script>alert('xss')</script>"
+	if err := s.Save("zhihu", "unicode1", content); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, found, err := s.Get("zhihu", "unicode1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !found {
+		t.Fatal("expected to find unicode1")
+	}
+	if got != content {
+		t.Errorf("内容不匹配: got %q, want %q", got, content)
+	}
+}
+
+// --- 跨路由隔离（迁移自 Python TestKeySemantics.different_routes_isolated） ---
+
+func TestDifferentRoutesIsolated(t *testing.T) {
+	s := New(tempDB(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer s.Close()
+
+	s.Save("zhihu", "item1", "zhihu内容")
+	s.Save("afdian", "item1", "afdian内容")
+
+	zhihu, found, _ := s.Get("zhihu", "item1")
+	if !found || zhihu != "zhihu内容" {
+		t.Errorf("zhihu/item1 = %q, want 'zhihu内容'", zhihu)
+	}
+	afdian, found, _ := s.Get("afdian", "item1")
+	if !found || afdian != "afdian内容" {
+		t.Errorf("afdian/item1 = %q, want 'afdian内容'", afdian)
+	}
+}
+
+// --- 持久化（迁移自 Python TestPersistence.data_survives_close_and_reopen） ---
+
+func TestPersistenceSurvivesCloseAndReopen(t *testing.T) {
+	path := tempDB(t)
+
+	// 写入并关闭
+	s1 := New(path)
+	s1.Init()
+	s1.Save("zhihu", "persist1", "持久化内容")
+	s1.Close()
+
+	// 重新打开
+	s2 := New(path)
+	s2.Init()
+	defer s2.Close()
+
+	got, found, err := s2.Get("zhihu", "persist1")
+	if err != nil {
+		t.Fatalf("Get after reopen: %v", err)
+	}
+	if !found {
+		t.Fatal("数据应在重开后保留")
+	}
+	if got != "持久化内容" {
+		t.Errorf("got %q, want '持久化内容'", got)
+	}
+}
+
+// --- 降级场景补充（迁移自 Python TestDegradation） ---
+
+func TestGetReturnsNoneWhenUninitialized(t *testing.T) {
+	s := New(tempDB(t))
+	// 不调用 Init()
+	content, found, err := s.Get("r", "i")
+	if err != nil {
+		t.Fatalf("Get on uninitialized: %v", err)
+	}
+	if found || content != "" {
+		t.Error("未初始化时 Get 应返回 not found")
+	}
+}
+
+func TestSaveSilentWhenUninitialized(t *testing.T) {
+	s := New(tempDB(t))
+	// 不调用 Init()，Save 不应 panic
+	if err := s.Save("r", "i", "c"); err != nil {
+		t.Fatalf("Save on uninitialized: %v", err)
+	}
+}
+
+func TestGetAfterCloseReturnsNone(t *testing.T) {
+	s := New(tempDB(t))
+	s.Init()
+	s.Save("r", "i", "c")
+	s.Close()
+
+	content, found, err := s.Get("r", "i")
+	if err != nil {
+		t.Fatalf("Get after close: %v", err)
+	}
+	if found || content != "" {
+		t.Error("关闭后 Get 应返回 not found")
+	}
+}
+
+func TestSaveAfterCloseReturnsError(t *testing.T) {
+	s := New(tempDB(t))
+	s.Init()
+	s.Close()
+
+	// Go 实现：关闭后 Save 返回 error（Python 版静默吞错，行为不同）
+	err := s.Save("r", "i", "c")
+	if err == nil {
+		t.Error("关闭后 Save 应返回 error")
+	}
+}

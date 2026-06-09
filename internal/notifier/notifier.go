@@ -8,38 +8,46 @@ import (
 	"time"
 )
 
+// defaultBusinessErrorCodes 默认业务错误状态码。
+var defaultBusinessErrorCodes = []int{400, 401, 403, 404, 410, 422, 451}
+
 // Config 是通知器的配置。
 type Config struct {
-	Enabled     bool
-	ServiceURLs []string
+	Enabled            bool
+	ServiceURLs        []string
+	BusinessErrorCodes []int // 自定义业务错误码，为空时使用默认值
 }
 
 // Notifier 是通知管理器。
 type Notifier struct {
-	enabled       bool
-	serviceURLs   []string
-	disabledFeeds map[string]bool
-	mu            sync.RWMutex
+	enabled            bool
+	serviceURLs        []string
+	businessErrorCodes map[int]bool
+	disabledFeeds      map[string]bool
+	mu                 sync.RWMutex
 }
 
 // New 创建一个新的通知器实例。
 func New(cfg Config) *Notifier {
+	codes := cfg.BusinessErrorCodes
+	if len(codes) == 0 {
+		codes = defaultBusinessErrorCodes
+	}
+	codeSet := make(map[int]bool, len(codes))
+	for _, c := range codes {
+		codeSet[c] = true
+	}
 	return &Notifier{
-		enabled:       cfg.Enabled,
-		serviceURLs:   cfg.ServiceURLs,
-		disabledFeeds: make(map[string]bool),
+		enabled:            cfg.Enabled,
+		serviceURLs:        cfg.ServiceURLs,
+		businessErrorCodes: codeSet,
+		disabledFeeds:      make(map[string]bool),
 	}
 }
 
-// IsBusinessError 判断是否为业务错误（4xx 响应码）。
-func IsBusinessError(statusCode int) bool {
-	businessErrors := []int{400, 401, 403, 404, 410, 422, 451}
-	for _, code := range businessErrors {
-		if statusCode == code {
-			return true
-		}
-	}
-	return false
+// IsBusinessError 判断是否为业务错误。
+func (n *Notifier) IsBusinessError(statusCode int) bool {
+	return n.businessErrorCodes[statusCode]
 }
 
 // IsFeedDisabled 检查 feed 是否被禁用。

@@ -332,7 +332,7 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 	// 检查是否是业务错误
 	if lastErr != nil {
 		statusCode := extractStatusCode(lastErr)
-		if statusCode > 0 && notifier.IsBusinessError(statusCode) {
+		if statusCode > 0 && r.notifier.IsBusinessError(statusCode) {
 			r.notifier.Notify(cacheKey, statusCode, fmt.Sprintf("%v", lastErr))
 			r.notifier.DisableFeed(cacheKey)
 			slog.Warn("feed 已禁用（业务错误）", "key", cacheKey, "status", statusCode)

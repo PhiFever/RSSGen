@@ -3,7 +3,10 @@ package zhihu
 import (
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"github.com/PhiFever/RSSGen/internal/config"
 )
 
 func TestTruncateRunes(t *testing.T) {
@@ -101,5 +104,483 @@ func TestFixLazyImages(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- formatQuestionDescription（迁移自 Python TestZhihuFormatQuestionDescription） ---
+
+func TestFormatQuestionDescription(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             string
+		wantContains   []string
+		wantNotContain []string
+	}{
+		{
+			name:         "包裹为引用块",
+			in:           "<p>这是一个简单的问题描述</p>",
+			wantContains: []string{"<h3>【问题描述】</h3>", "<blockquote>", "</blockquote>", "这是一个简单的问题描述"},
+		},
+		{
+			name:         "保留链接结构",
+			in:           `<p><a href="https://example.com">链接文字</a></p>`,
+			wantContains: []string{`<a href="https://example.com">`, "链接文字"},
+		},
+		{
+			name:           "修复描述中的懒加载图片",
+			in:             `<img src="data:image/svg+xml" data-actualsrc="https://pic.zhimg.com/real.jpg">`,
+			wantContains:   []string{"https://pic.zhimg.com/real.jpg"},
+			wantNotContain: []string{"data:image/svg+xml"},
+		},
+		{
+			name:         "复杂HTML含图片",
+			in:           `<p>问题描述文本</p><figure><img src="https://pic.zhimg.com/test.jpg"/></figure>`,
+			wantContains: []string{"<blockquote>", "问题描述文本", "https://pic.zhimg.com/test.jpg"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatQuestionDescription(tt.in)
+			for _, sub := range tt.wantContains {
+				if !strings.Contains(got, sub) {
+					t.Errorf("formatQuestionDescription(%q) 应包含 %q, 实得 %q", tt.in, sub, got)
+				}
+			}
+			for _, sub := range tt.wantNotContain {
+				if strings.Contains(got, sub) {
+					t.Errorf("formatQuestionDescription(%q) 不应包含 %q, 实得 %q", tt.in, sub, got)
+				}
+			}
+		})
+	}
+}
+
+func TestFormatQuestionDescriptionEmpty(t *testing.T) {
+	if got := formatQuestionDescription(""); got != "" {
+		t.Errorf("空串应返回空串, 实得 %q", got)
+	}
+}
+
+// --- FeedInfo（迁移自 Python TestZhihuRouteFeedInfo） ---
+
+func TestFeedInfoFallbackWithoutActor(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	if err != nil {
+		t.Fatalf("FeedInfo 返回错误: %v", err)
+	}
+	if info.Title != "知乎动态 - kvxjr369f" {
+		t.Errorf("Title = %q, want '知乎动态 - kvxjr369f'", info.Title)
+	}
+	if info.Link != "https://www.zhihu.com/people/kvxjr369f" {
+		t.Errorf("Link = %q", info.Link)
+	}
+	if !strings.Contains(info.Description, "kvxjr369f") {
+		t.Errorf("Description 应包含 user_id, 实得 %q", info.Description)
+	}
+}
+
+func TestFeedInfoUsesActorName(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.actor = map[string]interface{}{"name": "张三", "headline": "知乎签名档"}
+	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	if err != nil {
+		t.Fatalf("FeedInfo 返回错误: %v", err)
+	}
+	if info.Title != "知乎动态 - 张三" {
+		t.Errorf("Title = %q, want '知乎动态 - 张三'", info.Title)
+	}
+	if info.Description != "知乎签名档" {
+		t.Errorf("Description = %q, want '知乎签名档'", info.Description)
+	}
+}
+
+func TestFeedInfoActorEmptyHeadlineFallback(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.actor = map[string]interface{}{"name": "李四", "headline": ""}
+	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	if err != nil {
+		t.Fatalf("FeedInfo 返回错误: %v", err)
+	}
+	if info.Title != "知乎动态 - 李四" {
+		t.Errorf("Title = %q", info.Title)
+	}
+	// fallback description 应用 displayName（actor.name），与 Python 行为一致
+	if info.Description != "知乎用户 李四 的最新动态" {
+		t.Errorf("Description = %q, want fallback with displayName", info.Description)
+	}
+}
+
+func TestFeedInfoRequiresUserID(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	_, err := r.FeedInfo(nil)
+	if err == nil {
+		t.Error("缺少 user_id 应返回错误")
+	}
+}
+
+// --- makeFeedItem（迁移自 Python TestZhihuRouteMakeFeedItem） ---
+
+func newTestRoute() *Route {
+	return New(config.ResolvedRouteConfig{Cookie: "test"})
+}
+
+func mkAct(target map[string]interface{}, verb, actionText string) map[string]interface{} {
+	return map[string]interface{}{
+		"target":      target,
+		"verb":        verb,
+		"action_text": actionText,
+	}
+}
+
+func TestMakeFeedItemAnswerType(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "123", "type": "answer",
+		"content": "<p>回答内容</p>", "created_time": float64(1700000000),
+		"author":   map[string]interface{}{"name": "作者"},
+		"question": map[string]interface{}{"id": "456", "title": "问题标题"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_ANSWER_QUESTION", "回答了问题"))
+	if item.Title != "[回答了问题] 问题标题" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://www.zhihu.com/question/456/answer/123" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "123" {
+		t.Errorf("GUID = %q", item.GUID)
+	}
+	if item.Author != "作者" {
+		t.Errorf("Author = %q", item.Author)
+	}
+}
+
+func TestMakeFeedItemAnswerIncludesQuestionDescription(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "123", "type": "answer",
+		"content": "<p>回答内容</p>", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+		"question": map[string]interface{}{
+			"id": "456", "title": "问题标题", "detail": "<p>问题描述文本</p>",
+		},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_ANSWER_QUESTION", "回答了问题"))
+	if !strings.Contains(item.Content, "【问题描述】") {
+		t.Error("answer 类型应包含问题描述")
+	}
+	if !strings.Contains(item.Content, "问题描述文本") {
+		t.Error("应包含问题描述文本")
+	}
+	if !strings.Contains(item.Content, "回答内容") {
+		t.Error("应包含回答内容")
+	}
+	idxDesc := strings.Index(item.Content, "【问题描述】")
+	idxAnswer := strings.Index(item.Content, "回答内容")
+	if idxDesc >= idxAnswer {
+		t.Error("问题描述应在回答内容之前")
+	}
+}
+
+func TestMakeFeedItemAnswerWithoutQuestionDetail(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "123", "type": "answer",
+		"content": "<p>回答内容</p>", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+		"question": map[string]interface{}{"id": "456", "title": "问题标题", "detail": ""},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_ANSWER_QUESTION", "回答了问题"))
+	if strings.Contains(item.Content, "【问题描述】") {
+		t.Error("无 detail 时不应包含问题描述")
+	}
+}
+
+func TestMakeFeedItemArticleType(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "789", "type": "article", "title": "文章标题",
+		"content": "<p>文章内容</p>", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_ARTICLE", "发表了文章"))
+	if item.Title != "[发表了文章] 文章标题" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://zhuanlan.zhihu.com/p/789" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if strings.Contains(item.Content, "【问题描述】") {
+		t.Error("article 类型不应包含问题描述")
+	}
+}
+
+func TestMakeFeedItemPinType(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "111", "type": "pin",
+		"excerpt": "这是一条想法的摘要内容", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", "发布了想法"))
+	if item.Title != "[发布了想法] 这是一条想法的摘要内容" {
+		t.Errorf("Title = %q", item.Title)
+	}
+}
+
+func TestMakeFeedItemPinFallsBackToExcerptTitle(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "222", "type": "pin",
+		"excerpt": nil, "excerpt_title": "5.2早安<br>大家好",
+		"created": float64(1700000000), "author": map[string]interface{}{"name": "作者"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", "发布了想法"))
+	if !strings.Contains(item.Title, "5.2早安") {
+		t.Errorf("Title 应包含 '5.2早安', 实得 %q", item.Title)
+	}
+	if strings.Contains(item.Title, "<br>") {
+		t.Errorf("Title 不应包含 HTML 标签, 实得 %q", item.Title)
+	}
+	if !strings.HasPrefix(item.Title, "[发布了想法] ") {
+		t.Errorf("Title 应以动作前缀开头, 实得 %q", item.Title)
+	}
+}
+
+func TestMakeFeedItemCollectAnswerCategory(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "123", "type": "answer",
+		"content": "<p>内容</p>", "created_time": float64(1600000000),
+		"author": map[string]interface{}{"name": "原作者"},
+		"question": map[string]interface{}{"id": "456", "title": "问题标题"},
+	}
+	a := map[string]interface{}{
+		"target": target, "verb": "MEMBER_COLLECT_ANSWER",
+		"action_text": "收藏了回答", "created_time": float64(1700000000),
+	}
+	item := r.makeFeedItem(a)
+	if len(item.Categories) != 1 || item.Categories[0] != TypeCollectedAnswer {
+		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeCollectedAnswer)
+	}
+	if item.Title != "[收藏了回答] 问题标题" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.GUID != "collected_answer_123" {
+		t.Errorf("GUID = %q", item.GUID)
+	}
+	want := time.Date(2023, 11, 14, 22, 13, 20, 0, time.UTC)
+	if item.PubDate == nil || !item.PubDate.Equal(want) {
+		t.Errorf("PubDate = %v, want %v", item.PubDate, want)
+	}
+}
+
+func TestMakeFeedItemCollectArticleCategory(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "789", "type": "article", "title": "文章标题",
+		"content": "<p>内容</p>", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_COLLECT_ARTICLE", "收藏了文章"))
+	if len(item.Categories) != 1 || item.Categories[0] != TypeCollectedArticle {
+		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeCollectedArticle)
+	}
+	if item.Title != "[收藏了文章] 文章标题" {
+		t.Errorf("Title = %q", item.Title)
+	}
+}
+
+func TestMakeFeedItemVoteupAnswerCategory(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "888", "type": "answer",
+		"content": "<p>内容</p>", "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+		"question": map[string]interface{}{"id": "999", "title": "被赞同的问题"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_VOTEUP_ANSWER", "赞同了回答"))
+	if len(item.Categories) != 1 || item.Categories[0] != TypeVoteupAnswer {
+		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeVoteupAnswer)
+	}
+	if item.GUID != "voteup_answer_888" {
+		t.Errorf("GUID = %q", item.GUID)
+	}
+}
+
+func TestMakeFeedItemFollowedQuestionViaEmptyVerb(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "2033612101923464726", "type": "question",
+		"title": "张雪回应 820 赛道熄火", "detail": "<p>问题描述</p>",
+		"excerpt": "问题摘要", "created": float64(1777630907),
+		"author": map[string]interface{}{"name": "提问者"},
+	}
+	a := map[string]interface{}{
+		"target": target, "verb": "", "action_text": "关注了问题",
+		"created_time": float64(1777708519),
+	}
+	item := r.makeFeedItem(a)
+	if len(item.Categories) != 1 || item.Categories[0] != TypeFollowedQuestion {
+		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeFollowedQuestion)
+	}
+	if item.Title != "[关注了问题] 张雪回应 820 赛道熄火" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://www.zhihu.com/question/2033612101923464726" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "followed_question_2033612101923464726" {
+		t.Errorf("GUID = %q", item.GUID)
+	}
+	if item.Content != "<p>问题描述</p>" {
+		t.Errorf("Content 应回退到 detail, 实得 %q", item.Content)
+	}
+}
+
+func TestMakeFeedItemPubDateFromTargetCreatedTime(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "123", "type": "answer", "created_time": float64(1700000000),
+		"content": "", "author": map[string]interface{}{"name": "a"},
+		"question": map[string]interface{}{"id": "1", "title": "t"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_ANSWER_QUESTION", ""))
+	want := time.Date(2023, 11, 14, 22, 13, 20, 0, time.UTC)
+	if item.PubDate == nil || !item.PubDate.Equal(want) {
+		t.Errorf("PubDate = %v, want %v", item.PubDate, want)
+	}
+}
+
+func TestMakeFeedItemPinUsesCreatedField(t *testing.T) {
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "111", "type": "pin", "excerpt": "想法",
+		"created_time": nil, "created": float64(1700000000),
+		"author": map[string]interface{}{"name": "a"},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", ""))
+	want := time.Date(2023, 11, 14, 22, 13, 20, 0, time.UTC)
+	if item.PubDate == nil || !item.PubDate.Equal(want) {
+		t.Errorf("PubDate = %v, want %v", item.PubDate, want)
+	}
+}
+
+// --- isSelfInteraction（迁移自 Python TestIsSelfInteraction） ---
+
+func TestIsSelfInteraction(t *testing.T) {
+	tests := []struct {
+		name string
+		act  map[string]interface{}
+		want bool
+	}{
+		{"收藏自己的回答是自互动",
+			map[string]interface{}{"verb": "MEMBER_COLLECT_ANSWER", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "U1"}}},
+			true},
+		{"收藏他人的回答不是自互动",
+			map[string]interface{}{"verb": "MEMBER_COLLECT_ANSWER", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "U2"}}},
+			false},
+		{"赞同自己的文章是自互动",
+			map[string]interface{}{"verb": "MEMBER_VOTEUP_ARTICLE", "actor": map[string]interface{}{"id": "X"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "X"}}},
+			true},
+		{"创作类verb不算自互动",
+			map[string]interface{}{"verb": "MEMBER_ANSWER_QUESTION", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "U1"}}},
+			false},
+		{"空verb不算自互动",
+			map[string]interface{}{"verb": "", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "U1"}}},
+			false},
+		{"缺少actor返回false",
+			map[string]interface{}{"verb": "MEMBER_COLLECT_ANSWER", "target": map[string]interface{}{"author": map[string]interface{}{"id": "U1"}}},
+			false},
+		{"缺少target.author返回false",
+			map[string]interface{}{"verb": "MEMBER_COLLECT_ANSWER", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{}},
+			false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSelfInteraction(tt.act)
+			if got != tt.want {
+				t.Errorf("isSelfInteraction(%v) = %v, want %v", tt.act, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- deriveCategory（迁移自 Python TestZhihuApiChangeWarnings 部分） ---
+
+func TestDeriveCategoryKnownTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		act  map[string]interface{}
+		want string
+	}{
+		{"answer verb", map[string]interface{}{"verb": "MEMBER_ANSWER_QUESTION", "target": map[string]interface{}{"type": "answer"}}, TypeAnswer},
+		{"article verb", map[string]interface{}{"verb": "MEMBER_CREATE_ARTICLE", "target": map[string]interface{}{"type": "article"}}, TypeArticle},
+		{"pin verb", map[string]interface{}{"verb": "MEMBER_CREATE_PIN", "target": map[string]interface{}{"type": "pin"}}, TypePin},
+		{"collect answer", map[string]interface{}{"verb": "MEMBER_COLLECT_ANSWER", "target": map[string]interface{}{"type": "answer"}}, TypeCollectedAnswer},
+		{"voteup answer", map[string]interface{}{"verb": "MEMBER_VOTEUP_ANSWER", "target": map[string]interface{}{"type": "answer"}}, TypeVoteupAnswer},
+		{"empty verb + question type", map[string]interface{}{"verb": "", "target": map[string]interface{}{"type": "question"}}, TypeFollowedQuestion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deriveCategory(tt.act)
+			if got != tt.want {
+				t.Errorf("deriveCategory(%v) = %q, want %q", tt.act, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeriveCategoryUnknownType(t *testing.T) {
+	act := map[string]interface{}{
+		"verb":   "MEMBER_FUTURE_ACTION",
+		"target": map[string]interface{}{"type": "future_type"},
+	}
+	got := deriveCategory(act)
+	if got != "future_type" {
+		t.Errorf("未知类型应回退到 target.type, 实得 %q", got)
+	}
+}
+
+// --- renderPinContent（迁移自 Python TestZhihuApiChangeWarnings 部分） ---
+
+func TestRenderPinContentTextBlock(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"content": "纯文本内容"},
+	}
+	got := renderPinContent(blocks)
+	if !strings.Contains(got, "纯文本内容") {
+		t.Errorf("应包含文本内容, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentImageBlock(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"type": "image", "original_url": "https://pic.zhimg.com/img.jpg"},
+	}
+	got := renderPinContent(blocks)
+	if !strings.Contains(got, "https://pic.zhimg.com/img.jpg") {
+		t.Errorf("应包含图片URL, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentLinkCard(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"type": "link_card", "url": "https://example.com", "data_draft_title": "链接标题"},
+	}
+	got := renderPinContent(blocks)
+	if !strings.Contains(got, "https://example.com") || !strings.Contains(got, "链接标题") {
+		t.Errorf("应包含链接和标题, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentUnknownBlockType(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"type": "future_block_type", "foo": "bar"},
+	}
+	got := renderPinContent(blocks)
+	if got != "" {
+		t.Errorf("未知 block type 应返回空串, 实得 %q", got)
 	}
 }
