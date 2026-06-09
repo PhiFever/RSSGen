@@ -32,8 +32,10 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 # 复制编译好的二进制文件
 COPY --from=builder /rssgen /rssgen
 
-# 复制配置文件模板
-COPY config.example.yml /config.yml
+# 与 docker-compose 挂载点对齐：配置挂到 /app/config.yml、数据挂到 /app/data。
+# 二进制以相对路径读取 config.yml 和 ./data/，故工作目录必须是 /app（与 Python 版一致）。
+# 不烤入示例配置：未挂载配置时应直接报错退出，而非静默加载占位符。
+WORKDIR /app
 
 EXPOSE 8000
 
