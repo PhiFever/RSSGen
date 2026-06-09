@@ -4,8 +4,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/route"
 	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
 	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
@@ -110,5 +115,90 @@ func TestAnyRouteEnabled(t *testing.T) {
 	cfg.Routes["test"] = config.RouteConfig{Enabled: true, RefreshInterval: 60}
 	if !anyRouteEnabled(cfg) {
 		t.Error("期望返回 true")
+	}
+}
+
+// --- Disabled Feed HTTP 行为测试（迁移自 Python test_app_feed.py） ---
+
+// setupTestRouter 创建用于测试的 chi router，包含 feed handler。
+func setupTestRouter(notif *notifier.Notifier, feedCache *cache.TTLCache) *chi.Mux {
+	r := chi.NewRouter()
+	cfg := &config.Config{
+		Scraper: config.ScraperConfig{},
+		Routes:  map[string]config.RouteConfig{},
+	}
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, nil, nil, cfg))
+	return r
+}
+
+func TestDisabledFeedReturns502(t *testing.T) {
+	notif := notifier.New(notifier.Config{Enabled: false})
+	feedCache := cache.New(10 * time.Second)
+	notif.DisableFeed("afdian/author1")
+
+	router := setupTestRouter(notif, feedCache)
+
+	req := httptest.NewRequest("GET", "/feed/afdian/author1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("被禁用的 feed 应返回 502, 实得 %d", w.Code)
+	}
+}
+
+func TestSiblingFeedNotBlocked(t *testing.T) {
+	notif := notifier.New(notifier.Config{Enabled: false})
+	feedCache := cache.New(10 * time.Second)
+	notif.DisableFeed("afdian/author1")
+
+	// 预填充缓存，避免走真实 fetch
+	feedCache.Set("afdian/author2", "<feed/>")
+
+	router := setupTestRouter(notif, feedCache)
+
+	req := httptest.NewRequest("GET", "/feed/afdian/author2", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("同路由下未禁用的 feed 应返回 200, 实得 %d", w.Code)
+	}
+	if w.Body.String() != "<feed/>" {
+		t.Errorf("应返回缓存内容, 实得 %q", w.Body.String())
+	}
+}
+
+func TestFeedCacheHitReturnsXML(t *testing.T) {
+	notif := notifier.New(notifier.Config{Enabled: false})
+	feedCache := cache.New(10 * time.Second)
+	feedCache.Set("afdian/user1", `<?xml version="1.0"?><feed/>`)
+
+	router := setupTestRouter(notif, feedCache)
+
+	req := httptest.NewRequest("GET", "/feed/afdian/user1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("缓存命中应返回 200, 实得 %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/xml; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want application/xml", ct)
+	}
+}
+
+func TestFeedUnknownRouteReturns404(t *testing.T) {
+	notif := notifier.New(notifier.Config{Enabled: false})
+	feedCache := cache.New(10 * time.Second)
+
+	router := setupTestRouter(notif, feedCache)
+
+	req := httptest.NewRequest("GET", "/feed/nonexistent/user1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("未知路由应返回 404, 实得 %d", w.Code)
 	}
 }

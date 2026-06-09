@@ -1,12 +1,15 @@
 package zhihu
 
 import (
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/route"
 )
 
 func TestTruncateRunes(t *testing.T) {
@@ -582,5 +585,347 @@ func TestRenderPinContentUnknownBlockType(t *testing.T) {
 	got := renderPinContent(blocks)
 	if got != "" {
 		t.Errorf("未知 block type 应返回空串, 实得 %q", got)
+	}
+}
+
+// --- Fetch 集成测试（迁移自 Python TestZhihuRouteFetch 等） ---
+
+// mockFetchActivities 创建一个返回固定 activities 的 fetchActivitiesFunc。
+func mockFetchActivities(activities []map[string]interface{}, err error) fetchActivitiesFunc {
+	return func(userID string, limit int) ([]map[string]interface{}, error) {
+		if err != nil {
+			return nil, err
+		}
+		// 模拟截断行为
+		if len(activities) > limit {
+			return activities[:limit], nil
+		}
+		return activities, nil
+	}
+}
+
+// mkAnswerTarget 构造 answer 类型的 target map。
+func mkAnswerTarget(id, questionID, questionTitle string) map[string]interface{} {
+	return map[string]interface{}{
+		"id": id, "type": "answer",
+		"content": "<p>回答内容</p>", "created_time": float64(1700000000),
+		"author":   map[string]interface{}{"name": "作者"},
+		"question": map[string]interface{}{"id": questionID, "title": questionTitle},
+	}
+}
+
+// mkPinTarget 构造 pin 类型的 target map。
+func mkPinTarget(id, excerpt string) map[string]interface{} {
+	return map[string]interface{}{
+		"id": id, "type": "pin",
+		"excerpt": excerpt, "created_time": float64(1700000000),
+		"author": map[string]interface{}{"name": "作者"},
+	}
+}
+
+// mkArticleTarget 构造 article 类型的 target map。
+func mkArticleTarget(id, title string) map[string]interface{} {
+	return map[string]interface{}{
+		"id": id, "type": "article", "title": title,
+		"content": "<p>文章内容</p>", "created_time": float64(1700000100),
+		"author": map[string]interface{}{"name": "作者2"},
+	}
+}
+
+func TestFetchReturnsFeedItems(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "type": "feed", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"target": mkAnswerTarget("123", "456", "问题标题")},
+		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_ARTICLE", "action_text": "发表了文章",
+			"target": mkArticleTarget("789", "文章标题")},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("应返回 2 个 item, 实得 %d", len(items))
+	}
+	if items[0].Title != "[回答了问题] 问题标题" {
+		t.Errorf("items[0].Title = %q", items[0].Title)
+	}
+	if items[1].Title != "[发表了文章] 文章标题" {
+		t.Errorf("items[1].Title = %q", items[1].Title)
+	}
+}
+
+func TestFetchFiltersByInclude(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "type": "feed", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"target": mkAnswerTarget("1", "10", "问题")},
+		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_PIN", "action_text": "发布了想法",
+			"target": mkPinTarget("2", "想法内容")},
+	}
+	r := New(config.ResolvedRouteConfig{
+		Cookie: "d_c0=test",
+		Feeds:  []config.FeedConfig{{UserID: "test_user", Include: []string{"answer"}}},
+	})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("include=[answer] 应只返回 1 个 item, 实得 %d", len(items))
+	}
+	if items[0].Categories[0] != TypeAnswer {
+		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypeAnswer)
+	}
+}
+
+func TestFetchReturnsAllWhenNoInclude(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "type": "feed", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"target": mkAnswerTarget("1", "10", "问题")},
+		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_PIN", "action_text": "发布了想法",
+			"target": mkPinTarget("2", "想法内容")},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("无 include 应返回全部 2 个 item, 实得 %d", len(items))
+	}
+}
+
+func TestFetchIncludeFromFetchOptions(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "type": "feed", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"target": mkAnswerTarget("1", "10", "问题")},
+		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_PIN", "action_text": "发布了想法",
+			"target": mkPinTarget("2", "想法内容")},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{
+		Limit:   20,
+		Include: []string{"pin"},
+	})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("FetchOptions.Include=[pin] 应只返回 1 个 item, 实得 %d", len(items))
+	}
+	if items[0].Categories[0] != TypePin {
+		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypePin)
+	}
+}
+
+func TestFetchFiltersSelfInteractionByDefault(t *testing.T) {
+	author := map[string]interface{}{"id": "USER_A", "name": "本人"}
+	activities := []map[string]interface{}{
+		// 自己创作的回答 — 非自互动，保留
+		{"id": "act1", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题", "actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "1", "type": "answer", "content": "<p>原创回答</p>",
+				"created_time": float64(1700000000), "author": author,
+				"question": map[string]interface{}{"id": "10", "title": "问题A"}}},
+		// 收藏自己的回答 — 自互动，默认应被过滤
+		{"id": "act2", "verb": "MEMBER_COLLECT_ANSWER", "action_text": "收藏了回答", "actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "1", "type": "answer", "content": "<p>原创回答</p>",
+				"created_time": float64(1700001000), "author": author,
+				"question": map[string]interface{}{"id": "10", "title": "问题A"}}},
+		// 收藏他人的回答 — 非自互动，保留
+		{"id": "act3", "verb": "MEMBER_COLLECT_ANSWER", "action_text": "收藏了回答", "actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "2", "type": "answer", "content": "<p>他人回答</p>",
+				"created_time": float64(1700002000),
+				"author": map[string]interface{}{"id": "USER_B", "name": "他人"},
+				"question": map[string]interface{}{"id": "20", "title": "问题B"}}},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("默认应过滤自互动，保留 2 个 item, 实得 %d", len(items))
+	}
+	// 验证保留的是 act1 和 act3
+	guids := map[string]bool{}
+	for _, item := range items {
+		guids[item.GUID] = true
+	}
+	if !guids["1"] || !guids["collected_answer_2"] {
+		t.Errorf("应保留 act1(GUID=1) 和 act3(GUID=collected_answer_2), 实得 GUIDs: %v", guids)
+	}
+}
+
+func TestFetchKeepsSelfInteractionWhenEnabled(t *testing.T) {
+	author := map[string]interface{}{"id": "USER_A", "name": "本人"}
+	activities := []map[string]interface{}{
+		{"id": "act1", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题", "actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "1", "type": "answer", "content": "<p>内容</p>",
+				"created_time": float64(1700000000), "author": author,
+				"question": map[string]interface{}{"id": "10", "title": "问题"}}},
+		{"id": "act2", "verb": "MEMBER_COLLECT_ANSWER", "action_text": "收藏了回答", "actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "1", "type": "answer", "content": "<p>内容</p>",
+				"created_time": float64(1700001000), "author": author,
+				"question": map[string]interface{}{"id": "10", "title": "问题"}}},
+	}
+	r := New(config.ResolvedRouteConfig{
+		Cookie:                 "d_c0=test",
+		IncludeSelfInteraction: true,
+	})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("IncludeSelfInteraction=true 应保留全部 2 个 item, 实得 %d", len(items))
+	}
+}
+
+func TestFetchCreateVerbNotFilteredEvenIfAuthorsMatch(t *testing.T) {
+	// 创作类 verb 即使 actor == target.author 也不算自互动
+	author := map[string]interface{}{"id": "USER_A", "name": "本人"}
+	activities := []map[string]interface{}{
+		{"id": "act1", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"actor": map[string]interface{}{"id": "USER_A"},
+			"target": map[string]interface{}{"id": "1", "type": "answer", "content": "<p>内容</p>",
+				"created_time": float64(1700000000), "author": author,
+				"question": map[string]interface{}{"id": "10", "title": "问题"}}},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("创作类 verb 不应被过滤, 实得 %d 个 item", len(items))
+	}
+}
+
+func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
+			"target": mkAnswerTarget("1", "10", "问题")},
+		{"id": "act2", "verb": "MEMBER_COLLECT_ANSWER", "action_text": "收藏了回答",
+			"target": mkAnswerTarget("2", "20", "问题2")},
+	}
+	r := New(config.ResolvedRouteConfig{
+		Cookie: "d_c0=test",
+		Feeds:  []config.FeedConfig{{UserID: "u", Include: []string{"answer"}}},
+	})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("include=[answer] 应排除 collected_answer, 实得 %d 个 item", len(items))
+	}
+	if items[0].Categories[0] != TypeAnswer {
+		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypeAnswer)
+	}
+}
+
+// --- deriveCategory warning 测试（迁移自 Python TestZhihuApiChangeWarnings） ---
+
+func TestDeriveCategoryWarnsOnUnknownType(t *testing.T) {
+	// 捕获 slog 输出
+	var buf strings.Builder
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	act := map[string]interface{}{
+		"verb":        "MEMBER_FUTURE_ACTION",
+		"target":      map[string]interface{}{"type": "future_type"},
+		"action_text": "做了某事",
+	}
+	category := deriveCategory(act)
+	if category != "future_type" {
+		t.Errorf("deriveCategory = %q, want 'future_type'", category)
+	}
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "MEMBER_FUTURE_ACTION") {
+		t.Errorf("warning 日志应包含 verb 'MEMBER_FUTURE_ACTION', 实得: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "future_type") {
+		t.Errorf("warning 日志应包含 target_type 'future_type', 实得: %s", logOutput)
+	}
+}
+
+func TestDeriveCategoryNoWarnOnKnownTypes(t *testing.T) {
+	var buf strings.Builder
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(oldLogger)
+
+	// 已知 verb
+	deriveCategory(map[string]interface{}{
+		"verb": "MEMBER_ANSWER_QUESTION", "target": map[string]interface{}{"type": "answer"},
+	})
+	// 已知 fallback type
+	deriveCategory(map[string]interface{}{
+		"verb": "", "target": map[string]interface{}{"type": "question"},
+	})
+
+	if buf.Len() > 0 {
+		t.Errorf("已知类型不应打 warning, 实得: %s", buf.String())
+	}
+}
+
+// --- Fetch 错误处理 ---
+
+func TestFetchPropagatesError(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(nil, fmt.Errorf("网络超时"))
+
+	_, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err == nil {
+		t.Fatal("Fetch 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "网络超时") {
+		t.Errorf("错误信息应包含原始错误, 实得: %v", err)
+	}
+}
+
+func TestFetchRequiresUserID(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	_, err := r.Fetch(nil, []string{}, route.FetchOptions{Limit: 20})
+	if err == nil {
+		t.Fatal("缺少 user_id 应返回错误")
+	}
+}
+
+func TestFetchSkipsNilTarget(t *testing.T) {
+	activities := []map[string]interface{}{
+		{"id": "act1", "type": "feed", "target": nil},
+		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_ARTICLE", "action_text": "发表了文章",
+			"target": mkArticleTarget("789", "文章标题")},
+	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
+	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+
+	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("nil target 应被跳过, 实得 %d 个 item", len(items))
 	}
 }

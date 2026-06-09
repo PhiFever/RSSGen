@@ -22,7 +22,10 @@ func init() {
 
 // Route 是爱发电路由实现。
 type Route struct {
-	cfg config.ResolvedRouteConfig
+	cfg             config.ResolvedRouteConfig
+	getAuthorIDFn   func(sc *scraper.Scraper, authorSlug string) (string, error)
+	getPostListFn   func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]map[string]interface{}, error)
+	getPostDetailFn func(sc *scraper.Scraper, postID string) (string, error)
 }
 
 // New 创建爱发电路由实例。
@@ -77,13 +80,21 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	sc := r.getScraper()
 
 	// 获取作者 ID
-	userID, err := r.getAuthorID(sc, authorSlug)
+	authorIDFn := r.getAuthorID
+	if r.getAuthorIDFn != nil {
+		authorIDFn = r.getAuthorIDFn
+	}
+	userID, err := authorIDFn(sc, authorSlug)
 	if err != nil {
 		return nil, fmt.Errorf("获取作者 ID 失败: %w", err)
 	}
 
 	// 获取帖子列表
-	posts, err := r.getPostList(sc, userID, authorSlug, limit)
+	postListFn := r.getPostList
+	if r.getPostListFn != nil {
+		postListFn = r.getPostListFn
+	}
+	posts, err := postListFn(sc, userID, authorSlug, limit)
 	if err != nil {
 		return nil, fmt.Errorf("获取帖子列表失败: %w", err)
 	}
@@ -103,7 +114,11 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 			}
 		}
 		if content == "" {
-			content, err = r.getPostDetail(sc, postID)
+			detailFn := r.getPostDetail
+			if r.getPostDetailFn != nil {
+				detailFn = r.getPostDetailFn
+			}
+			content, err = detailFn(sc, postID)
 			if err != nil {
 				// 获取详情失败，使用空内容
 				content = ""

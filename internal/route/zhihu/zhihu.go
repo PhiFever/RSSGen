@@ -73,10 +73,14 @@ func init() {
 	})
 }
 
+// fetchActivitiesFunc 是 fetchActivities 的函数签名，用于测试注入。
+type fetchActivitiesFunc func(userID string, limit int) ([]map[string]interface{}, error)
+
 // Route 是知乎路由实现。
 type Route struct {
-	cfg   config.ResolvedRouteConfig
-	actor map[string]interface{} // 最近一次抓取的 actor 信息
+	cfg              config.ResolvedRouteConfig
+	actor            map[string]interface{} // 最近一次抓取的 actor 信息
+	fetchActivitiesFn fetchActivitiesFunc  // 可替换的 fetchActivities（测试用）
 }
 
 // New 创建知乎路由实例。
@@ -154,7 +158,11 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 
 	includeSelfInteraction := r.cfg.IncludeSelfInteraction
 
-	activities, err := r.fetchActivities(userID, limit)
+	fetchFn := r.fetchActivities
+	if r.fetchActivitiesFn != nil {
+		fetchFn = r.fetchActivitiesFn
+	}
+	activities, err := fetchFn(userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("获取知乎动态失败: %w", err)
 	}

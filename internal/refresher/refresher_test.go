@@ -323,7 +323,8 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 // --- mockRoute 用于测试 ---
 
 type mockRoute struct {
-	name string
+	name    string
+	fetchFn func(route.ArticleStore, []string, route.FetchOptions) ([]route.FeedItem, error)
 }
 
 func (m *mockRoute) Name() string        { return m.name }
@@ -333,5 +334,220 @@ func (m *mockRoute) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 	return &route.FeedInfo{Title: "Mock", Link: "https://example.com"}, nil
 }
 func (m *mockRoute) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+	if m.fetchFn != nil {
+		return m.fetchFn(articleStore, pathParams, opts)
+	}
 	return []route.FeedItem{{Title: "item1"}}, nil
+}
+
+// --- refreshOne 测试（迁移自 Python TestRefreshOne） ---
+
+func TestRefreshOneSuccess(t *testing.T) {
+	route.Register("_test_r1_ok", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_r1_ok"}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_ok")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:    feedCache,
+		Notifier:     notif,
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	ref.refreshOne("_test_r1_ok", []string{"user1"}, nil)
+
+	cacheKey := "_test_r1_ok/user1"
+	ref.statsMu.RLock()
+	st, ok := ref.errorStats[cacheKey]
+	ref.statsMu.RUnlock()
+
+	if !ok {
+		t.Fatal("成功后应有 errorStats 记录")
+	}
+	if st.Error != "" {
+		t.Errorf("成功时 Error 应为空, 实得 %q", st.Error)
+	}
+	if st.LastSuccess == "" {
+		t.Error("成功时 LastSuccess 不应为空")
+	}
+	if st.ItemCount != 1 {
+		t.Errorf("ItemCount = %d, want 1", st.ItemCount)
+	}
+	// pending 应被清理
+	ref.pendingMu.Lock()
+	isPending := ref.pending[cacheKey]
+	ref.pendingMu.Unlock()
+	if isPending {
+		t.Error("refreshOne 完成后 pending 应被清理")
+	}
+}
+
+func TestRefreshOneFailure(t *testing.T) {
+	route.Register("_test_r1_fail", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_fail",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				return nil, errors.New("boom")
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_fail")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:      feedCache,
+		Notifier:       notif,
+		MaxRetries:     1,
+		RetryBaseDelay: 0,
+		RoutesConfig:   map[string]config.RouteConfig{},
+	})
+
+	ref.refreshOne("_test_r1_fail", []string{"user1"}, nil)
+
+	cacheKey := "_test_r1_fail/user1"
+	ref.statsMu.RLock()
+	st, ok := ref.errorStats[cacheKey]
+	ref.statsMu.RUnlock()
+
+	if !ok {
+		t.Fatal("失败后应有 errorStats 记录")
+	}
+	if st.Error == "" {
+		t.Error("失败时 Error 不应为空")
+	}
+	if st.ItemCount != 0 {
+		t.Errorf("失败时 ItemCount = %d, want 0", st.ItemCount)
+	}
+}
+
+// --- Business error disables feed（迁移自 Python TestNotifierIntegration） ---
+
+func TestBusinessErrorDisablesFeed(t *testing.T) {
+	route.Register("_test_r1_biz", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_biz",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 403})
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_biz")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:      feedCache,
+		Notifier:       notif,
+		MaxRetries:     1,
+		RetryBaseDelay: 0,
+		RoutesConfig:   map[string]config.RouteConfig{},
+	})
+
+	cacheKey := "_test_r1_biz/user1"
+	if notif.IsFeedDisabled(cacheKey) {
+		t.Fatal("初始状态 feed 不应被禁用")
+	}
+
+	ref.refreshOne("_test_r1_biz", []string{"user1"}, nil)
+
+	if !notif.IsFeedDisabled(cacheKey) {
+		t.Error("业务错误(403)后 feed 应被禁用")
+	}
+}
+
+func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
+	route.Register("_test_r1_temp", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_temp",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 500})
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_temp")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:      feedCache,
+		Notifier:       notif,
+		MaxRetries:     1,
+		RetryBaseDelay: 0,
+		RoutesConfig:   map[string]config.RouteConfig{},
+	})
+
+	cacheKey := "_test_r1_temp/user1"
+	ref.refreshOne("_test_r1_temp", []string{"user1"}, nil)
+
+	if notif.IsFeedDisabled(cacheKey) {
+		t.Error("临时错误(500)不应禁用 feed")
+	}
+}
+
+func TestDisabledFeedSkipsFetch(t *testing.T) {
+	fetchCalled := false
+	route.Register("_test_r1_skip", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_skip",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				fetchCalled = true
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_skip")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:    feedCache,
+		Notifier:     notif,
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	cacheKey := "_test_r1_skip/user1"
+	notif.DisableFeed(cacheKey)
+
+	ref.refreshOne("_test_r1_skip", []string{"user1"}, nil)
+
+	if fetchCalled {
+		t.Error("被禁用的 feed 不应调用 Fetch")
+	}
+}
+
+// --- Trigger 参数透传（迁移自 Python TestFetchKwargsPassthrough） ---
+
+func TestTriggerInjectsFeedConfigParams(t *testing.T) {
+	var capturedOpts route.FetchOptions
+	route.Register("_test_r1_params", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_params",
+			fetchFn: func(_ route.ArticleStore, _ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+				capturedOpts = opts
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer delete(route.GetRegistry(), "_test_r1_params")
+
+	feedCache := cache.New(10 * time.Second)
+	notif := notifier.New(notifier.Config{Enabled: false})
+	ref := New(Config{
+		FeedCache:    feedCache,
+		Notifier:     notif,
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	// 直接调用 refreshOne 并传入 extraParams
+	ref.refreshOne("_test_r1_params", []string{"user1"}, map[string]string{"limit": "5"})
+
+	if capturedOpts.Limit != 5 {
+		t.Errorf("Limit = %d, want 5", capturedOpts.Limit)
+	}
 }

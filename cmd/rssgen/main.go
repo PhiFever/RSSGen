@@ -109,7 +109,89 @@ func main() {
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, ref, articleStore, cfg))
+
+	// 状态接口
+	r.Get("/status", func(w http.ResponseWriter, r *http.Request) {
+		if ref == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"enabled":true}`)
+	})
+
+	// 启动 HTTP 服务
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
+	// 优雅关停
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("RSSGen 启动", "addr", addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP 服务异常", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-done
+	slog.Info("收到关停信号，正在关闭服务...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if ref != nil {
+		ref.Stop()
+	}
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("服务关闭异常", "error", err)
+	}
+	slog.Info("RSSGen 已停止")
+}
+
+// anyRouteEnabled 检查是否有任何路由启用了定时刷新。
+func anyRouteEnabled(cfg *config.Config) bool {
+	for _, rc := range cfg.Routes {
+		if rc.Enabled && rc.RefreshInterval > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// buildCacheKey 构建缓存键。
+func buildCacheKey(routeName string, pathParts []string) string {
+	return routeName + "/" + strings.Join(pathParts, "/")
+}
+
+// splitPath 将路径分割为非空段。
+func splitPath(path string) []string {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	var result []string
+	for _, p := range parts {
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// makeFeedHandler 创建 feed HTTP handler，便于测试。
+func makeFeedHandler(
+	notif *notifier.Notifier,
+	feedCache *cache.TTLCache,
+	ref *refresher.Refresher,
+	articleStore *store.ArticleStore,
+	cfg *config.Config,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		routeName := chi.URLParam(r, "route_name")
 		path := chi.URLParam(r, "*")
 		pathParts := splitPath(path)
@@ -192,76 +274,5 @@ func main() {
 
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		w.Write([]byte(xml))
-	})
-
-	// 状态接口
-	r.Get("/status", func(w http.ResponseWriter, r *http.Request) {
-		if ref == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"enabled":true}`)
-	})
-
-	// 启动 HTTP 服务
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
 	}
-
-	// 优雅关停
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		slog.Info("RSSGen 启动", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP 服务异常", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	<-done
-	slog.Info("收到关停信号，正在关闭服务...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if ref != nil {
-		ref.Stop()
-	}
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("服务关闭异常", "error", err)
-	}
-	slog.Info("RSSGen 已停止")
-}
-
-// anyRouteEnabled 检查是否有任何路由启用了定时刷新。
-func anyRouteEnabled(cfg *config.Config) bool {
-	for _, rc := range cfg.Routes {
-		if rc.Enabled && rc.RefreshInterval > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-// buildCacheKey 构建缓存键。
-func buildCacheKey(routeName string, pathParts []string) string {
-	return routeName + "/" + strings.Join(pathParts, "/")
-}
-
-// splitPath 将路径分割为非空段。
-func splitPath(path string) []string {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	var result []string
-	for _, p := range parts {
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
 }
