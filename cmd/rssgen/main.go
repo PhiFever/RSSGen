@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -70,6 +71,7 @@ func main() {
 			StartupDelay:   cfg.Refresher.StartupDelay,
 			MaxRetries:     cfg.Refresher.MaxRetries,
 			RetryBaseDelay: cfg.Refresher.RetryBaseDelay,
+			ScraperConfig:  cfg.Scraper,
 			RoutesConfig:   cfg.Routes,
 		})
 		ref.Start()
@@ -88,11 +90,12 @@ func main() {
 		result := make(map[string]string)
 		for name, factory := range registry {
 			// 创建临时实例获取 description
-			route := factory(nil)
+			route := factory(config.ResolvedRouteConfig{})
 			result[name] = route.Description()
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"name":"RSSGen","routes":%v}`, marshalJSON(result))
+		routesJSON, _ := json.Marshal(result)
+		fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON)
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
@@ -135,8 +138,7 @@ func main() {
 		}
 
 		// 同步抓取
-		mergedConfig := mergeConfig(cfg, routeName)
-		routeInst := factory(mergedConfig)
+		routeInst := factory(config.ResolveRoute(cfg.Scraper, cfg.Routes[routeName]))
 
 		// 解析请求参数
 		opts := route.FetchOptions{
@@ -237,78 +239,6 @@ func anyRouteEnabled(cfg *config.Config) bool {
 	return false
 }
 
-// mergeConfig 合并全局 scraper 配置与路由配置。
-func mergeConfig(cfg *config.Config, routeName string) map[string]interface{} {
-	result := make(map[string]interface{})
-
-	// 全局 scraper 配置
-	if cfg.Scraper.Proxy != "" {
-		result["proxy"] = cfg.Scraper.Proxy
-	}
-	if cfg.Scraper.RateLimit > 0 {
-		result["rate_limit"] = cfg.Scraper.RateLimit
-	}
-	if cfg.Scraper.Impersonate != "" {
-		result["impersonate"] = cfg.Scraper.Impersonate
-	}
-
-	// 路由级配置
-	rc, ok := cfg.Routes[routeName]
-	if !ok {
-		return result
-	}
-
-	if rc.Cookie != "" {
-		result["cookie"] = rc.Cookie
-	}
-	if rc.RateLimit != nil {
-		result["rate_limit"] = *rc.RateLimit
-	}
-	if rc.Proxy != nil {
-		result["proxy"] = *rc.Proxy
-	}
-	if rc.Impersonate != nil {
-		result["impersonate"] = *rc.Impersonate
-	}
-	if len(rc.DefaultInclude) > 0 {
-		defaultInc := make([]interface{}, len(rc.DefaultInclude))
-		for i, v := range rc.DefaultInclude {
-			defaultInc[i] = v
-		}
-		result["default_include"] = defaultInc
-	}
-	if rc.IncludeSelfInteraction != nil {
-		result["include_self_interaction"] = *rc.IncludeSelfInteraction
-	}
-
-	// 将 feeds 转为通用格式
-	if len(rc.Feeds) > 0 {
-		feeds := make([]interface{}, len(rc.Feeds))
-		for i, f := range rc.Feeds {
-			feedMap := map[string]interface{}{
-				"user_id": f.UserID,
-			}
-			if f.Alias != "" {
-				feedMap["alias"] = f.Alias
-			}
-			if f.Limit > 0 {
-				feedMap["limit"] = f.Limit
-			}
-			if len(f.Include) > 0 {
-				include := make([]interface{}, len(f.Include))
-				for j, v := range f.Include {
-					include[j] = v
-				}
-				feedMap["include"] = include
-			}
-			feeds[i] = feedMap
-		}
-		result["feeds"] = feeds
-	}
-
-	return result
-}
-
 // buildCacheKey 构建缓存键。
 func buildCacheKey(routeName string, pathParts []string) string {
 	return routeName + "/" + strings.Join(pathParts, "/")
@@ -324,13 +254,4 @@ func splitPath(path string) []string {
 		}
 	}
 	return result
-}
-
-// marshalJSON 简单的 JSON 序列化（用于 map[string]string）。
-func marshalJSON(m map[string]string) string {
-	parts := make([]string, 0, len(m))
-	for k, v := range m {
-		parts = append(parts, fmt.Sprintf("%q:%q", k, v))
-	}
-	return "{" + strings.Join(parts, ",") + "}"
 }

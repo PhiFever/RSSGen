@@ -6,17 +6,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
 func TestNew(t *testing.T) {
-	config := map[string]interface{}{
-		"cookie":      "test_cookie",
-		"rate_limit":  0.1,
-		"proxy":       "",
-	}
-
-	r := New(config)
+	r := New(config.ResolvedRouteConfig{
+		Cookie:    "test_cookie",
+		RateLimit: 0.1,
+	})
 	if r == nil {
 		t.Fatal("New 返回 nil")
 	}
@@ -32,17 +30,12 @@ func TestNew(t *testing.T) {
 }
 
 func TestFeedInfo(t *testing.T) {
-	config := map[string]interface{}{
-		"cookie": "test",
-		"feeds": []interface{}{
-			map[string]interface{}{
-				"user_id": "test_user",
-				"alias":   "测试用户",
-			},
+	r := New(config.ResolvedRouteConfig{
+		Cookie: "test",
+		Feeds: []config.FeedConfig{
+			{UserID: "test_user", Alias: "测试用户"},
 		},
-	}
-
-	r := New(config)
+	})
 
 	// 测试正常情况
 	info, err := r.FeedInfo([]string{"test_user"})
@@ -119,12 +112,12 @@ func TestFetchWithMockServer(t *testing.T) {
 				"data": map[string]interface{}{
 					"list": []interface{}{
 						map[string]interface{}{
-							"post_id":       "post_001",
-							"title":         "测试文章",
-							"publish_time":  1700000000,
-							"publish_sn":    "100",
-							"user":          map[string]interface{}{"name": "作者"},
-							"pics":          []interface{}{},
+							"post_id":      "post_001",
+							"title":        "测试文章",
+							"publish_time": 1700000000,
+							"publish_sn":   "100",
+							"user":         map[string]interface{}{"name": "作者"},
+							"pics":         []interface{}{},
 						},
 					},
 				},
@@ -151,12 +144,10 @@ func TestFetchWithMockServer(t *testing.T) {
 
 	// 注意：这个测试需要修改 Route 以支持自定义 base URL
 	// 当前实现使用硬编码的 hostURL，所以这个测试主要验证结构
-	config := map[string]interface{}{
-		"cookie":     "test",
-		"rate_limit": 0.1,
-	}
-
-	r := New(config)
+	r := New(config.ResolvedRouteConfig{
+		Cookie:    "test",
+		RateLimit: 0.1,
+	})
 
 	// 由于使用硬编码 URL，这里只测试 Fetch 不会 panic
 	// 实际测试需要 mock 整个 HTTP 客户端或允许自定义 base URL

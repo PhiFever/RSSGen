@@ -39,9 +39,9 @@ func TestSplitPath(t *testing.T) {
 
 func TestBuildCacheKey(t *testing.T) {
 	tests := []struct {
-		routeName  string
-		pathParts  []string
-		expected   string
+		routeName string
+		pathParts []string
+		expected  string
 	}{
 		{"afdian", []string{"user1"}, "afdian/user1"},
 		{"zhihu", []string{"user2"}, "zhihu/user2"},
@@ -53,21 +53,6 @@ func TestBuildCacheKey(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("buildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParts, result, tt.expected)
 		}
-	}
-}
-
-func TestMarshalJSON(t *testing.T) {
-	m := map[string]string{
-		"name": "RSSGen",
-		"test": "value",
-	}
-	result := marshalJSON(m)
-	if result == "" {
-		t.Error("marshalJSON 返回空字符串")
-	}
-	// 简单验证包含关键内容
-	if len(result) < 10 {
-		t.Errorf("marshalJSON 结果太短: %q", result)
 	}
 }
 

@@ -4,54 +4,42 @@ package afdian
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
 )
 
-const (
-	host    = "afdian.com"
-	hostURL = "https://afdian.com"
-)
+const hostURL = "https://afdian.com"
 
 func init() {
-	route.Register("afdian", func(config map[string]interface{}) route.Route {
-		return New(config)
+	route.Register("afdian", func(cfg config.ResolvedRouteConfig) route.Route {
+		return New(cfg)
 	})
 }
 
 // Route 是爱发电路由实现。
 type Route struct {
-	config map[string]interface{}
+	cfg config.ResolvedRouteConfig
 }
 
 // New 创建爱发电路由实例。
-func New(config map[string]interface{}) *Route {
-	return &Route{config: config}
+func New(cfg config.ResolvedRouteConfig) *Route {
+	return &Route{cfg: cfg}
 }
 
 func (r *Route) Name() string        { return "afdian" }
-func (r *Route) Description() string  { return "爱发电创作者动态订阅" }
-func (r *Route) FeedIDField() string  { return "user_id" }
+func (r *Route) Description() string { return "爱发电创作者动态订阅" }
+func (r *Route) FeedIDField() string { return "user_id" }
 
 func (r *Route) getScraper() *scraper.Scraper {
-	cookieStr, _ := r.config["cookie"].(string)
-	cookies := parseCookieString(cookieStr)
-
-	rateLimit := 0.5
-	if v, ok := r.config["rate_limit"].(float64); ok {
-		rateLimit = v
-	}
-
-	proxy, _ := r.config["proxy"].(string)
-
 	return scraper.New(scraper.Config{
-		Cookies:   cookies,
-		RateLimit: rateLimit,
-		Proxy:     proxy,
+		Cookies:     parseCookieString(r.cfg.Cookie),
+		RateLimit:   r.cfg.RateLimit,
+		Proxy:       r.cfg.Proxy,
+		Impersonate: r.cfg.Impersonate,
 	})
 }
 
@@ -63,15 +51,9 @@ func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 	displayName := authorSlug
 
 	// 查找 alias
-	if feeds, ok := r.config["feeds"].([]interface{}); ok {
-		for _, f := range feeds {
-			if feedMap, ok := f.(map[string]interface{}); ok {
-				if uid, _ := feedMap["user_id"].(string); uid == authorSlug {
-					if alias, _ := feedMap["alias"].(string); alias != "" {
-						displayName = alias
-					}
-				}
-			}
+	for _, f := range r.cfg.Feeds {
+		if f.UserID == authorSlug && f.Alias != "" {
+			displayName = f.Alias
 		}
 	}
 
@@ -182,7 +164,7 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("获取作者 ID 失败: HTTP %d", resp.StatusCode)
+		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 	}
 
 	var data map[string]interface{}
@@ -228,7 +210,7 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 			return allPosts, err
 		}
 		if resp.StatusCode != 200 {
-			return allPosts, fmt.Errorf("获取帖子列表失败: HTTP %d", resp.StatusCode)
+			return allPosts, &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 		}
 
 		var data map[string]interface{}
@@ -287,7 +269,7 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("获取文章详情失败: HTTP %d", resp.StatusCode)
+		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
 	}
 
 	var data map[string]interface{}
@@ -331,33 +313,4 @@ func parseCookieString(s string) map[string]string {
 		}
 	}
 	return cookies
-}
-
-// lookupAlias 在 feeds 配置中查找 user_id 对应的 alias。
-func lookupAlias(feeds []interface{}, field, value string) string {
-	for _, f := range feeds {
-		if feedMap, ok := f.(map[string]interface{}); ok {
-			if v, _ := feedMap[field].(string); v == value {
-				if alias, _ := feedMap["alias"].(string); alias != "" {
-					return alias
-				}
-			}
-		}
-	}
-	return ""
-}
-
-// parseInt safely converts interface{} to int.
-func parseInt(v interface{}) int {
-	switch val := v.(type) {
-	case float64:
-		return int(val)
-	case int:
-		return val
-	case string:
-		n, _ := strconv.Atoi(val)
-		return n
-	default:
-		return 0
-	}
 }

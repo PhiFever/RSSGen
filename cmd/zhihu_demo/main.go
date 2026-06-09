@@ -13,9 +13,10 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 
@@ -73,84 +74,54 @@ func main() {
 		Impersonate: "chrome_131",
 	})
 
-	// 5. 发送请求
+	// 5. 发送请求（tls-client）
 	headers := map[string]string{
-		"accept":            "*/*",
-		"x-requested-with":  "fetch",
+		"accept":           "*/*",
+		"x-requested-with": "fetch",
 		"x-zse-93":         sig.XZSE93,
 		"x-zse-96":         sig.XZSE96,
 	}
 
-	fmt.Println("发送请求...")
+	fmt.Println("--- tls-client 请求 ---")
 	resp, err := sc.Get(apiURL, referer, headers)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "请求失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	// 6. 输出结果
-	fmt.Printf("状态码: %d\n", resp.StatusCode)
-	fmt.Println()
-
-	if resp.StatusCode != 200 {
-		fmt.Printf("❌ 请求失败，响应体:\n%s\n", string(resp.Body))
-		os.Exit(1)
-	}
-
-	// 解析 JSON 并格式化输出
-	var result map[string]interface{}
-	if err := json.Unmarshal(resp.Body, &result); err != nil {
-		fmt.Printf("JSON 解析失败: %v\n", err)
-		fmt.Printf("原始响应:\n%s\n", string(resp.Body))
-		os.Exit(1)
-	}
-
-	// 输出 paging 信息
-	if paging, ok := result["paging"].(map[string]interface{}); ok {
-		fmt.Printf("is_end: %v\n", paging["is_end"])
-		fmt.Printf("totals: %v\n", paging["totals"])
-	}
-
-	// 输出动态列表
-	data, ok := result["data"].([]interface{})
-	if !ok {
-		fmt.Println("❌ 响应中没有 data 字段")
-		fmt.Printf("完整响应:\n")
-		prettyPrint(result)
-		os.Exit(1)
-	}
-
-	fmt.Printf("\n✅ 获取到 %d 条动态:\n", len(data))
-	fmt.Println("---")
-	for i, item := range data {
-		act, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		verb, _ := act["verb"].(string)
-		actionText, _ := act["action_text"].(string)
-
-		target, _ := act["target"].(map[string]interface{})
-		targetType, _ := target["type"].(string)
-		title, _ := target["title"].(string)
-		if title == "" {
-			if excerpt, ok := target["excerpt"].(string); ok && len(excerpt) > 50 {
-				title = excerpt[:50] + "..."
-			} else {
-				title, _ = target["excerpt"].(string)
-			}
-		}
-
-		fmt.Printf("[%d] verb=%s type=%s\n", i+1, verb, targetType)
-		if actionText != "" {
-			fmt.Printf("    action: %s\n", actionText)
-		}
-		if title != "" {
-			fmt.Printf("    title:  %s\n", title)
+		fmt.Fprintf(os.Stderr, "tls-client 请求失败: %v\n", err)
+	} else {
+		fmt.Printf("状态码: %d\n", resp.StatusCode)
+		if resp.StatusCode != 200 {
+			fmt.Printf("响应: %s\n", string(resp.Body[:min(len(resp.Body), 500)]))
 		}
 	}
 
-	fmt.Println("\n=== 验证完成 ===")
+	// 6. 对比：用标准 net/http 发送相同请求
+	fmt.Println("\n--- 标准 net/http 请求 ---")
+	sig2, _ := signzhihu.GetSignature(apiURL, dC0, "")
+	stdHeaders := map[string]string{
+		"accept":           "*/*",
+		"x-requested-with": "fetch",
+		"x-zse-93":         sig2.XZSE93,
+		"x-zse-96":         sig2.XZSE96,
+		"referer":          referer,
+		"cookie":           *cookie,
+	}
+
+	stdReq, _ := http.NewRequest("GET", apiURL, nil)
+	for k, v := range stdHeaders {
+		stdReq.Header.Set(k, v)
+	}
+	stdResp, err := http.DefaultClient.Do(stdReq)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "标准请求失败: %v\n", err)
+	} else {
+		bodyBytes, _ := io.ReadAll(stdResp.Body)
+		stdResp.Body.Close()
+		fmt.Printf("状态码: %d\n", stdResp.StatusCode)
+		if stdResp.StatusCode != 200 {
+			fmt.Printf("响应: %s\n", string(bodyBytes[:min(len(bodyBytes), 500)]))
+		} else {
+			fmt.Println("✅ 标准请求成功")
+		}
+	}
 }
 
 // extractDC0 从 cookie 字符串提取 d_c0 值。
@@ -182,9 +153,4 @@ func parseCookieString(cookie string) map[string]string {
 		}
 	}
 	return result
-}
-
-func prettyPrint(v interface{}) {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(b))
 }

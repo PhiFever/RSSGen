@@ -3,6 +3,7 @@ package refresher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -30,6 +31,7 @@ type Config struct {
 	StartupDelay   int
 	MaxRetries     int
 	RetryBaseDelay int
+	ScraperConfig  config.ScraperConfig
 	RoutesConfig   map[string]config.RouteConfig
 }
 
@@ -41,6 +43,7 @@ type Refresher struct {
 	startupDelay   int
 	maxRetries     int
 	retryBaseDelay int
+	scraperConfig  config.ScraperConfig
 	routesConfig   map[string]config.RouteConfig
 
 	ctx    context.Context
@@ -84,6 +87,7 @@ func New(cfg Config) *Refresher {
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
 		retryBaseDelay: retryBaseDelay,
+		scraperConfig:  cfg.ScraperConfig,
 		routesConfig:   cfg.RoutesConfig,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -247,9 +251,8 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 		return
 	}
 
-	// 构建配置
-	rc := r.routesConfig[routeName]
-	mergedConfig := buildMergedConfig(rc)
+	// 构建配置（全局 scraper 配置打底 + 路由级覆盖，与同步路径一致）
+	mergedConfig := config.ResolveRoute(r.scraperConfig, r.routesConfig[routeName])
 
 	// 构建 FetchOptions
 	opts := route.FetchOptions{
@@ -356,69 +359,11 @@ func splitCacheKey(key string) (routeName, feedID string) {
 	return key, ""
 }
 
-// buildMergedConfig 合并全局配置与路由配置。
-func buildMergedConfig(rc config.RouteConfig) map[string]interface{} {
-	result := make(map[string]interface{})
-	if rc.Cookie != "" {
-		result["cookie"] = rc.Cookie
-	}
-	if rc.RateLimit != nil {
-		result["rate_limit"] = *rc.RateLimit
-	}
-	if rc.Proxy != nil {
-		result["proxy"] = *rc.Proxy
-	}
-	if rc.Impersonate != nil {
-		result["impersonate"] = *rc.Impersonate
-	}
-	if len(rc.DefaultInclude) > 0 {
-		defaultInc := make([]interface{}, len(rc.DefaultInclude))
-		for i, v := range rc.DefaultInclude {
-			defaultInc[i] = v
-		}
-		result["default_include"] = defaultInc
-	}
-	if rc.IncludeSelfInteraction != nil {
-		result["include_self_interaction"] = *rc.IncludeSelfInteraction
-	}
-
-	if len(rc.Feeds) > 0 {
-		feeds := make([]interface{}, len(rc.Feeds))
-		for i, f := range rc.Feeds {
-			feedMap := map[string]interface{}{
-				"user_id": f.UserID,
-			}
-			if f.Alias != "" {
-				feedMap["alias"] = f.Alias
-			}
-			if f.Limit > 0 {
-				feedMap["limit"] = f.Limit
-			}
-			if len(f.Include) > 0 {
-				include := make([]interface{}, len(f.Include))
-				for j, v := range f.Include {
-					include[j] = v
-				}
-				feedMap["include"] = include
-			}
-			feeds[i] = feedMap
-		}
-		result["feeds"] = feeds
-	}
-
-	return result
-}
-
-// extractStatusCode 从错误中提取 HTTP 状态码。
+// extractStatusCode 从错误链中提取 HTTP 状态码，无则返回 0。
 func extractStatusCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	// 简化实现：检查错误消息中是否包含 HTTP 状态码
-	errMsg := err.Error()
-	var statusCode int
-	if n, _ := fmt.Sscanf(errMsg, "HTTP %d", &statusCode); n == 1 {
-		return statusCode
+	var he *route.HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode
 	}
 	return 0
 }

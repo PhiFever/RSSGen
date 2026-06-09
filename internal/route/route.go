@@ -4,18 +4,34 @@ package route
 import (
 	"fmt"
 	"time"
+
+	"github.com/PhiFever/RSSGen/internal/config"
 )
+
+// HTTPError 表示上游 API 返回的非 2xx 状态。
+// 携带 StatusCode 以便上层用 errors.As 提取，判定是否业务错误并禁用 feed。
+type HTTPError struct {
+	StatusCode int
+	URL        string
+}
+
+func (e *HTTPError) Error() string {
+	if e.URL != "" {
+		return fmt.Sprintf("上游返回 HTTP %d: %s", e.StatusCode, e.URL)
+	}
+	return fmt.Sprintf("上游返回 HTTP %d", e.StatusCode)
+}
 
 // FeedItem 表示一个 feed 条目。
 type FeedItem struct {
-	Title      string            // 条目标题
-	Link       string            // 条目链接
-	Content    string            // HTML 正文
-	PubDate    *time.Time        // 发布时间
-	Author     string            // 作者
-	GUID       string            // 唯一标识，默认用 Link
-	Enclosures []Enclosure       // 附件（图片等）
-	Categories []string          // 分类标签
+	Title      string      // 条目标题
+	Link       string      // 条目链接
+	Content    string      // HTML 正文
+	PubDate    *time.Time  // 发布时间
+	Author     string      // 作者
+	GUID       string      // 唯一标识，默认用 Link
+	Enclosures []Enclosure // 附件（图片等）
+	Categories []string    // 分类标签
 }
 
 // Enclosure 表示 feed 条目的附件。
@@ -55,29 +71,23 @@ type Route interface {
 
 // FetchOptions 包含抓取的可选参数。
 type FetchOptions struct {
-	Limit        int
-	Include      []string // 仅包含的 category 列表
-	ExtraParams  map[string]string
+	Limit       int
+	Include     []string // 仅包含的 category 列表
+	ExtraParams map[string]string
 }
 
-// registry 存储已注册的路由工厂。
-var registry = map[string]func(map[string]interface{}) Route{}
+// Factory 根据已解析的路由配置创建 Route 实例。
+type Factory func(config.ResolvedRouteConfig) Route
 
-// Register 注册一个路由工厂函数。name 为路由名，factory 接收配置 map 返回 Route 实例。
-func Register(name string, factory func(map[string]interface{}) Route) {
+// registry 存储已注册的路由工厂。
+var registry = map[string]Factory{}
+
+// Register 注册一个路由工厂函数。name 为路由名，factory 接收已解析配置返回 Route 实例。
+func Register(name string, factory Factory) {
 	registry[name] = factory
 }
 
 // GetRegistry 返回已注册的路由工厂 map。
-func GetRegistry() map[string]func(map[string]interface{}) Route {
+func GetRegistry() map[string]Factory {
 	return registry
-}
-
-// CreateRoute 根据路由名和配置创建 Route 实例。
-func CreateRoute(name string, config map[string]interface{}) (Route, error) {
-	factory, ok := registry[name]
-	if !ok {
-		return nil, fmt.Errorf("路由不存在: %s", name)
-	}
-	return factory(config), nil
 }

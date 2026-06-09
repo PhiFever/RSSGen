@@ -10,13 +10,13 @@ import (
 
 // Config 是 RSSGen 的顶层配置结构。
 type Config struct {
-	Server    ServerConfig            `yaml:"server"`
-	Storage   StorageConfig           `yaml:"storage"`
-	Cache     CacheConfig             `yaml:"cache"`
-	Scraper   ScraperConfig           `yaml:"scraper"`
-	Refresher RefresherConfig         `yaml:"refresher"`
-	Notifier  NotifierConfig          `yaml:"notifier"`
-	Routes    map[string]RouteConfig  `yaml:"routes"`
+	Server    ServerConfig           `yaml:"server"`
+	Storage   StorageConfig          `yaml:"storage"`
+	Cache     CacheConfig            `yaml:"cache"`
+	Scraper   ScraperConfig          `yaml:"scraper"`
+	Refresher RefresherConfig        `yaml:"refresher"`
+	Notifier  NotifierConfig         `yaml:"notifier"`
+	Routes    map[string]RouteConfig `yaml:"routes"`
 }
 
 // ServerConfig 是 HTTP 服务器配置。
@@ -53,22 +53,22 @@ type RefresherConfig struct {
 
 // NotifierConfig 是通知配置。
 type NotifierConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	ServiceURLs  []string `yaml:"service_urls"`
+	Enabled     bool     `yaml:"enabled"`
+	ServiceURLs []string `yaml:"service_urls"`
 }
 
 // RouteConfig 是单个路由的配置（通用字段，各路由可自行扩展）。
 type RouteConfig struct {
-	Enabled              bool            `yaml:"enabled"`
-	Cookie               string          `yaml:"cookie"`
-	RateLimit            *float64        `yaml:"rate_limit,omitempty"`
-	Proxy                *string         `yaml:"proxy,omitempty"`
-	Impersonate          *string         `yaml:"impersonate,omitempty"`
-	PreheatOnStartup     bool            `yaml:"preheat_on_startup"`
-	RefreshInterval      int             `yaml:"refresh_interval"`
-	Feeds                []FeedConfig    `yaml:"feeds"`
-	DefaultInclude       []string        `yaml:"default_include,omitempty"`
-	IncludeSelfInteraction *bool         `yaml:"include_self_interaction,omitempty"`
+	Enabled                bool         `yaml:"enabled"`
+	Cookie                 string       `yaml:"cookie"`
+	RateLimit              *float64     `yaml:"rate_limit,omitempty"`
+	Proxy                  *string      `yaml:"proxy,omitempty"`
+	Impersonate            *string      `yaml:"impersonate,omitempty"`
+	PreheatOnStartup       bool         `yaml:"preheat_on_startup"`
+	RefreshInterval        int          `yaml:"refresh_interval"`
+	Feeds                  []FeedConfig `yaml:"feeds"`
+	DefaultInclude         []string     `yaml:"default_include,omitempty"`
+	IncludeSelfInteraction *bool        `yaml:"include_self_interaction,omitempty"`
 }
 
 // FeedConfig 是路由中单个 feed 的配置。
@@ -77,6 +77,44 @@ type FeedConfig struct {
 	Alias   string   `yaml:"alias"`
 	Limit   int      `yaml:"limit"`
 	Include []string `yaml:"include,omitempty"`
+}
+
+// ResolvedRouteConfig 是合并全局 scraper 配置与路由级覆盖后、传给路由的最终配置。
+// 路由直接读取强类型字段，不再做 map 类型断言。
+type ResolvedRouteConfig struct {
+	Cookie                 string
+	RateLimit              float64
+	Proxy                  string
+	Impersonate            string
+	DefaultInclude         []string
+	IncludeSelfInteraction bool
+	Feeds                  []FeedConfig
+}
+
+// ResolveRoute 将全局 scraper 配置作为默认值，叠加路由级覆盖，产出传给路由的最终配置。
+// 同步请求与后台刷新共用此函数，确保两条路径行为一致（全局 proxy/impersonate 不再丢失）。
+func ResolveRoute(global ScraperConfig, rc RouteConfig) ResolvedRouteConfig {
+	out := ResolvedRouteConfig{
+		Cookie:         rc.Cookie,
+		RateLimit:      global.RateLimit,
+		Proxy:          global.Proxy,
+		Impersonate:    global.Impersonate,
+		DefaultInclude: rc.DefaultInclude,
+		Feeds:          rc.Feeds,
+	}
+	if rc.RateLimit != nil {
+		out.RateLimit = *rc.RateLimit
+	}
+	if rc.Proxy != nil {
+		out.Proxy = *rc.Proxy
+	}
+	if rc.Impersonate != nil {
+		out.Impersonate = *rc.Impersonate
+	}
+	if rc.IncludeSelfInteraction != nil {
+		out.IncludeSelfInteraction = *rc.IncludeSelfInteraction
+	}
+	return out
 }
 
 // Load 从指定路径加载 YAML 配置文件并返回 Config 结构体。

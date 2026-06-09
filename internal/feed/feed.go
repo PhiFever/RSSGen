@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"html"
 	"strings"
 	"time"
 
@@ -39,13 +38,13 @@ type atomLink struct {
 }
 
 type atomEntry struct {
-	Title     string        `xml:"title"`
-	ID        string        `xml:"id"`
-	Updated   string        `xml:"updated"`
-	Published string        `xml:"published,omitempty"`
-	Link      *atomLink     `xml:"link,omitempty"`
-	Content   *atomContent  `xml:"content,omitempty"`
-	Author    *atomAuthor   `xml:"author,omitempty"`
+	Title     string         `xml:"title"`
+	ID        string         `xml:"id"`
+	Updated   string         `xml:"updated"`
+	Published string         `xml:"published,omitempty"`
+	Link      *atomLink      `xml:"link,omitempty"`
+	Content   *atomContent   `xml:"content,omitempty"`
+	Author    *atomAuthor    `xml:"author,omitempty"`
 	Category  []atomCategory `xml:"category,omitempty"`
 }
 
@@ -91,16 +90,14 @@ type rssDescription struct {
 	Data    string   `xml:",cdata"`
 }
 
-var epoch = time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
-
 func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	feed := atomFeed{
-		Xmlns: "http://www.w3.org/2005/Atom",
-		Title: info.Title,
-		ID:    info.Link,
-		Link:  atomLink{Href: info.Link, Rel: "alternate"},
+		Xmlns:   "http://www.w3.org/2005/Atom",
+		Title:   info.Title,
+		ID:      info.Link,
+		Link:    atomLink{Href: info.Link, Rel: "alternate"},
 		Updated: now,
 	}
 
@@ -217,9 +214,4 @@ func orDefault(values ...string) string {
 		}
 	}
 	return ""
-}
-
-// EscapeXML 转义 XML 特殊字符。
-func EscapeXML(s string) string {
-	return html.EscapeString(s)
 }

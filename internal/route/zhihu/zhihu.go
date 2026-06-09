@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
 	signzhihu "github.com/PhiFever/RSSGen/internal/sign/zhihu"
@@ -16,28 +17,28 @@ import (
 
 // 动态 category 常量
 const (
-	TypeAnswer          = "answer"
-	TypeArticle         = "article"
-	TypePin             = "pin"
-	TypeCollectedAnswer = "collected_answer"
+	TypeAnswer           = "answer"
+	TypeArticle          = "article"
+	TypePin              = "pin"
+	TypeCollectedAnswer  = "collected_answer"
 	TypeCollectedArticle = "collected_article"
-	TypeCollectedPin    = "collected_pin"
-	TypeVoteupAnswer    = "voteup_answer"
-	TypeVoteupArticle   = "voteup_article"
+	TypeCollectedPin     = "collected_pin"
+	TypeVoteupAnswer     = "voteup_answer"
+	TypeVoteupArticle    = "voteup_article"
 	TypeFollowedQuestion = "followed_question"
 )
 
 // verbCategoryMap 将 verb 映射到 category。
 var verbCategoryMap = map[string]string{
-	"MEMBER_ANSWER_QUESTION":  TypeAnswer,
-	"MEMBER_CREATE_ARTICLE":   TypeArticle,
-	"MEMBER_CREATE_PIN":       TypePin,
-	"MEMBER_COLLECT_ANSWER":   TypeCollectedAnswer,
-	"MEMBER_COLLECT_ARTICLE":  TypeCollectedArticle,
-	"MEMBER_COLLECT_PIN":      TypeCollectedPin,
-	"MEMBER_VOTEUP_ANSWER":    TypeVoteupAnswer,
-	"MEMBER_VOTEUP_ARTICLE":   TypeVoteupArticle,
-	"MEMBER_FOLLOW_QUESTION":  TypeFollowedQuestion,
+	"MEMBER_ANSWER_QUESTION": TypeAnswer,
+	"MEMBER_CREATE_ARTICLE":  TypeArticle,
+	"MEMBER_CREATE_PIN":      TypePin,
+	"MEMBER_COLLECT_ANSWER":  TypeCollectedAnswer,
+	"MEMBER_COLLECT_ARTICLE": TypeCollectedArticle,
+	"MEMBER_COLLECT_PIN":     TypeCollectedPin,
+	"MEMBER_VOTEUP_ANSWER":   TypeVoteupAnswer,
+	"MEMBER_VOTEUP_ARTICLE":  TypeVoteupArticle,
+	"MEMBER_FOLLOW_QUESTION": TypeFollowedQuestion,
 }
 
 // targetTypeFallback 当 verb 缺失时按 target.type 兜底。
@@ -47,6 +48,13 @@ var targetTypeFallback = map[string]string{
 	"pin":      TypePin,
 	"question": TypeFollowedQuestion,
 }
+
+// 预编译正则，避免在热路径重复编译。
+var (
+	dc0Re            = regexp.MustCompile(`d_c0=([^;]+)`)
+	htmlTagRe        = regexp.MustCompile(`<[^>]+>`)
+	svgPlaceholderRe = regexp.MustCompile(`src="data:image/svg+xml[^"]*"`)
+)
 
 // selfInteractableVerbs 仅这些 verb 在 actor == target.author 时算作"自互动"。
 var selfInteractableVerbs = map[string]bool{
@@ -58,48 +66,37 @@ var selfInteractableVerbs = map[string]bool{
 }
 
 func init() {
-	route.Register("zhihu", func(config map[string]interface{}) route.Route {
-		return New(config)
+	route.Register("zhihu", func(cfg config.ResolvedRouteConfig) route.Route {
+		return New(cfg)
 	})
 }
 
 // Route 是知乎路由实现。
 type Route struct {
-	config map[string]interface{}
-	actor  map[string]interface{} // 最近一次抓取的 actor 信息
+	cfg   config.ResolvedRouteConfig
+	actor map[string]interface{} // 最近一次抓取的 actor 信息
 }
 
 // New 创建知乎路由实例。
-func New(config map[string]interface{}) *Route {
-	return &Route{config: config}
+func New(cfg config.ResolvedRouteConfig) *Route {
+	return &Route{cfg: cfg}
 }
 
 func (r *Route) Name() string        { return "zhihu" }
-func (r *Route) Description() string  { return "知乎用户动态订阅" }
-func (r *Route) FeedIDField() string  { return "user_id" }
+func (r *Route) Description() string { return "知乎用户动态订阅" }
+func (r *Route) FeedIDField() string { return "user_id" }
 
 func (r *Route) getScraper() *scraper.Scraper {
-	cookieStr, _ := r.config["cookie"].(string)
-	cookies := parseCookieString(cookieStr)
-
-	rateLimit := 1.0
-	if v, ok := r.config["rate_limit"].(float64); ok {
-		rateLimit = v
-	}
-
-	proxy, _ := r.config["proxy"].(string)
-
 	return scraper.New(scraper.Config{
-		Cookies:   cookies,
-		RateLimit: rateLimit,
-		Proxy:     proxy,
+		Cookies:     parseCookieString(r.cfg.Cookie),
+		RateLimit:   r.cfg.RateLimit,
+		Proxy:       r.cfg.Proxy,
+		Impersonate: r.cfg.Impersonate,
 	})
 }
 
 func (r *Route) getDC0() (string, error) {
-	cookieStr, _ := r.config["cookie"].(string)
-	re := regexp.MustCompile(`d_c0=([^;]+)`)
-	matches := re.FindStringSubmatch(cookieStr)
+	matches := dc0Re.FindStringSubmatch(r.cfg.Cookie)
 	if len(matches) < 2 {
 		return "", fmt.Errorf("Cookie 中缺少 d_c0 字段")
 	}
@@ -147,19 +144,10 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		include = r.getFeedInclude(userID)
 	}
 	if len(include) == 0 {
-		if defaultInc, ok := r.config["default_include"].([]interface{}); ok {
-			for _, v := range defaultInc {
-				if s, ok := v.(string); ok {
-					include = append(include, s)
-				}
-			}
-		}
+		include = r.cfg.DefaultInclude
 	}
 
-	includeSelfInteraction := false
-	if v, ok := r.config["include_self_interaction"].(bool); ok {
-		includeSelfInteraction = v
-	}
+	includeSelfInteraction := r.cfg.IncludeSelfInteraction
 
 	activities, err := r.fetchActivities(userID, limit)
 	if err != nil {
@@ -216,8 +204,8 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 		headers := map[string]string{
 			"accept":           "*/*",
 			"x-requested-with": "fetch",
-			"x-zse-93":        signResult.XZSE93,
-			"x-zse-96":        signResult.XZSE96,
+			"x-zse-93":         signResult.XZSE93,
+			"x-zse-96":         signResult.XZSE96,
 		}
 
 		resp, err := sc.Get(nextURL, referer, headers)
@@ -225,7 +213,7 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 			return activities, err
 		}
 		if resp.StatusCode != 200 {
-			return activities, fmt.Errorf("知乎 API 返回 HTTP %d", resp.StatusCode)
+			return activities, &route.HTTPError{StatusCode: resp.StatusCode, URL: nextURL}
 		}
 
 		var data map[string]interface{}
@@ -273,30 +261,10 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 
 // getFeedInclude 从配置中获取指定用户的 include 过滤。
 func (r *Route) getFeedInclude(userID string) []string {
-	feeds, ok := r.config["feeds"].([]interface{})
-	if !ok {
-		return nil
-	}
-	for _, f := range feeds {
-		feedMap, ok := f.(map[string]interface{})
-		if !ok {
-			continue
+	for _, f := range r.cfg.Feeds {
+		if f.UserID == userID {
+			return f.Include
 		}
-		uid, _ := feedMap["user_id"].(string)
-		if uid != userID {
-			continue
-		}
-		includeRaw, ok := feedMap["include"].([]interface{})
-		if !ok {
-			return nil
-		}
-		var result []string
-		for _, v := range includeRaw {
-			if s, ok := v.(string); ok {
-				result = append(result, s)
-			}
-		}
-		return result
 	}
 	return nil
 }
@@ -333,11 +301,7 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		if excerpt == "" {
 			excerpt, _ = target["excerpt"].(string)
 		}
-		re := regexp.MustCompile(`<[^>]+>`)
-		cleaned := re.ReplaceAllString(excerpt, "")
-		if len(cleaned) > 50 {
-			cleaned = cleaned[:50]
-		}
+		cleaned := truncateRunes(htmlTagRe.ReplaceAllString(excerpt, ""), 50)
 		if cleaned != "" {
 			title = cleaned
 		} else {
@@ -351,10 +315,7 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		title, _ = target["title"].(string)
 		if title == "" {
 			excerpt, _ := target["excerpt"].(string)
-			if len(excerpt) > 50 {
-				excerpt = excerpt[:50]
-			}
-			title = excerpt
+			title = truncateRunes(excerpt, 50)
 		}
 		if title == "" {
 			title = "未知内容"
@@ -510,11 +471,8 @@ func fixLazyImages(content string) string {
 	if content == "" {
 		return content
 	}
-	// 简单正则替换 SVG 占位符
-	re := regexp.MustCompile(`src="data:image/svg+xml[^"]*"`)
-	// 由于 Go 标准库不支持 lookbehind，使用简单替换
-	// 生产环境应使用更完整的 HTML 解析
-	return re.ReplaceAllString(content, `src=""`)
+	// 简单正则替换 SVG 占位符（Go 标准库不支持 lookbehind，使用简单替换）
+	return svgPlaceholderRe.ReplaceAllString(content, `src=""`)
 }
 
 // formatQuestionDescription 将问题描述 HTML 转换为引用块格式。
@@ -545,6 +503,15 @@ func parseCookieString(s string) map[string]string {
 		}
 	}
 	return cookies
+}
+
+// truncateRunes 按 rune（而非字节）截断字符串，避免切断多字节中文产生非法 UTF-8。
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 // contains 检查字符串切片是否包含指定值。

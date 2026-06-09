@@ -177,4 +177,3 @@ func byteArrayFromInts(ints []int) []byte {
 	}
 	return b
 }
-

@@ -13,6 +13,52 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 )
 
+// chromeDefaultHeaders 是 Chrome 131 (Windows) 的默认请求头集合。
+//
+// tls-client 只伪装 TLS/JA3 与 HTTP2 指纹，不会自动补全浏览器头——不设头时
+// 它默认只发 `user-agent: Go-http-client/2.0`，会被风控直接识破。这里手动补齐
+// curl_cffi `impersonate` 自动注入的那套头，作为所有请求的打底值（可被覆盖）。
+var chromeDefaultHeaders = map[string]string{
+	"sec-ch-ua":          `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+	"sec-ch-ua-mobile":   "?0",
+	"sec-ch-ua-platform": `"Windows"`,
+	"user-agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"accept":             "*/*",
+	"accept-language":    "zh-CN,zh;q=0.9,en;q=0.8",
+	"accept-encoding":    "gzip, deflate, br, zstd",
+	"sec-fetch-site":     "same-origin",
+	"sec-fetch-mode":     "cors",
+	"sec-fetch-dest":     "empty",
+}
+
+// chromeHeaderOrder 是 Chrome 131 的请求头顺序（必须小写，fhttp 按 ToLower 匹配）。
+//
+// 这是一个覆盖导航/XHR 两种场景的超集：实际请求中不存在的头会被忽略，存在但
+// 不在列表中的头会被排到有序头之后。tls-client 不管 header order，需显式指定。
+var chromeHeaderOrder = []string{
+	"host",
+	"connection",
+	"pragma",
+	"cache-control",
+	"sec-ch-ua",
+	"sec-ch-ua-mobile",
+	"sec-ch-ua-platform",
+	"upgrade-insecure-requests",
+	"user-agent",
+	"accept",
+	"x-requested-with",
+	"x-zse-93",
+	"x-zse-96",
+	"sec-fetch-site",
+	"sec-fetch-mode",
+	"sec-fetch-user",
+	"sec-fetch-dest",
+	"referer",
+	"accept-encoding",
+	"accept-language",
+	"cookie",
+}
+
 // Config 是 Scraper 的配置参数。
 type Config struct {
 	Cookies      map[string]string
@@ -49,26 +95,26 @@ type Scraper struct {
 
 // impersonateProfile 将配置名映射到 tls-client 的 Chrome 指纹 profile。
 var impersonateProfile = map[string]profiles.ClientProfile{
-	"chrome_131":     profiles.Chrome_131,
-	"chrome_131_psk": profiles.Chrome_131_PSK,
-	"chrome_130_psk": profiles.Chrome_130_PSK,
-	"chrome_124":     profiles.Chrome_124,
-	"chrome_120":     profiles.Chrome_120,
-	"chrome_117":     profiles.Chrome_117,
-	"chrome_116_psk": profiles.Chrome_116_PSK,
+	"chrome_131":        profiles.Chrome_131,
+	"chrome_131_psk":    profiles.Chrome_131_PSK,
+	"chrome_130_psk":    profiles.Chrome_130_PSK,
+	"chrome_124":        profiles.Chrome_124,
+	"chrome_120":        profiles.Chrome_120,
+	"chrome_117":        profiles.Chrome_117,
+	"chrome_116_psk":    profiles.Chrome_116_PSK,
 	"chrome_116_psk_pq": profiles.Chrome_116_PSK_PQ,
-	"chrome_112":     profiles.Chrome_112,
-	"chrome_111":     profiles.Chrome_111,
-	"chrome_110":     profiles.Chrome_110,
-	"chrome_109":     profiles.Chrome_109,
-	"chrome_108":     profiles.Chrome_108,
-	"chrome_107":     profiles.Chrome_107,
-	"chrome_106":     profiles.Chrome_106,
-	"chrome_105":     profiles.Chrome_105,
-	"chrome_104":     profiles.Chrome_104,
-	"chrome_103":     profiles.Chrome_103,
-	"brave_146":      profiles.Brave_146,
-	"brave_146_psk":  profiles.Brave_146_PSK,
+	"chrome_112":        profiles.Chrome_112,
+	"chrome_111":        profiles.Chrome_111,
+	"chrome_110":        profiles.Chrome_110,
+	"chrome_109":        profiles.Chrome_109,
+	"chrome_108":        profiles.Chrome_108,
+	"chrome_107":        profiles.Chrome_107,
+	"chrome_106":        profiles.Chrome_106,
+	"chrome_105":        profiles.Chrome_105,
+	"chrome_104":        profiles.Chrome_104,
+	"chrome_103":        profiles.Chrome_103,
+	"brave_146":         profiles.Brave_146,
+	"brave_146_psk":     profiles.Brave_146_PSK,
 }
 
 // New 创建一个新的 Scraper 实例。
@@ -131,8 +177,11 @@ func (s *Scraper) rateLimitWait() {
 func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, extraHeaders map[string]string) (*Response, error) {
 	s.rateLimitWait()
 
-	// 合并 headers
-	headers := make(map[string]string)
+	// 合并 headers：Chrome 默认头打底 → 实例 ExtraHeaders → referer → 单次请求头
+	headers := make(map[string]string, len(chromeDefaultHeaders)+len(s.extraHeaders)+len(extraHeaders)+1)
+	for k, v := range chromeDefaultHeaders {
+		headers[k] = v
+	}
 	for k, v := range s.extraHeaders {
 		headers[k] = v
 	}
@@ -161,6 +210,9 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 		}
 		req.Header.Set("Cookie", strings.Join(cookieParts, "; "))
 	}
+
+	// 指定 Chrome 头顺序：tls-client 只伪装 TLS，header order 需手动设置
+	req.Header[http.HeaderOrderKey] = chromeHeaderOrder
 
 	// 使用 tls-client 发送请求
 	resp, err := s.client.Do(req)
