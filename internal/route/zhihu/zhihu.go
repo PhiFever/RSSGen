@@ -13,6 +13,8 @@ import (
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
 	signzhihu "github.com/PhiFever/RSSGen/internal/sign/zhihu"
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // 动态 category 常量
@@ -51,9 +53,8 @@ var targetTypeFallback = map[string]string{
 
 // 预编译正则，避免在热路径重复编译。
 var (
-	dc0Re            = regexp.MustCompile(`d_c0=([^;]+)`)
-	htmlTagRe        = regexp.MustCompile(`<[^>]+>`)
-	svgPlaceholderRe = regexp.MustCompile(`src="data:image/svg+xml[^"]*"`)
+	dc0Re     = regexp.MustCompile(`d_c0=([^;]+)`)
+	htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 )
 
 // selfInteractableVerbs 仅这些 verb 在 actor == target.author 时算作"自互动"。
@@ -466,13 +467,106 @@ func renderPinContent(blocks []interface{}) string {
 	return strings.Join(parts, "<br/>")
 }
 
-// fixLazyImages 修复知乎懒加载图片。
+// fixLazyImages 修复知乎懒加载图片：将 SVG 占位符的 src 替换为 data-actualsrc /
+// data-original 指向的真实链接，并移除 <noscript>（其内容会被 RSS 阅读器忽略）。
+// 占位符 src 值本身含 '<'/'>'，无法用正则安全提取属性，故用 HTML 解析器处理。
 func fixLazyImages(content string) string {
 	if content == "" {
 		return content
 	}
-	// 简单正则替换 SVG 占位符（Go 标准库不支持 lookbehind，使用简单替换）
-	return svgPlaceholderRe.ReplaceAllString(content, `src=""`)
+	nodes, err := xhtml.ParseFragment(strings.NewReader(content), &xhtml.Node{
+		Type:     xhtml.ElementNode,
+		Data:     "body",
+		DataAtom: atom.Body,
+	})
+	if err != nil {
+		return content
+	}
+	var buf strings.Builder
+	for _, n := range nodes {
+		if n.Type == xhtml.ElementNode && n.Data == "noscript" {
+			continue
+		}
+		fixLazyNode(n)
+		if err := xhtml.Render(&buf, n); err != nil {
+			return content
+		}
+	}
+	return buf.String()
+}
+
+// fixLazyNode 递归处理节点：修复 img 占位符，并移除 noscript 子节点。
+func fixLazyNode(n *xhtml.Node) {
+	var noscripts []*xhtml.Node
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == xhtml.ElementNode && c.Data == "noscript" {
+			noscripts = append(noscripts, c)
+			continue
+		}
+		fixLazyNode(c)
+	}
+	for _, c := range noscripts {
+		n.RemoveChild(c)
+	}
+	if n.Type == xhtml.ElementNode && n.Data == "img" {
+		fixLazyImg(n)
+	}
+}
+
+// fixLazyImg 将单个 img 的 SVG 占位符 src 替换为真实链接，并清理懒加载属性。
+func fixLazyImg(n *xhtml.Node) {
+	var src, actualSrc, original string
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "src":
+			src = a.Val
+		case "data-actualsrc":
+			actualSrc = a.Val
+		case "data-original":
+			original = a.Val
+		}
+	}
+	if !strings.HasPrefix(src, "data:image/svg+xml") {
+		return
+	}
+	// 优先 data-actualsrc，其次 data-original
+	realSrc := actualSrc
+	if realSrc == "" {
+		realSrc = original
+	}
+	if realSrc == "" {
+		return
+	}
+	attrs := n.Attr[:0]
+	for _, a := range n.Attr {
+		switch a.Key {
+		case "src":
+			a.Val = realSrc
+			attrs = append(attrs, a)
+		case "data-actualsrc", "data-original":
+			// 移除懒加载属性
+		case "class":
+			if cls := removeLazyClass(a.Val); cls != "" {
+				a.Val = cls
+				attrs = append(attrs, a)
+			}
+		default:
+			attrs = append(attrs, a)
+		}
+	}
+	n.Attr = attrs
+}
+
+// removeLazyClass 从 class 列表中移除 "lazy"，保留其余 class。
+func removeLazyClass(class string) string {
+	fields := strings.Fields(class)
+	kept := fields[:0]
+	for _, f := range fields {
+		if f != "lazy" {
+			kept = append(kept, f)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 // formatQuestionDescription 将问题描述 HTML 转换为引用块格式。
