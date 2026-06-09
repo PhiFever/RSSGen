@@ -4,6 +4,7 @@ package afdian
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
@@ -31,7 +32,7 @@ type afdianPost struct {
 	PostID      string   `json:"post_id"`
 	Title       string   `json:"title"`
 	PublishTime float64  `json:"publish_time"`
-	PublishSN   string   `json:"publish_sn"`
+	PublishSN   int64    `json:"publish_sn"`
 	Content     string   `json:"content"`
 	Pics        []string `json:"pics"`
 	User        afdianUser `json:"user"`
@@ -252,11 +253,11 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error) {
 	referer := fmt.Sprintf("%s/a/%s", hostURL, authorSlug)
 	var allPosts []afdianPost
-	publishSN := ""
+	publishSN := int64(0)
 
 	for len(allPosts) < limit {
 		apiURL := fmt.Sprintf(
-			"%s/api/post/get-list?user_id=%s&type=old&publish_sn=%s&per_page=10&group_id=&all=1&is_public=&plan_id=&title=&name=",
+			"%s/api/post/get-list?user_id=%s&type=old&publish_sn=%d&per_page=10&group_id=&all=1&is_public=&plan_id=&title=&name=",
 			hostURL, userID, publishSN,
 		)
 
@@ -278,6 +279,7 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 
 		var postList afdianPostList
 		if err := json.Unmarshal(data, &postList); err != nil {
+			slog.Warn("解析帖子列表失败，原始响应", "error", err, "data", string(data))
 			return allPosts, fmt.Errorf("解析帖子列表失败: %w", err)
 		}
 		if len(postList.List) == 0 {
@@ -288,7 +290,7 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 
 		// 获取最后一条的 publish_sn 用于翻页
 		lastPost := postList.List[len(postList.List)-1]
-		if lastPost.PublishSN == "" {
+		if lastPost.PublishSN == 0 {
 			break
 		}
 		publishSN = lastPost.PublishSN
