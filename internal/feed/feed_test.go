@@ -208,3 +208,35 @@ func TestOrDefault(t *testing.T) {
 		t.Errorf("orDefault('', '') = %q, want ''", got)
 	}
 }
+
+// --- Description / Subtitle ---
+
+func TestGenerateAtomDescription(t *testing.T) {
+	info := &route.FeedInfo{
+		Title:       "测试 Feed",
+		Link:        "https://example.com",
+		Description: "这是描述信息",
+	}
+	out, err := Generate(info, nil, "atom")
+	if err != nil {
+		t.Fatalf("Generate 返回错误: %v", err)
+	}
+	if !strings.Contains(out, "<subtitle>这是描述信息</subtitle>") {
+		t.Errorf("Atom 输出应包含 <subtitle>, 实得:\n%s", out)
+	}
+}
+
+func TestGenerateRSSDescription(t *testing.T) {
+	info := &route.FeedInfo{
+		Title:       "测试 Feed",
+		Link:        "https://example.com",
+		Description: "这是描述信息",
+	}
+	out, err := Generate(info, nil, "rss")
+	if err != nil {
+		t.Fatalf("Generate 返回错误: %v", err)
+	}
+	if !strings.Contains(out, "<description>这是描述信息</description>") {
+		t.Errorf("RSS 输出应包含 <description>, 实得:\n%s", out)
+	}
+}

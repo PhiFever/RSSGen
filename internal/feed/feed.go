@@ -23,13 +23,14 @@ func Generate(info *route.FeedInfo, items []route.FeedItem, format string) (stri
 
 // atomFeed 是 Atom 1.0 feed 的 XML 结构。
 type atomFeed struct {
-	XMLName xml.Name    `xml:"feed"`
-	Xmlns   string      `xml:"xmlns,attr"`
-	Title   string      `xml:"title"`
-	ID      string      `xml:"id"`
-	Link    atomLink    `xml:"link"`
-	Updated string      `xml:"updated"`
-	Entries []atomEntry `xml:"entry"`
+	XMLName  xml.Name    `xml:"feed"`
+	Xmlns    string      `xml:"xmlns,attr"`
+	Title    string      `xml:"title"`
+	Subtitle string      `xml:"subtitle,omitempty"`
+	ID       string      `xml:"id"`
+	Link     atomLink    `xml:"link"`
+	Updated  string      `xml:"updated"`
+	Entries  []atomEntry `xml:"entry"`
 }
 
 type atomLink struct {
@@ -94,11 +95,12 @@ func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) 
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	feed := atomFeed{
-		Xmlns:   "http://www.w3.org/2005/Atom",
-		Title:   info.Title,
-		ID:      info.Link,
-		Link:    atomLink{Href: info.Link, Rel: "alternate"},
-		Updated: now,
+		Xmlns:    "http://www.w3.org/2005/Atom",
+		Title:    info.Title,
+		Subtitle: info.Description,
+		ID:       info.Link,
+		Link:     atomLink{Href: info.Link, Rel: "alternate"},
+		Updated:  now,
 	}
 
 	for _, item := range items {
