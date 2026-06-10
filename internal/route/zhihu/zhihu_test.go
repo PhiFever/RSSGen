@@ -593,12 +593,22 @@ func TestRenderPinContentLinkCard(t *testing.T) {
 }
 
 func TestRenderPinContentUnknownBlockType(t *testing.T) {
+	// 捕获 slog 输出
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
 	blocks := []interface{}{
 		map[string]interface{}{"type": "future_block_type", "foo": "bar"},
 	}
 	got := renderPinContent(blocks)
 	if got != "" {
 		t.Errorf("未知 block type 应返回空串, 实得 %q", got)
+	}
+	// 应输出告警日志
+	if !strings.Contains(buf.String(), "future_block_type") {
+		t.Errorf("未知 block type 应输出 slog.Warn, 实得日志: %q", buf.String())
 	}
 }
 

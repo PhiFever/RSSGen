@@ -176,9 +176,11 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 			}
 			content, err = detailFn(sc, post.PostID)
 			if err != nil {
-				// 获取详情失败，使用空内容
-				content = ""
-			} else if articleStore != nil {
+				// 获取详情失败，跳过此条目（与 Python 行为一致）
+				slog.Warn("文章详情获取失败，跳过", "post_id", post.PostID, "error", err)
+				continue
+			}
+			if articleStore != nil {
 				articleStore.Save("afdian", post.PostID, content)
 			}
 		}

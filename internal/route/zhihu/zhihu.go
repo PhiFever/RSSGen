@@ -483,6 +483,10 @@ func renderPinContent(blocks []interface{}) string {
 			if url != "" {
 				parts = append(parts, fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(url), html.EscapeString(linkTitle)))
 			}
+		default:
+			if blockType != "" {
+				slog.Warn("未识别的知乎 pin block 类型", "block_type", blockType)
+			}
 		}
 	}
 	return strings.Join(parts, "<br/>")

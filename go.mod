@@ -13,6 +13,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
+	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
 	github.com/bogdanfinn/quic-go-utls v1.0.9-utls // indirect
@@ -21,8 +22,10 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/css v1.0.1 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect

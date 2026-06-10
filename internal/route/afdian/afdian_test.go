@@ -314,13 +314,15 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	// p3 失败应使用空内容，但仍保留在结果中
-	if len(items) != 4 {
-		t.Fatalf("应返回 4 个 item, 实得 %d", len(items))
+	// p3 失败应跳过，返回 3 个 item（与 Python 行为一致）
+	if len(items) != 3 {
+		t.Fatalf("应返回 3 个 item, 实得 %d", len(items))
 	}
-	// p3 内容应为空（失败降级）
-	if items[2].Content != "" {
-		t.Errorf("p3 失败后 Content 应为空, 实得 %q", items[2].Content)
+	// 结果不应包含 p3
+	for _, item := range items {
+		if item.GUID == "p3" {
+			t.Error("p3 失败后应跳过，不应出现在结果中")
+		}
 	}
 	// 成功的应已落库
 	for _, postID := range []string{"p1", "p2", "p4"} {
@@ -337,7 +339,7 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 }
 
 func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
-	// 验证详情失败时 content 为空字符串而非 panic
+	// 验证详情失败时跳过该条目（与 Python 行为一致）
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid", nil
@@ -353,11 +355,9 @@ func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch 不应因详情失败而报错: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("应返回 1 个 item, 实得 %d", len(items))
-	}
-	if items[0].Content != "" {
-		t.Errorf("详情失败后 Content 应为空, 实得 %q", items[0].Content)
+	// 全部失败应返回空列表
+	if len(items) != 0 {
+		t.Fatalf("详情失败应跳过条目, 实得 %d 个 item", len(items))
 	}
 }
 

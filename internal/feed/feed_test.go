@@ -156,12 +156,35 @@ func TestGenerateEnclosure(t *testing.T) {
 	info := &route.FeedInfo{Title: "F", Link: "https://x.com"}
 	items := []route.FeedItem{{
 		Title:      "T",
-		Enclosures: []route.Enclosure{{URL: "https://x.com/img.jpg", Type: "image/jpeg"}},
+		Link:       "https://x.com/1",
+		Enclosures: []route.Enclosure{{URL: "https://x.com/img.jpg", Type: "image/jpeg", Length: "12345"}},
 	}}
-	// Atom 暂不渲染 enclosure（Go 实现无此字段），RSS 也不渲染——验证不报错即可
-	_, err := Generate(info, items, "rss")
+
+	// RSS enclosure
+	out, err := Generate(info, items, "rss")
 	if err != nil {
-		t.Fatalf("含 enclosure 不应报错: %v", err)
+		t.Fatalf("RSS 含 enclosure 不应报错: %v", err)
+	}
+	if !strings.Contains(out, `url="https://x.com/img.jpg"`) {
+		t.Error("RSS 输出应包含 enclosure url")
+	}
+	if !strings.Contains(out, `type="image/jpeg"`) {
+		t.Error("RSS 输出应包含 enclosure type")
+	}
+
+	// Atom enclosure
+	out, err = Generate(info, items, "atom")
+	if err != nil {
+		t.Fatalf("Atom 含 enclosure 不应报错: %v", err)
+	}
+	if !strings.Contains(out, `rel="enclosure"`) {
+		t.Error("Atom 输出应包含 link rel=enclosure")
+	}
+	if !strings.Contains(out, `href="https://x.com/img.jpg"`) {
+		t.Error("Atom 输出应包含 enclosure href")
+	}
+	if !strings.Contains(out, `type="image/jpeg"`) {
+		t.Error("Atom 输出应包含 enclosure type")
 	}
 }
 
@@ -174,13 +197,13 @@ func TestGenerateAuthor(t *testing.T) {
 	}
 }
 
-// --- sanitizeHTML（对应 Python feed 安全处理） ---
+// --- sanitizeHTML（对应 Python nh3 安全处理） ---
 
 func TestSanitizeHTMLScript(t *testing.T) {
 	in := `<p>安全</p><script>alert('xss')</script>`
 	got := sanitizeHTML(in)
 	if strings.Contains(got, "<script") {
-		t.Error("sanitizeHTML 应转义 <script")
+		t.Error("sanitizeHTML 应剥离 <script>")
 	}
 	if !strings.Contains(got, "安全") {
 		t.Error("sanitizeHTML 不应破坏安全内容")
@@ -191,11 +214,62 @@ func TestSanitizeHTMLIframe(t *testing.T) {
 	in := `<p>内容</p><iframe src="evil.com"></iframe>`
 	got := sanitizeHTML(in)
 	if strings.Contains(got, "<iframe") {
-		t.Error("sanitizeHTML 应转义 <iframe")
+		t.Error("sanitizeHTML 应剥离 <iframe>")
+	}
+}
+
+func TestSanitizeHTMLDangerousAttrs(t *testing.T) {
+	in := `<img src="x" onerror="alert(1)">`
+	got := sanitizeHTML(in)
+	if strings.Contains(got, "onerror") {
+		t.Error("sanitizeHTML 应剥离事件属性 onerror")
+	}
+	// bluemonday 会剥离含危险属性的整个标签（正确行为）
+	// 安全的 img 标签测试见 TestSanitizeHTMLSafeImg
+}
+
+func TestSanitizeHTMLSafeImg(t *testing.T) {
+	in := `<img src="https://example.com/img.jpg" alt="图片">`
+	got := sanitizeHTML(in)
+	if !strings.Contains(got, "<img") {
+		t.Error("sanitizeHTML 应保留安全的 img 标签")
+	}
+	if !strings.Contains(got, "https://example.com/img.jpg") {
+		t.Error("sanitizeHTML 应保留 img src")
+	}
+}
+
+func TestSanitizeHTMLJavascriptURL(t *testing.T) {
+	in := `<a href="javascript:alert(1)">链接</a>`
+	got := sanitizeHTML(in)
+	if strings.Contains(got, "javascript:") {
+		t.Error("sanitizeHTML 应剥离 javascript: URL")
+	}
+	if !strings.Contains(got, "链接") {
+		t.Error("sanitizeHTML 应保留链接文本")
+	}
+}
+
+func TestSanitizeHTMLSafeTagsPreserved(t *testing.T) {
+	in := `<p><strong>粗体</strong> <em>斜体</em></p><blockquote>引用</blockquote>`
+	got := sanitizeHTML(in)
+	for _, want := range []string{"<strong>", "<em>", "<blockquote>", "<p>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sanitizeHTML 应保留安全标签 %q", want)
+		}
 	}
 }
 
 // --- orDefault ---
+
+func TestGenerateMissingGUIDAndLinkGeneratesUUID(t *testing.T) {
+	info := &route.FeedInfo{Title: "F", Link: "https://x.com"}
+	items := []route.FeedItem{{Title: "T"}}
+	out, _ := Generate(info, items, "")
+	if !strings.Contains(out, "urn:uuid:") {
+		t.Error("GUID 和 Link 均空时应生成 urn:uuid:")
+	}
+}
 
 func TestOrDefault(t *testing.T) {
 	if got := orDefault("", "fallback"); got != "fallback" {
