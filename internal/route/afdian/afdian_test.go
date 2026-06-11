@@ -427,3 +427,234 @@ func TestFetchGetPostListError(t *testing.T) {
 		t.Fatal("getPostList 失败应返回错误")
 	}
 }
+
+func withTestHost(t *testing.T, url string) {
+	t.Helper()
+	old := hostURL
+	hostURL = url
+	t.Cleanup(func() { hostURL = old })
+}
+
+func newTestScraper(t *testing.T) *scraper.Scraper {
+	t.Helper()
+	sc, err := scraper.New(scraper.Config{RateLimit: 0.001})
+	if err != nil {
+		t.Fatalf("创建 scraper 失败: %v", err)
+	}
+	return sc
+}
+
+func TestGetAuthorIDSuccessAndErrors(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/user/get-profile-by-slug" {
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+			if r.URL.Query().Get("url_slug") != "alice" {
+				t.Fatalf("url_slug 未透传")
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"ec": 200,
+				"data": map[string]any{
+					"user": map[string]any{"user_id": "uid-alice"},
+				},
+			})
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		got, err := New(config.ResolvedRouteConfig{}).getAuthorID(newTestScraper(t), "alice")
+		if err != nil {
+			t.Fatalf("getAuthorID 返回错误: %v", err)
+		}
+		if got != "uid-alice" {
+			t.Fatalf("userID = %q", got)
+		}
+	})
+
+	t.Run("http error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getAuthorID(newTestScraper(t), "alice")
+		if err == nil {
+			t.Fatal("HTTP 非 200 应返回错误")
+		}
+	})
+
+	t.Run("missing user id", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{
+				"ec":   200,
+				"data": map[string]any{"user": map[string]any{}},
+			})
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getAuthorID(newTestScraper(t), "alice")
+		if err == nil {
+			t.Fatal("缺失 user_id 应返回错误")
+		}
+	})
+}
+
+func TestGetPostListPaginationAndLimit(t *testing.T) {
+	page := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/post/get-list" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		page++
+		list := []map[string]any{}
+		switch page {
+		case 1:
+			list = []map[string]any{
+				{"post_id": "p1", "title": "one", "publish_sn": 10},
+				{"post_id": "p2", "title": "two", "publish_sn": 20},
+			}
+		case 2:
+			if r.URL.Query().Get("publish_sn") != "20" {
+				t.Fatalf("第二页 publish_sn = %q", r.URL.Query().Get("publish_sn"))
+			}
+			list = []map[string]any{
+				{"post_id": "p3", "title": "three", "publish_sn": 0},
+			}
+		default:
+			t.Fatalf("不应请求第 %d 页", page)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"ec":   200,
+			"data": map[string]any{"list": list},
+		})
+	}))
+	defer server.Close()
+	withTestHost(t, server.URL)
+
+	posts, err := New(config.ResolvedRouteConfig{}).getPostList(newTestScraper(t), "uid", "alice", 3)
+	if err != nil {
+		t.Fatalf("getPostList 返回错误: %v", err)
+	}
+	if len(posts) != 3 || posts[0].PostID != "p1" || posts[2].PostID != "p3" {
+		t.Fatalf("posts = %+v", posts)
+	}
+}
+
+func TestGetPostListEmptyAndInvalidResponse(t *testing.T) {
+	t.Run("empty data stops", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"ec": 200})
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		posts, err := New(config.ResolvedRouteConfig{}).getPostList(newTestScraper(t), "uid", "alice", 10)
+		if err != nil {
+			t.Fatalf("getPostList 返回错误: %v", err)
+		}
+		if len(posts) != 0 {
+			t.Fatalf("空 data 应返回空列表，got %+v", posts)
+		}
+	})
+
+	t.Run("invalid list json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"ec":200,"data":{"list":"bad"}}`))
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getPostList(newTestScraper(t), "uid", "alice", 10)
+		if err == nil {
+			t.Fatal("无效 list JSON 应返回错误")
+		}
+	})
+
+	t.Run("http error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getPostList(newTestScraper(t), "uid", "alice", 10)
+		if err == nil {
+			t.Fatal("HTTP 非 200 应返回错误")
+		}
+	})
+}
+
+func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/post/get-detail" || r.URL.Query().Get("post_id") != "p1" {
+				t.Fatalf("unexpected request %s", r.URL.String())
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"ec":   200,
+				"data": map[string]any{"post": map[string]any{"content": "<p>body</p>"}},
+			})
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		content, err := New(config.ResolvedRouteConfig{}).getPostDetail(newTestScraper(t), "p1")
+		if err != nil {
+			t.Fatalf("getPostDetail 返回错误: %v", err)
+		}
+		if content != "<p>body</p>" {
+			t.Fatalf("content = %q", content)
+		}
+	})
+
+	t.Run("empty data", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"ec": 200})
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		content, err := New(config.ResolvedRouteConfig{}).getPostDetail(newTestScraper(t), "p1")
+		if err != nil {
+			t.Fatalf("getPostDetail 返回错误: %v", err)
+		}
+		if content != "" {
+			t.Fatalf("空 data 应返回空 content，got %q", content)
+		}
+	})
+
+	t.Run("api error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"ec":500,"em":"bad"}`))
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getPostDetail(newTestScraper(t), "p1")
+		if err == nil {
+			t.Fatal("API ec 非 200 应返回错误")
+		}
+	})
+
+	t.Run("invalid detail json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{"ec":200,"data":{"post":"bad"}}`))
+		}))
+		defer server.Close()
+		withTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{}).getPostDetail(newTestScraper(t), "p1")
+		if err == nil {
+			t.Fatal("无效详情 JSON 应返回错误")
+		}
+	})
+}
+
+func TestParseAfdianResponseInvalidJSON(t *testing.T) {
+	if _, err := parseAfdianResponse([]byte(`{bad json`)); err == nil {
+		t.Fatal("无效 JSON 应返回错误")
+	}
+}

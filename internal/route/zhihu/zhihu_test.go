@@ -1,8 +1,11 @@
 package zhihu
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,118 @@ import (
 	"github.com/PhiFever/RSSGen/internal/route"
 	signzhihu "github.com/PhiFever/RSSGen/internal/sign/zhihu"
 )
+
+func withZhihuTestHost(t *testing.T, url string) {
+	t.Helper()
+	old := zhihuHostURL
+	zhihuHostURL = url
+	t.Cleanup(func() { zhihuHostURL = old })
+}
+
+func TestRouteMetadataAndScraper(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test;", RateLimit: 0.001})
+	if r.Name() != "zhihu" {
+		t.Fatalf("Name() = %q", r.Name())
+	}
+	if r.Description() == "" || r.FeedIDField() != "user_id" {
+		t.Fatalf("metadata 不符合预期")
+	}
+	if _, err := r.getScraper(); err != nil {
+		t.Fatalf("getScraper 返回错误: %v", err)
+	}
+}
+
+func TestFetchActivitiesPaginationAndActor(t *testing.T) {
+	var page int
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/api/v3/moments/user1/activities") {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("X-Zse-96") == "" {
+			t.Fatalf("签名 header 未设置")
+		}
+		page++
+		switch page {
+		case 1:
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"actor": map[string]any{"name": "Alice", "headline": "Hello"},
+					"target": map[string]any{
+						"type": "answer",
+						"id":   "a1",
+					},
+				}},
+				"paging": map[string]any{
+					"is_end": false,
+					"next":   serverURL + "/api/v3/moments/user1/activities?page=2",
+				},
+			})
+		case 2:
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"target": map[string]any{
+						"type": "article",
+						"id":   "p1",
+					},
+				}},
+				"paging": map[string]any{"is_end": true},
+			})
+		default:
+			t.Fatalf("不应请求第 %d 页", page)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	withZhihuTestHost(t, server.URL)
+
+	r := New(config.ResolvedRouteConfig{Cookie: `d_c0="abc";`, RateLimit: 0.001})
+	activities, err := r.fetchActivities("user1", 2)
+	if err != nil {
+		t.Fatalf("fetchActivities 返回错误: %v", err)
+	}
+	if len(activities) != 2 {
+		t.Fatalf("activities len = %d", len(activities))
+	}
+	if r.actor["name"] != "Alice" {
+		t.Fatalf("actor 未提取: %+v", r.actor)
+	}
+}
+
+func TestFetchActivitiesErrors(t *testing.T) {
+	t.Run("missing d_c0", func(t *testing.T) {
+		_, err := New(config.ResolvedRouteConfig{RateLimit: 0.001}).fetchActivities("user1", 1)
+		if err == nil {
+			t.Fatal("缺少 d_c0 应返回错误")
+		}
+	})
+
+	t.Run("http error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer server.Close()
+		withZhihuTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{Cookie: `d_c0="abc";`, RateLimit: 0.001}).fetchActivities("user1", 1)
+		if err == nil {
+			t.Fatal("HTTP 非 200 应返回错误")
+		}
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(`{bad json`))
+		}))
+		defer server.Close()
+		withZhihuTestHost(t, server.URL)
+
+		_, err := New(config.ResolvedRouteConfig{Cookie: `d_c0="abc";`, RateLimit: 0.001}).fetchActivities("user1", 1)
+		if err == nil {
+			t.Fatal("无效 JSON 应返回错误")
+		}
+	})
+}
 
 func TestTruncateRunes(t *testing.T) {
 	tests := []struct {
@@ -292,7 +407,7 @@ func TestMakeFeedItemAnswerWithoutQuestionDetail(t *testing.T) {
 	target := map[string]interface{}{
 		"id": "123", "type": "answer",
 		"content": "<p>回答内容</p>", "created_time": float64(1700000000),
-		"author": map[string]interface{}{"name": "作者"},
+		"author":   map[string]interface{}{"name": "作者"},
 		"question": map[string]interface{}{"id": "456", "title": "问题标题", "detail": ""},
 	}
 	item := r.makeFeedItem(mkAct(target, "MEMBER_ANSWER_QUESTION", "回答了问题"))
@@ -357,7 +472,7 @@ func TestMakeFeedItemCollectAnswerCategory(t *testing.T) {
 	target := map[string]interface{}{
 		"id": "123", "type": "answer",
 		"content": "<p>内容</p>", "created_time": float64(1600000000),
-		"author": map[string]interface{}{"name": "原作者"},
+		"author":   map[string]interface{}{"name": "原作者"},
 		"question": map[string]interface{}{"id": "456", "title": "问题标题"},
 	}
 	a := map[string]interface{}{
@@ -401,7 +516,7 @@ func TestMakeFeedItemVoteupAnswerCategory(t *testing.T) {
 	target := map[string]interface{}{
 		"id": "888", "type": "answer",
 		"content": "<p>内容</p>", "created_time": float64(1700000000),
-		"author": map[string]interface{}{"name": "作者"},
+		"author":   map[string]interface{}{"name": "作者"},
 		"question": map[string]interface{}{"id": "999", "title": "被赞同的问题"},
 	}
 	item := r.makeFeedItem(mkAct(target, "MEMBER_VOTEUP_ANSWER", "赞同了回答"))
@@ -767,8 +882,8 @@ func TestFetchFiltersSelfInteractionByDefault(t *testing.T) {
 		{"id": "act3", "verb": "MEMBER_COLLECT_ANSWER", "action_text": "收藏了回答", "actor": map[string]interface{}{"id": "USER_A"},
 			"target": map[string]interface{}{"id": "2", "type": "answer", "content": "<p>他人回答</p>",
 				"created_time": float64(1700002000),
-				"author": map[string]interface{}{"id": "USER_B", "name": "他人"},
-				"question": map[string]interface{}{"id": "20", "title": "问题B"}}},
+				"author":       map[string]interface{}{"id": "USER_B", "name": "他人"},
+				"question":     map[string]interface{}{"id": "20", "title": "问题B"}}},
 	}
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)

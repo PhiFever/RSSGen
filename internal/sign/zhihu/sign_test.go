@@ -115,6 +115,38 @@ func TestGetSignature(t *testing.T) {
 	}
 }
 
+func TestShuffledB64Decode(t *testing.T) {
+	raw := []byte{0x01, 0x02, 0x03, 0xfe, 0xfd, 0xfc}
+	encoded := ShuffledB64Encode(raw)
+	decoded, err := ShuffledB64Decode(encoded)
+	if err != nil {
+		t.Fatalf("ShuffledB64Decode 返回错误: %v", err)
+	}
+	if string(decoded) != string(raw) {
+		t.Fatalf("decoded = %v, want %v", decoded, raw)
+	}
+
+	if _, err := ShuffledB64Decode("!!!!"); err == nil {
+		t.Fatal("无效字符应返回错误")
+	}
+}
+
+func TestParseURLPathVariants(t *testing.T) {
+	tests := map[string]string{
+		"/api/v4/questions":                         "/api/v4/questions",
+		"api/v4/questions":                          "/api/v4/questions",
+		"https://www.zhihu.com":                     "/",
+		"https://www.zhihu.com/api/v4?q=1":          "/api/v4?q=1",
+		"not-a-url-without-slash-but-normalized":    "/not-a-url-without-slash-but-normalized",
+		"https://www.zhihu.com/people/alice/posts/": "/people/alice/posts/",
+	}
+	for in, want := range tests {
+		if got := ParseURLPath(in); got != want {
+			t.Fatalf("ParseURLPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // ============================================
 // 辅助函数
 // ============================================

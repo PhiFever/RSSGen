@@ -85,3 +85,17 @@ routes: {}
 		t.Fatalf("PreinitURL = %q", cfg.Refresher.PreinitURL)
 	}
 }
+
+func TestLoadErrors(t *testing.T) {
+	if _, err := Load(filepath.Join(t.TempDir(), "missing.yml")); err == nil {
+		t.Fatal("缺失配置文件应返回错误")
+	}
+
+	path := filepath.Join(t.TempDir(), "bad.yml")
+	if err := os.WriteFile(path, []byte("server:\n  host: [bad"), 0o600); err != nil {
+		t.Fatalf("写入坏配置失败: %v", err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("无效 YAML 应返回错误")
+	}
+}

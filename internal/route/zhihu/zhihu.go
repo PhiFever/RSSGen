@@ -54,8 +54,9 @@ var targetTypeFallback = map[string]string{
 
 // 预编译正则，避免在热路径重复编译。
 var (
-	dc0Re     = regexp.MustCompile(`d_c0=([^;]+)`)
-	htmlTagRe = regexp.MustCompile(`<[^>]+>`)
+	zhihuHostURL = "https://www.zhihu.com"
+	dc0Re        = regexp.MustCompile(`d_c0=([^;]+)`)
+	htmlTagRe    = regexp.MustCompile(`<[^>]+>`)
 )
 
 // selfInteractableVerbs 仅这些 verb 在 actor == target.author 时算作"自互动"。
@@ -78,9 +79,9 @@ type fetchActivitiesFunc func(userID string, limit int) ([]map[string]interface{
 
 // Route 是知乎路由实现。
 type Route struct {
-	cfg              config.ResolvedRouteConfig
-	actor            map[string]interface{} // 最近一次抓取的 actor 信息
-	fetchActivitiesFn fetchActivitiesFunc  // 可替换的 fetchActivities（测试用）
+	cfg               config.ResolvedRouteConfig
+	actor             map[string]interface{} // 最近一次抓取的 actor 信息
+	fetchActivitiesFn fetchActivitiesFunc    // 可替换的 fetchActivities（测试用）
 }
 
 // New 创建知乎路由实例。
@@ -132,7 +133,7 @@ func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 
 	return &route.FeedInfo{
 		Title:       fmt.Sprintf("知乎动态 - %s", displayName),
-		Link:        fmt.Sprintf("https://www.zhihu.com/people/%s", userID),
+		Link:        fmt.Sprintf("%s/people/%s", zhihuHostURL, userID),
 		Description: description,
 	}, nil
 }
@@ -201,11 +202,11 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 	if err != nil {
 		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
-	referer := fmt.Sprintf("https://www.zhihu.com/people/%s", userID)
+	referer := fmt.Sprintf("%s/people/%s", zhihuHostURL, userID)
 
 	nextURL := fmt.Sprintf(
-		"https://www.zhihu.com/api/v3/moments/%s/activities?limit=5&desktop=true",
-		userID,
+		"%s/api/v3/moments/%s/activities?limit=5&desktop=true",
+		zhihuHostURL, userID,
 	)
 
 	var activities []map[string]interface{}
@@ -307,7 +308,7 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		if question != nil {
 			title, _ = question["title"].(string)
 			questionID, _ := question["id"].(string)
-			link = fmt.Sprintf("https://www.zhihu.com/question/%s/answer/%s", questionID, targetID)
+			link = fmt.Sprintf("%s/question/%s/answer/%s", zhihuHostURL, questionID, targetID)
 		}
 	case "article":
 		title, _ = target["title"].(string)
@@ -323,10 +324,10 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		} else {
 			title = "想法"
 		}
-		link = fmt.Sprintf("https://www.zhihu.com/pin/%s", targetID)
+		link = fmt.Sprintf("%s/pin/%s", zhihuHostURL, targetID)
 	case "question":
 		title, _ = target["title"].(string)
-		link = fmt.Sprintf("https://www.zhihu.com/question/%s", targetID)
+		link = fmt.Sprintf("%s/question/%s", zhihuHostURL, targetID)
 	default:
 		title, _ = target["title"].(string)
 		if title == "" {
@@ -336,7 +337,7 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		if title == "" {
 			title = "未知内容"
 		}
-		link = fmt.Sprintf("https://www.zhihu.com/%s/%s", targetType, targetID)
+		link = fmt.Sprintf("%s/%s/%s", zhihuHostURL, targetType, targetID)
 	}
 
 	// 空 title 通常意味着抓取字段的位置变了（如 question.title 改名）
@@ -602,7 +603,6 @@ func formatQuestionDescription(detail string) string {
 	detail = fixLazyImages(detail)
 	return fmt.Sprintf("<h3>【问题描述】</h3>\n<blockquote>\n%s\n</blockquote>", detail)
 }
-
 
 // truncateRunes 按 rune（而非字节）截断字符串，避免切断多字节中文产生非法 UTF-8。
 func truncateRunes(s string, n int) string {

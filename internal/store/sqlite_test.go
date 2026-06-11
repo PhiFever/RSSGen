@@ -37,6 +37,24 @@ func TestInitCreatesDir(t *testing.T) {
 	}
 }
 
+func TestInitDirectoryError(t *testing.T) {
+	parentFile := filepath.Join(t.TempDir(), "not-dir")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
+		t.Fatalf("写入父级文件失败: %v", err)
+	}
+	s := New(filepath.Join(parentFile, "test.db"))
+	if err := s.Init(); err == nil {
+		t.Fatal("父级路径是文件时 Init 应返回错误")
+	}
+}
+
+func TestCloseNilDB(t *testing.T) {
+	s := New(tempDB(t))
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close on nil db: %v", err)
+	}
+}
+
 func TestSaveAndGet(t *testing.T) {
 	s := New(tempDB(t))
 	if err := s.Init(); err != nil {
@@ -155,6 +173,36 @@ func TestNilDBGraceful(t *testing.T) {
 	}
 	if has {
 		t.Fatal("expected false on nil db")
+	}
+}
+
+func TestClosedDBGracefulReadAndReportsSaveError(t *testing.T) {
+	s := New(tempDB(t))
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	content, found, err := s.Get("r", "i")
+	if err != nil {
+		t.Fatalf("Get on closed db should degrade without error: %v", err)
+	}
+	if found || content != "" {
+		t.Fatal("closed db Get 应降级为未命中")
+	}
+
+	if err := s.Save("r", "i", "c"); err == nil {
+		t.Fatal("closed db Save 应返回底层错误")
+	}
+
+	has, err := s.HasArticles("r")
+	if err != nil {
+		t.Fatalf("HasArticles on closed db should degrade without error: %v", err)
+	}
+	if has {
+		t.Fatal("closed db HasArticles 应降级为 false")
 	}
 }
 

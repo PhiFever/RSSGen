@@ -13,7 +13,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/scraper"
 )
 
-const hostURL = "https://afdian.com"
+var hostURL = "https://afdian.com"
 
 // afdianResponse 爱发电 API 通用响应结构。
 type afdianResponse struct {

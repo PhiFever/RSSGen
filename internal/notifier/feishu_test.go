@@ -119,3 +119,22 @@ func TestFeishuSenderSendHTTPError(t *testing.T) {
 		t.Error("HTTP 非 200 时应返回 error")
 	}
 }
+
+func TestFeishuSenderSendInvalidJSONResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{bad json`))
+	}))
+	defer server.Close()
+
+	s := newFeishuSender(server.URL, "")
+	if err := s.Send("msg"); err == nil {
+		t.Error("飞书返回无效 JSON 时应返回 error")
+	}
+}
+
+func TestFeishuSenderSendRequestError(t *testing.T) {
+	s := newFeishuSender("http://127.0.0.1:1", "")
+	if err := s.Send("msg"); err == nil {
+		t.Error("Webhook 请求失败时应返回 error")
+	}
+}

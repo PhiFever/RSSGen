@@ -267,6 +267,57 @@ func TestStartPreinitURL(t *testing.T) {
 	}
 }
 
+func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
+	New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		RoutesConfig: map[string]config.RouteConfig{},
+	}).preinitHTTPClient()
+
+	errorRef := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		PreinitURL:   "http://127.0.0.1:1",
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	errorRef.preinitHTTPClient()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	statusRef := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		PreinitURL:   server.URL,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	statusRef.preinitHTTPClient()
+}
+
+func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
+	route.Register("_test_refresh_feeds_skip", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_refresh_feeds_skip",
+			fetchFn: func(route.ArticleStore, []string, route.FetchOptions) ([]route.FeedItem, error) {
+				t.Fatal("空 feeds 或缺 user_id 时不应调用 Fetch")
+				return nil, nil
+			},
+		}
+	})
+	defer route.Unregister("_test_refresh_feeds_skip")
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	ref.refreshFeeds("test", "_test_refresh_feeds_skip", config.RouteConfig{})
+	ref.refreshFeeds("test", "_test_refresh_feeds_skip", config.RouteConfig{
+		Feeds: []config.FeedConfig{{UserID: ""}},
+	})
+}
+
 func TestStopCancelsAllTasks(t *testing.T) {
 	route.Register("_test_refresher2", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_refresher2"}

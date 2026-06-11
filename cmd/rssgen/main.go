@@ -42,18 +42,54 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 初始化缓存
-	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
-
-	// 初始化 SQLite 存储
-	articleStore := store.New(cfg.Storage.SQLitePath)
-	if err := articleStore.Init(); err != nil {
-		slog.Error("初始化存储失败", "error", err)
+	app, err := buildRuntime(cfg)
+	if err != nil {
+		slog.Error("初始化运行时失败", "error", err)
 		os.Exit(1)
 	}
-	defer articleStore.Close()
+	defer app.articleStore.Close()
 
-	// 初始化通知器
+	// 优雅关停
+	done := make(chan os.Signal, 1)
+	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		slog.Info("RSSGen 启动", "addr", app.server.Addr)
+		if err := app.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("HTTP 服务异常", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-done
+	slog.Info("收到关停信号，正在关闭服务...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if app.refresher != nil {
+		app.refresher.Stop()
+	}
+	if err := app.server.Shutdown(ctx); err != nil {
+		slog.Error("服务关闭异常", "error", err)
+	}
+	slog.Info("RSSGen 已停止")
+}
+
+type runtimeApp struct {
+	server       *http.Server
+	refresher    *refresher.Refresher
+	articleStore *store.ArticleStore
+}
+
+func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
+	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
+
+	articleStore := store.New(cfg.Storage.SQLitePath)
+	if err := articleStore.Init(); err != nil {
+		return nil, fmt.Errorf("初始化存储失败: %w", err)
+	}
+
 	var notifierServices []notifier.ServiceConfig
 	for _, svc := range cfg.Notifier.Services {
 		notifierServices = append(notifierServices, notifier.ServiceConfig{
@@ -69,7 +105,6 @@ func main() {
 		Services:           notifierServices,
 	})
 
-	// 初始化后台刷新器
 	var ref *refresher.Refresher
 	if anyRouteEnabled(cfg) {
 		ref = refresher.New(refresher.Config{
@@ -87,64 +122,16 @@ func main() {
 		slog.Info("后台刷新器已启动")
 	}
 
-	// 创建 chi 路由
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
-
-	// 首页：列出所有路由
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		registry := route.GetRegistry()
-		result := make(map[string]string)
-		for name, factory := range registry {
-			// 创建临时实例获取 description
-			route := factory(config.ResolvedRouteConfig{})
-			result[name] = route.Description()
-		}
-		w.Header().Set("Content-Type", "application/json")
-		routesJSON, _ := json.Marshal(result)
-		fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON)
-	})
-
-	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, ref, articleStore, cfg))
-
-	// 状态接口
-	r.Get("/status", makeStatusHandler(ref))
-
-	// 启动 HTTP 服务
+	router := makeRouter(notif, feedCache, ref, articleStore, cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	srv := &http.Server{
-		Addr:    addr,
-		Handler: r,
-	}
-
-	// 优雅关停
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		slog.Info("RSSGen 启动", "addr", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP 服务异常", "error", err)
-			os.Exit(1)
-		}
-	}()
-
-	<-done
-	slog.Info("收到关停信号，正在关闭服务...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if ref != nil {
-		ref.Stop()
-	}
-	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("服务关闭异常", "error", err)
-	}
-	slog.Info("RSSGen 已停止")
+	return &runtimeApp{
+		server: &http.Server{
+			Addr:    addr,
+			Handler: router,
+		},
+		refresher:    ref,
+		articleStore: articleStore,
+	}, nil
 }
 
 // anyRouteEnabled 检查是否有任何路由需要后台调度。
@@ -172,6 +159,40 @@ func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
 			slog.Error("编码状态响应失败", "error", err)
 		}
 	}
+}
+
+func makeRouter(
+	notif *notifier.Notifier,
+	feedCache *cache.TTLCache,
+	ref *refresher.Refresher,
+	articleStore *store.ArticleStore,
+	cfg *config.Config,
+) *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.RealIP)
+
+	// 首页：列出所有路由
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		registry := route.GetRegistry()
+		result := make(map[string]string)
+		for name, factory := range registry {
+			routeInst := factory(config.ResolvedRouteConfig{})
+			result[name] = routeInst.Description()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		routesJSON, _ := json.Marshal(result)
+		fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON)
+	})
+
+	// Feed 路由：GET /feed/{route_name}/*
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, ref, articleStore, cfg))
+
+	// 状态接口
+	r.Get("/status", makeStatusHandler(ref))
+
+	return r
 }
 
 // splitPath 将路径分割为非空段。
