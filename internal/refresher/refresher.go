@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -31,6 +32,7 @@ type Config struct {
 	StartupDelay   int
 	MaxRetries     int
 	RetryBaseDelay int
+	PreinitURL     string
 	ScraperConfig  config.ScraperConfig
 	RoutesConfig   map[string]config.RouteConfig
 }
@@ -43,6 +45,7 @@ type Refresher struct {
 	startupDelay   int
 	maxRetries     int
 	retryBaseDelay int
+	preinitURL     string
 	scraperConfig  config.ScraperConfig
 	routesConfig   map[string]config.RouteConfig
 
@@ -87,6 +90,7 @@ func New(cfg Config) *Refresher {
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
 		retryBaseDelay: retryBaseDelay,
+		preinitURL:     cfg.PreinitURL,
 		scraperConfig:  cfg.ScraperConfig,
 		routesConfig:   cfg.RoutesConfig,
 		ctx:            ctx,
@@ -98,12 +102,14 @@ func New(cfg Config) *Refresher {
 
 // Start 启动后台刷新任务。
 func (r *Refresher) Start() {
+	r.preinitHTTPClient()
+
 	for routeName, rc := range r.routesConfig {
 		if !rc.Enabled {
 			continue
 		}
-		if rc.RefreshInterval <= 0 {
-			slog.Info("路由未配置 refresh_interval，定时刷新已关闭", "route", routeName)
+		if !shouldScheduleRoute(rc) {
+			slog.Info("路由未配置 refresh_interval 且未启用预热，调度已关闭", "route", routeName)
 			continue
 		}
 
@@ -111,6 +117,30 @@ func (r *Refresher) Start() {
 		go r.runRouteLoop(routeName, rc)
 		slog.Info("路由调度任务已创建", "route", routeName)
 	}
+}
+
+func (r *Refresher) preinitHTTPClient() {
+	if r.preinitURL == "" {
+		slog.Info("preinit_url 为空，跳过 HTTP 客户端预初始化")
+		return
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(r.preinitURL)
+	if err != nil {
+		slog.Warn("HTTP 客户端预初始化失败", "url", r.preinitURL, "error", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		slog.Warn("HTTP 客户端预初始化响应异常", "url", r.preinitURL, "status", resp.StatusCode)
+		return
+	}
+	slog.Info("HTTP 客户端预初始化完成", "url", r.preinitURL)
+}
+
+func shouldScheduleRoute(rc config.RouteConfig) bool {
+	return rc.Enabled && (rc.PreheatOnStartup || rc.RefreshInterval > 0)
 }
 
 // Stop 停止所有后台刷新任务。
@@ -154,7 +184,8 @@ func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
 		if grouped[routeName] == nil {
 			grouped[routeName] = make(map[string]*ErrorStatus)
 		}
-		grouped[routeName][feedID] = status
+		statusCopy := *status
+		grouped[routeName][feedID] = &statusCopy
 	}
 	return grouped
 }
@@ -173,7 +204,10 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 
 	// 预热阶段
 	if rc.PreheatOnStartup {
-		hasData, _ := r.articleStore.HasArticles(routeName)
+		hasData := false
+		if r.articleStore != nil {
+			hasData, _ = r.articleStore.HasArticles(routeName)
+		}
 		if hasData {
 			slog.Info("路由已有数据，跳过预热", "route", routeName)
 		} else {
@@ -182,6 +216,11 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 		}
 	} else {
 		slog.Info("预热已关闭", "route", routeName)
+	}
+
+	if rc.RefreshInterval <= 0 {
+		slog.Info("路由未配置 refresh_interval，定时刷新已关闭", "route", routeName)
+		return
 	}
 
 	// 周期刷新阶段
@@ -339,7 +378,6 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 		}
 	}
 }
-
 
 // splitCacheKey 分割缓存键。
 func splitCacheKey(key string) (routeName, feedID string) {

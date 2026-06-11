@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestResolveRoute(t *testing.T) {
 	global := ScraperConfig{
@@ -60,4 +64,24 @@ func TestResolveRoute(t *testing.T) {
 			t.Errorf("Feeds 透传错误: %+v", got.Feeds)
 		}
 	})
+}
+
+func TestLoadParsesPreinitURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := []byte(`
+refresher:
+  preinit_url: "https://example.com/warmup"
+routes: {}
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("写入临时配置失败: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.Refresher.PreinitURL != "https://example.com/warmup" {
+		t.Fatalf("PreinitURL = %q", cfg.Refresher.PreinitURL)
+	}
 }

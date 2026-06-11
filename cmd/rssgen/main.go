@@ -79,6 +79,7 @@ func main() {
 			StartupDelay:   cfg.Refresher.StartupDelay,
 			MaxRetries:     cfg.Refresher.MaxRetries,
 			RetryBaseDelay: cfg.Refresher.RetryBaseDelay,
+			PreinitURL:     cfg.Refresher.PreinitURL,
 			ScraperConfig:  cfg.Scraper,
 			RoutesConfig:   cfg.Routes,
 		})
@@ -110,15 +111,7 @@ func main() {
 	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, ref, articleStore, cfg))
 
 	// 状态接口
-	r.Get("/status", func(w http.ResponseWriter, r *http.Request) {
-		if ref == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"enabled":true}`)
-	})
+	r.Get("/status", makeStatusHandler(ref))
 
 	// 启动 HTTP 服务
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
@@ -154,14 +147,31 @@ func main() {
 	slog.Info("RSSGen 已停止")
 }
 
-// anyRouteEnabled 检查是否有任何路由启用了定时刷新。
+// anyRouteEnabled 检查是否有任何路由需要后台调度。
 func anyRouteEnabled(cfg *config.Config) bool {
 	for _, rc := range cfg.Routes {
-		if rc.Enabled && rc.RefreshInterval > 0 {
+		if rc.Enabled && (rc.RefreshInterval > 0 || rc.PreheatOnStartup) {
 			return true
 		}
 	}
 	return false
+}
+
+func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if ref == nil {
+			w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`))
+			return
+		}
+		resp := map[string]any{
+			"enabled": true,
+			"feeds":   ref.GetStatus(),
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			slog.Error("编码状态响应失败", "error", err)
+		}
+	}
 }
 
 // splitPath 将路径分割为非空段。

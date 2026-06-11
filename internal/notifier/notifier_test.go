@@ -114,21 +114,21 @@ func TestNotifyNoSenders(t *testing.T) {
 
 func TestNotifyWithFeishuService(t *testing.T) {
 	// 用 httptest 模拟飞书 Webhook，验证 Notify 能实际发送
-	var received bool
+	received := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received = true
+		received <- struct{}{}
 		w.Write([]byte(`{"code":0,"msg":"success"}`))
 	}))
 	defer server.Close()
 
 	n := New(Config{
-		Enabled: true,
+		Enabled:  true,
 		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
 	})
 	n.Notify("key", 403, "错误")
-	// 等异步 goroutine 完成
-	time.Sleep(100 * time.Millisecond)
-	if !received {
+	select {
+	case <-received:
+	case <-time.After(time.Second):
 		t.Error("飞书 Webhook 应收到请求")
 	}
 }
@@ -172,7 +172,7 @@ func TestSendNotificationExceptionHandled(t *testing.T) {
 	defer server.Close()
 
 	n := New(Config{
-		Enabled: true,
+		Enabled:  true,
 		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
 	})
 

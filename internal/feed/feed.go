@@ -29,10 +29,12 @@ var htmlPolicy = func() *bluemonday.Policy {
 	p.AllowURLSchemes("http", "https", "mailto")
 	// 图片
 	p.AllowAttrs("src", "alt", "title").OnElements("img")
-	// 通用属性
-	p.AllowAttrs("class", "style").Globally()
+	// 通用属性；不允许 style，避免未受控 CSS 注入。
+	p.AllowAttrs("class").Globally()
 	return p
 }()
+
+const atomMissingPubDateFallback = "1970-01-01T00:00:00Z"
 
 // Generate 将 FeedInfo 和 FeedItem 列表转为 Atom 或 RSS XML。
 func Generate(info *route.FeedInfo, items []route.FeedItem, format string) (string, error) {
@@ -62,16 +64,16 @@ type atomLink struct {
 }
 
 type atomEntry struct {
-	XMLName     xml.Name       `xml:"entry"`
-	Title       string         `xml:"title"`
-	ID          string         `xml:"id"`
-	Updated     string         `xml:"updated"`
-	Published   string         `xml:"published,omitempty"`
-	Link        *atomLink      `xml:"link,omitempty"`
-	Content     *atomContent   `xml:"content,omitempty"`
-	Author      *atomAuthor    `xml:"author,omitempty"`
-	Category    []atomCategory `xml:"category,omitempty"`
-	Enclosures  []route.Enclosure // 手动序列化为 <link rel="enclosure">
+	XMLName    xml.Name          `xml:"entry"`
+	Title      string            `xml:"title"`
+	ID         string            `xml:"id"`
+	Updated    string            `xml:"updated"`
+	Published  string            `xml:"published,omitempty"`
+	Link       *atomLink         `xml:"link,omitempty"`
+	Content    *atomContent      `xml:"content,omitempty"`
+	Author     *atomAuthor       `xml:"author,omitempty"`
+	Category   []atomCategory    `xml:"category,omitempty"`
+	Enclosures []route.Enclosure // 手动序列化为 <link rel="enclosure">
 }
 
 // atomEnclosureLink 用于序列化 Atom enclosure link 元素。
@@ -137,17 +139,17 @@ func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) 
 
 	// 逐条编码 entry，手动插入 enclosure links
 	var entriesXML []string
-	for _, item := range items {
+	for i, item := range items {
 		entry := atomEntry{
 			Title: orDefault(item.Title, "无标题"),
-			ID:    orDefault(item.GUID, item.Link, fmt.Sprintf("urn:uuid:%d", time.Now().UnixNano())),
+			ID:    orDefault(item.GUID, item.Link, fmt.Sprintf("urn:rssgen:entry:%d", i)),
 		}
 
 		if item.PubDate != nil {
 			entry.Updated = item.PubDate.Format(time.RFC3339)
 			entry.Published = item.PubDate.Format(time.RFC3339)
 		} else {
-			entry.Updated = now
+			entry.Updated = atomMissingPubDateFallback
 		}
 
 		if item.Link != "" {

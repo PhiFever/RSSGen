@@ -51,7 +51,7 @@ routes:
     # proxy: null            # 可选：该路由的代理
     # impersonate: chrome131 # 可选：该路由的浏览器指纹
     # === 后台刷新配置（冷启动优化）===
-    preheat_on_startup: false   # 是否在启动时预热，false = 仅后台定时刷新
+    preheat_on_startup: false   # 是否在启动时预热；可与 refresh_interval: 0 搭配为只预热一次
     refresh_interval: 14400     # 后台刷新间隔，默认 4 小时（秒）
     feeds:                      # 预热列表（可选，不配置则无预热）
       - user_id: "author1"
@@ -76,7 +76,7 @@ routes:
       - article                    # 创作了文章
       - pin                        # 发布了想法
     # === 后台刷新配置（冷启动优化）===
-    preheat_on_startup: false   # 是否在启动时预热，false = 仅后台定时刷新
+    preheat_on_startup: false   # 是否在启动时预热；可与 refresh_interval: 0 搭配为只预热一次
     refresh_interval: 14400     # 后台刷新间隔，默认 4 小时（秒）
     # feeds 仅用于后台刷新调度和活动类型筛选，不配置也能通过 URL 订阅任意用户
     # feed 标题和描述会自动从 API 响应中获取（用户昵称 + 个人简介）

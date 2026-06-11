@@ -101,10 +101,9 @@ func TestGenerateExplicitGUID(t *testing.T) {
 func TestGenerateFallbackPubDate(t *testing.T) {
 	info := &route.FeedInfo{Title: "F", Link: "https://x.com"}
 	items := []route.FeedItem{{Title: "T", Link: "https://x.com/1"}}
-	// PubDate 为 nil 时，Atom 应用 now，RSS 不输出 pubDate
 	out, _ := Generate(info, items, "")
-	if !strings.Contains(out, "<updated") {
-		t.Error("Atom 条目缺失 PubDate 时应填充 <updated>")
+	if !strings.Contains(out, "<updated>1970-01-01T00:00:00Z</updated>") {
+		t.Error("Atom 条目缺失 PubDate 时应使用稳定 fallback，避免每次生成都变更")
 	}
 }
 
@@ -115,6 +114,25 @@ func TestGeneratePubDatePreserved(t *testing.T) {
 	out, _ := Generate(info, items, "")
 	if !strings.Contains(out, "2025-06-01") {
 		t.Error("显式 PubDate 应保留在输出中")
+	}
+}
+
+func TestSanitizeHTMLStripsInlineStyle(t *testing.T) {
+	info := &route.FeedInfo{Title: "F", Link: "https://x.com"}
+	items := []route.FeedItem{{
+		Title:   "T",
+		Link:    "https://x.com/1",
+		Content: `<p class="ok" style="position:fixed;color:red" onclick="bad()">正文</p>`,
+	}}
+	out, _ := Generate(info, items, "")
+	if strings.Contains(out, "style=") {
+		t.Error("清洗后的 HTML 不应保留 inline style")
+	}
+	if strings.Contains(out, "onclick=") {
+		t.Error("清洗后的 HTML 不应保留事件属性")
+	}
+	if !strings.Contains(out, `class=&#34;ok&#34;`) {
+		t.Error("安全的 class 属性应保留")
 	}
 }
 
@@ -262,12 +280,12 @@ func TestSanitizeHTMLSafeTagsPreserved(t *testing.T) {
 
 // --- orDefault ---
 
-func TestGenerateMissingGUIDAndLinkGeneratesUUID(t *testing.T) {
+func TestGenerateMissingGUIDAndLinkGeneratesStableID(t *testing.T) {
 	info := &route.FeedInfo{Title: "F", Link: "https://x.com"}
 	items := []route.FeedItem{{Title: "T"}}
 	out, _ := Generate(info, items, "")
-	if !strings.Contains(out, "urn:uuid:") {
-		t.Error("GUID 和 Link 均空时应生成 urn:uuid:")
+	if !strings.Contains(out, "urn:rssgen:entry:0") {
+		t.Error("GUID 和 Link 均空时应生成稳定 ID")
 	}
 }
 

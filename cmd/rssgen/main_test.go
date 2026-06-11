@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/notifier"
+	"github.com/PhiFever/RSSGen/internal/refresher"
 	"github.com/PhiFever/RSSGen/internal/route"
 	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
 	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
@@ -115,6 +117,37 @@ func TestAnyRouteEnabled(t *testing.T) {
 	cfg.Routes["test"] = config.RouteConfig{Enabled: true, RefreshInterval: 60}
 	if !anyRouteEnabled(cfg) {
 		t.Error("期望返回 true")
+	}
+
+	cfg.Routes["test"] = config.RouteConfig{Enabled: true, PreheatOnStartup: true}
+	if !anyRouteEnabled(cfg) {
+		t.Error("只启用预热的路由也应启动后台刷新器")
+	}
+}
+
+func TestStatusHandlerIncludesFeeds(t *testing.T) {
+	ref := refresher.New(refresher.Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	req := httptest.NewRequest("GET", "/status", nil)
+	w := httptest.NewRecorder()
+	makeStatusHandler(ref).ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, want %d", w.Code, http.StatusOK)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("状态响应不是 JSON: %v", err)
+	}
+	if body["enabled"] != true {
+		t.Fatalf("enabled = %v, want true", body["enabled"])
+	}
+	if _, ok := body["feeds"]; !ok {
+		t.Fatal("/status 应包含 feeds 字段")
 	}
 }
 

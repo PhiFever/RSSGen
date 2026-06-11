@@ -3,6 +3,8 @@ package refresher
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -216,7 +218,7 @@ func TestStartCreatesPerRouteTasks(t *testing.T) {
 	route.Register("_test_refresher", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_refresher"}
 	})
-	defer delete(route.GetRegistry(), "_test_refresher")
+	defer route.Unregister("_test_refresher")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -240,11 +242,36 @@ func TestStartCreatesPerRouteTasks(t *testing.T) {
 	// 不 panic、不 hang 即为通过
 }
 
+func TestStartPreinitURL(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		PreinitURL:   server.URL,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	ref.Start()
+	ref.Stop()
+
+	select {
+	case <-hit:
+	default:
+		t.Fatal("Start 应按 preinit_url 预初始化 HTTP 客户端")
+	}
+}
+
 func TestStopCancelsAllTasks(t *testing.T) {
 	route.Register("_test_refresher2", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_refresher2"}
 	})
-	defer delete(route.GetRegistry(), "_test_refresher2")
+	defer route.Unregister("_test_refresher2")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -272,7 +299,7 @@ func TestIdempotentStart(t *testing.T) {
 	route.Register("_test_refresher3", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_refresher3"}
 	})
-	defer delete(route.GetRegistry(), "_test_refresher3")
+	defer route.Unregister("_test_refresher3")
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
@@ -298,7 +325,7 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 	route.Register("_test_preheat1", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_preheat1"}
 	})
-	defer delete(route.GetRegistry(), "_test_preheat1")
+	defer route.Unregister("_test_preheat1")
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
@@ -306,10 +333,10 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat1": {
-				Enabled:         true,
-				RefreshInterval: 60,
+				Enabled:          true,
+				RefreshInterval:  60,
 				PreheatOnStartup: false,
-				Feeds:           []config.FeedConfig{{UserID: "u1"}},
+				Feeds:            []config.FeedConfig{{UserID: "u1"}},
 			},
 		},
 	})
@@ -328,8 +355,8 @@ type mockRoute struct {
 }
 
 func (m *mockRoute) Name() string        { return m.name }
-func (m *mockRoute) Description() string  { return "mock" }
-func (m *mockRoute) FeedIDField() string  { return "user_id" }
+func (m *mockRoute) Description() string { return "mock" }
+func (m *mockRoute) FeedIDField() string { return "user_id" }
 func (m *mockRoute) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 	return &route.FeedInfo{Title: "Mock", Link: "https://example.com"}, nil
 }
@@ -346,7 +373,7 @@ func TestRefreshOneSuccess(t *testing.T) {
 	route.Register("_test_r1_ok", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_r1_ok"}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_ok")
+	defer route.Unregister("_test_r1_ok")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -394,7 +421,7 @@ func TestRefreshOneFailure(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_fail")
+	defer route.Unregister("_test_r1_fail")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -435,7 +462,7 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_biz")
+	defer route.Unregister("_test_r1_biz")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -468,7 +495,7 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_temp")
+	defer route.Unregister("_test_r1_temp")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -499,7 +526,7 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_skip")
+	defer route.Unregister("_test_r1_skip")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
@@ -542,7 +569,7 @@ func TestPreheatSkippedWhenAlreadyHasData(t *testing.T) {
 	route.Register("_test_preheat_skip", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_preheat_skip"}
 	})
-	defer delete(route.GetRegistry(), "_test_preheat_skip")
+	defer route.Unregister("_test_preheat_skip")
 
 	fetchCount := 0
 	route.Register("_test_preheat_count", func(cfg config.ResolvedRouteConfig) route.Route {
@@ -554,7 +581,7 @@ func TestPreheatSkippedWhenAlreadyHasData(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_preheat_count")
+	defer route.Unregister("_test_preheat_count")
 
 	store := &mockArticleStore{data: map[string]bool{"_test_preheat_count": true}}
 	ref := New(Config{
@@ -592,7 +619,7 @@ func TestPreheatRunsWhenEnabledAndNoData(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_preheat_run")
+	defer route.Unregister("_test_preheat_run")
 
 	store := &mockArticleStore{data: map[string]bool{}} // 无数据
 	ref := New(Config{
@@ -619,11 +646,11 @@ func TestPreheatRunsWhenEnabledAndNoData(t *testing.T) {
 	}
 }
 
-func TestZeroIntervalSkipsRoute(t *testing.T) {
+func TestZeroIntervalWithoutPreheatSkipsRoute(t *testing.T) {
 	route.Register("_test_zero_iv", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_zero_iv"}
 	})
-	defer delete(route.GetRegistry(), "_test_zero_iv")
+	defer route.Unregister("_test_zero_iv")
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
@@ -641,14 +668,53 @@ func TestZeroIntervalSkipsRoute(t *testing.T) {
 	ref.Start()
 	time.Sleep(50 * time.Millisecond)
 	ref.Stop()
-	// 不 hang、不 panic 即为通过；RefreshInterval=0 的路由不应创建 goroutine
+	// 不 hang、不 panic 即为通过；RefreshInterval=0 且未启用预热时不应创建 goroutine
+}
+
+func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
+	preheated := make(chan struct{}, 1)
+	route.Register("_test_zero_iv_preheat", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_zero_iv_preheat",
+			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				preheated <- struct{}{}
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer route.Unregister("_test_zero_iv_preheat")
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		ArticleStore: &mockArticleStore{},
+		StartupDelay: 1,
+		RoutesConfig: map[string]config.RouteConfig{
+			"_test_zero_iv_preheat": {
+				Enabled:          true,
+				RefreshInterval:  0,
+				PreheatOnStartup: true,
+				Feeds:            []config.FeedConfig{{UserID: "u1"}},
+			},
+		},
+	})
+	ref.startupDelay = 0
+
+	ref.Start()
+	defer ref.Stop()
+
+	select {
+	case <-preheated:
+	case <-time.After(time.Second):
+		t.Fatal("RefreshInterval=0 但 preheat_on_startup=true 时应执行一次预热")
+	}
 }
 
 func TestNullIntervalSkipsRoute(t *testing.T) {
 	route.Register("_test_null_iv", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_null_iv"}
 	})
-	defer delete(route.GetRegistry(), "_test_null_iv")
+	defer route.Unregister("_test_null_iv")
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
@@ -682,7 +748,7 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 			},
 		}
 	})
-	defer delete(route.GetRegistry(), "_test_r1_params")
+	defer route.Unregister("_test_r1_params")
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})

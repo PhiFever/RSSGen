@@ -19,8 +19,7 @@ docker compose up -d
 本地开发：
 
 ```bash
-uv sync
-python main.py
+go run ./cmd/rssgen
 ```
 
 ## 支持的路由
@@ -75,7 +74,7 @@ routes:
 
 当后台刷新某个订阅源连续重试均失败、且为**业务错误**（默认 4xx：400/401/403/404/410/422/451）时，RSSGen 会：
 
-1. 通过 [Apprise](https://github.com/caronc/apprise) 发送一条通知（Telegram、邮件等）；
+1. 通过已配置的通知服务发送一条通知（当前支持飞书机器人）；
 2. **禁用该订阅源**（feed 级，仅影响出错的那个 feed，同一路由下其他 feed 不受影响），后续 Miniflux 拉取该地址将返回 HTTP 502；
 3. 重启 RSSGen 后自动恢复（禁用状态仅存于内存）。
 
@@ -86,14 +85,15 @@ routes:
 ```yaml
 notifier:
   enabled: true            # 是否启用通知
-  service_urls:            # 通知服务 URL 列表（Apprise 格式）
-    - "tgram://bot_token/chat_id"
-    - "mailto://user:pass@gmail.com"
+  services:
+    - type: feishu
+      webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/你的webhook_id"
+      # secret: "签名密钥"  # 可选，飞书机器人签名验证密钥
   # business_error_codes:  # 可选，自定义业务错误状态码（默认 [400, 401, 403, 404, 410, 422, 451]）
   #   - 403
 ```
 
-`service_urls` 支持的服务格式见 [Apprise 文档](https://github.com/caronc/apprise/wiki)。
+`/status` 会返回后台刷新器是否启用，以及按路由和 feed 分组的最近刷新状态。
 
 ## 致谢
 

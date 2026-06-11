@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
@@ -29,12 +30,12 @@ type afdianUser struct {
 
 // afdianPost 爱发电帖子信息。
 type afdianPost struct {
-	PostID      string   `json:"post_id"`
-	Title       string   `json:"title"`
-	PublishTime float64  `json:"publish_time"`
-	PublishSN   int64    `json:"publish_sn"`
-	Content     string   `json:"content"`
-	Pics        []string `json:"pics"`
+	PostID      string     `json:"post_id"`
+	Title       string     `json:"title"`
+	PublishTime float64    `json:"publish_time"`
+	PublishSN   int64      `json:"publish_sn"`
+	Content     string     `json:"content"`
+	Pics        []string   `json:"pics"`
 	User        afdianUser `json:"user"`
 }
 
@@ -158,33 +159,60 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		return nil, fmt.Errorf("获取帖子列表失败: %w", err)
 	}
 
-	// 获取每篇文章内容并构建 FeedItem
-	items := make([]route.FeedItem, 0, len(posts))
-	for _, post := range posts {
-		// 获取文章内容
-		content := ""
+	contents := make([]string, len(posts))
+	contentOK := make([]bool, len(posts))
+	var missing []int
+
+	for i, post := range posts {
 		if articleStore != nil {
 			cached, found, err := articleStore.Get("afdian", post.PostID)
 			if err == nil && found && cached != "" {
-				content = cached
-			}
-		}
-		if content == "" {
-			detailFn := r.getPostDetail
-			if r.getPostDetailFn != nil {
-				detailFn = r.getPostDetailFn
-			}
-			content, err = detailFn(sc, post.PostID)
-			if err != nil {
-				// 获取详情失败，跳过此条目（与 Python 行为一致）
-				slog.Warn("文章详情获取失败，跳过", "post_id", post.PostID, "error", err)
+				contents[i] = cached
+				contentOK[i] = true
 				continue
 			}
-			if articleStore != nil {
-				articleStore.Save("afdian", post.PostID, content)
+		}
+		missing = append(missing, i)
+	}
+
+	detailFn := r.getPostDetail
+	if r.getPostDetailFn != nil {
+		detailFn = r.getPostDetailFn
+	}
+
+	var wg sync.WaitGroup
+	for _, idx := range missing {
+		idx := idx
+		postID := posts[idx].PostID
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			content, err := detailFn(sc, postID)
+			if err != nil {
+				// 获取详情失败，跳过此条目（与 Python 行为一致）
+				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
+				return
+			}
+			contents[idx] = content
+			contentOK[idx] = true
+		}()
+	}
+	wg.Wait()
+
+	for _, idx := range missing {
+		if articleStore != nil && contentOK[idx] {
+			if err := articleStore.Save("afdian", posts[idx].PostID, contents[idx]); err != nil {
+				slog.Warn("文章详情落库失败", "post_id", posts[idx].PostID, "error", err)
 			}
 		}
+	}
 
+	// 构建 FeedItem，保持帖子列表原始顺序。
+	items := make([]route.FeedItem, 0, len(posts))
+	for i, post := range posts {
+		if !contentOK[i] {
+			continue
+		}
 		// 解析发布时间
 		var pubDate *time.Time
 		if post.PublishTime > 0 {
@@ -206,7 +234,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		item := route.FeedItem{
 			Title:      post.Title,
 			Link:       fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
-			Content:    content,
+			Content:    contents[i],
 			PubDate:    pubDate,
 			Author:     post.User.Name,
 			GUID:       post.PostID,
@@ -333,4 +361,3 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 	}
 	return detail.Post.Content, nil
 }
-

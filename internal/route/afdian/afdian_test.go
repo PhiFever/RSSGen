@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
@@ -287,6 +289,44 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 		}
 		if item.Content != fmt.Sprintf("<p>%s</p>", expectedGUIDs[i]) {
 			t.Errorf("items[%d].Content = %q", i, item.Content)
+		}
+	}
+}
+
+func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("p1"), makePost("p2"), makePost("p3")}, nil
+	}
+
+	var active int32
+	var maxActive int32
+	r.getPostDetailFn = func(_ *scraper.Scraper, postID string) (string, error) {
+		current := atomic.AddInt32(&active, 1)
+		for {
+			max := atomic.LoadInt32(&maxActive)
+			if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		atomic.AddInt32(&active, -1)
+		return fmt.Sprintf("<p>%s</p>", postID), nil
+	}
+
+	items, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 20})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if atomic.LoadInt32(&maxActive) < 2 {
+		t.Fatalf("详情抓取应并发执行，maxActive=%d", maxActive)
+	}
+	for i, want := range []string{"p1", "p2", "p3"} {
+		if items[i].GUID != want {
+			t.Fatalf("items[%d].GUID = %q, want %q", i, items[i].GUID, want)
 		}
 	}
 }

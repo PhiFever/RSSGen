@@ -46,16 +46,17 @@ type ScraperConfig struct {
 
 // RefresherConfig 是后台刷新器配置。
 type RefresherConfig struct {
-	StartupDelay   int `yaml:"startup_delay"`
-	MaxRetries     int `yaml:"max_retries"`
-	RetryBaseDelay int `yaml:"retry_base_delay"`
+	StartupDelay   int    `yaml:"startup_delay"`
+	MaxRetries     int    `yaml:"max_retries"`
+	RetryBaseDelay int    `yaml:"retry_base_delay"`
+	PreinitURL     string `yaml:"preinit_url"`
 }
 
 // NotifierConfig 是通知配置。
 type NotifierConfig struct {
-	Enabled            bool                   `yaml:"enabled"`
-	ServiceURLs        []string               `yaml:"service_urls"`        // 兼容旧配置（仅打日志）
-	BusinessErrorCodes []int                  `yaml:"business_error_codes"` // 自定义业务错误码，为空时使用默认值
+	Enabled            bool                    `yaml:"enabled"`
+	ServiceURLs        []string                `yaml:"service_urls"`         // 兼容旧配置（仅打日志）
+	BusinessErrorCodes []int                   `yaml:"business_error_codes"` // 自定义业务错误码，为空时使用默认值
 	Services           []NotifierServiceConfig `yaml:"services"`
 }
 
