@@ -448,6 +448,29 @@ func TestMakeFeedItemPinType(t *testing.T) {
 	}
 }
 
+func TestMakeFeedItemPinVideoBlockLogsOriginalURL(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	r := newTestRoute()
+	target := map[string]interface{}{
+		"id": "111", "type": "pin",
+		"content": []interface{}{
+			map[string]interface{}{"type": PinBlockVideo, "url": "https://www.zhihu.com/video/123"},
+		},
+	}
+	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", "发布了想法"))
+	if item.Link != "https://www.zhihu.com/pin/111" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, PinBlockVideo) || !strings.Contains(logs, item.Link) {
+		t.Errorf("video block 应输出带 pin 原文链接的 slog.Warn, 实得日志: %q", logs)
+	}
+}
+
 func TestMakeFeedItemPinFallsBackToExcerptTitle(t *testing.T) {
 	r := newTestRoute()
 	target := map[string]interface{}{
@@ -668,7 +691,7 @@ func TestRenderPinContentTextBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"content": "纯文本内容"},
 	}
-	got := renderPinContent(blocks)
+	got := renderPinContent(blocks, "")
 	if !strings.Contains(got, "纯文本内容") {
 		t.Errorf("应包含文本内容, 实得 %q", got)
 	}
@@ -678,7 +701,7 @@ func TestRenderPinContentHTMLPreserved(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"content": "<p>带有<b>HTML</b>标签的内容</p>"},
 	}
-	got := renderPinContent(blocks)
+	got := renderPinContent(blocks, "")
 	if strings.Contains(got, "&lt;") || strings.Contains(got, "&gt;") {
 		t.Errorf("HTML 标签不应被转义, 实得 %q", got)
 	}
@@ -691,7 +714,7 @@ func TestRenderPinContentImageBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "image", "original_url": "https://pic.zhimg.com/img.jpg"},
 	}
-	got := renderPinContent(blocks)
+	got := renderPinContent(blocks, "")
 	if !strings.Contains(got, "https://pic.zhimg.com/img.jpg") {
 		t.Errorf("应包含图片URL, 实得 %q", got)
 	}
@@ -701,9 +724,30 @@ func TestRenderPinContentLinkCard(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "link_card", "url": "https://example.com", "data_draft_title": "链接标题"},
 	}
-	got := renderPinContent(blocks)
+	got := renderPinContent(blocks, "")
 	if !strings.Contains(got, "https://example.com") || !strings.Contains(got, "链接标题") {
 		t.Errorf("应包含链接和标题, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentKnownVideoBlock(t *testing.T) {
+	// 捕获 slog 输出
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	zhihuURL := "https://www.zhihu.com/pin/123"
+	blocks := []interface{}{
+		map[string]interface{}{"type": PinBlockVideo, "url": "https://www.zhihu.com/video/123"},
+	}
+	got := renderPinContent(blocks, zhihuURL)
+	if got != "" {
+		t.Errorf("video block 暂不渲染内容, 实得 %q", got)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, PinBlockVideo) || !strings.Contains(logs, zhihuURL) {
+		t.Errorf("video block 应输出带原文链接的 slog.Warn, 实得日志: %q", logs)
 	}
 }
 
@@ -714,16 +758,18 @@ func TestRenderPinContentUnknownBlockType(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(old)
 
+	zhihuURL := "https://www.zhihu.com/pin/456"
 	blocks := []interface{}{
 		map[string]interface{}{"type": "future_block_type", "foo": "bar"},
 	}
-	got := renderPinContent(blocks)
+	got := renderPinContent(blocks, zhihuURL)
 	if got != "" {
 		t.Errorf("未知 block type 应返回空串, 实得 %q", got)
 	}
 	// 应输出告警日志
-	if !strings.Contains(buf.String(), "future_block_type") {
-		t.Errorf("未知 block type 应输出 slog.Warn, 实得日志: %q", buf.String())
+	logs := buf.String()
+	if !strings.Contains(logs, "future_block_type") || !strings.Contains(logs, zhihuURL) {
+		t.Errorf("未知 block type 应输出带原文链接的 slog.Warn, 实得日志: %q", logs)
 	}
 }
 

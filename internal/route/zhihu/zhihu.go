@@ -31,6 +31,13 @@ const (
 	TypeFollowedQuestion = "followed_question"
 )
 
+// PIN 内容 block 类型常量。
+const (
+	PinBlockImage    = "image"
+	PinBlockLinkCard = "link_card"
+	PinBlockVideo    = "video"
+)
+
 // verbCategoryMap 将 verb 映射到 category。
 var verbCategoryMap = map[string]string{
 	"MEMBER_ANSWER_QUESTION": TypeAnswer,
@@ -376,7 +383,7 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 	// 获取内容
 	var content string
 	if rawContent, ok := target["content"].([]interface{}); ok {
-		content = renderPinContent(rawContent)
+		content = renderPinContent(rawContent, link)
 	} else if rawContent, ok := target["content"].(string); ok {
 		content = rawContent
 	} else if detail, ok := target["detail"].(string); ok {
@@ -454,7 +461,7 @@ func isSelfInteraction(act map[string]interface{}) bool {
 }
 
 // renderPinContent 将 PIN 类型的 content blocks 渲染为 HTML。
-func renderPinContent(blocks []interface{}) string {
+func renderPinContent(blocks []interface{}, zhihuURL string) string {
 	var parts []string
 	for _, block := range blocks {
 		blockMap, ok := block.(map[string]interface{})
@@ -467,7 +474,7 @@ func renderPinContent(blocks []interface{}) string {
 		}
 		blockType, _ := blockMap["type"].(string)
 		switch blockType {
-		case "image":
+		case PinBlockImage:
 			url, _ := blockMap["original_url"].(string)
 			if url == "" {
 				url, _ = blockMap["url"].(string)
@@ -475,7 +482,7 @@ func renderPinContent(blocks []interface{}) string {
 			if url != "" {
 				parts = append(parts, fmt.Sprintf(`<img src="%s" />`, html.EscapeString(url)))
 			}
-		case "link_card":
+		case PinBlockLinkCard:
 			url, _ := blockMap["url"].(string)
 			linkTitle, _ := blockMap["data_draft_title"].(string)
 			if linkTitle == "" {
@@ -484,9 +491,11 @@ func renderPinContent(blocks []interface{}) string {
 			if url != "" {
 				parts = append(parts, fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(url), html.EscapeString(linkTitle)))
 			}
+		case PinBlockVideo:
+			slog.Warn("知乎 pin video block 暂未渲染", "block_type", blockType, "zhihu_url", zhihuURL)
 		default:
 			if blockType != "" {
-				slog.Warn("未识别的知乎 pin block 类型", "block_type", blockType)
+				slog.Warn("未识别的知乎 pin block 类型", "block_type", blockType, "zhihu_url", zhihuURL)
 			}
 		}
 	}
