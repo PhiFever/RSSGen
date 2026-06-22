@@ -969,6 +969,19 @@ class TestZhihuRouteFetchActivitiesPagination:
         assert scraper.get.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_raises_when_first_page_is_empty_and_end(
+        self, monkeypatch, route_with_dc0
+    ):
+        """首屏空数据且 is_end=True 时显式报错，避免错误用户名静默生成空 feed"""
+        page1 = _make_page([], next_url=None, is_end=True)
+        scraper = _patch_scraper(monkeypatch, [page1])
+
+        with pytest.raises(ValueError, match="不存在或没有可见动态"):
+            await route_with_dc0._fetch_activities("missing_user", limit=20)
+
+        assert scraper.get.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_uses_paging_next_url(self, monkeypatch, route_with_dc0):
         """第二次请求使用 paging.next 中的完整 URL"""
         next_url = "https://www.zhihu.com/api/v3/moments/u/activities?offset=1777652939991&page_num=1"

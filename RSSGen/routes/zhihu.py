@@ -312,9 +312,13 @@ class ZhihuRoute(Route):
             resp.raise_for_status()
 
             data = resp.json()
-            activities.extend(data.get("data", []))
-
             paging = data.get("paging", {})
+            page_activities = data.get("data", [])
+            if not activities and not page_activities and paging.get("is_end"):
+                raise ValueError(f"知乎用户 {user_id} 不存在或没有可见动态")
+
+            activities.extend(page_activities)
+
             if paging.get("is_end"):
                 break
             next_url = paging.get("next")
