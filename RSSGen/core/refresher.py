@@ -1,6 +1,7 @@
 """后台调度器：路由无关的预热与定期刷新"""
 
 import asyncio
+import random
 from datetime import datetime, timezone
 
 from curl_cffi.const import CurlOpt
@@ -110,6 +111,35 @@ class BackgroundRefresher:
             k: v for k, v in feed_conf.items() if k != feed_id_field and k != "alias"
         }
 
+    def _get_refresh_jitter(self, route_name: str) -> float:
+        """读取路由级定时刷新随机抖动秒数，缺省或非法值均视为关闭。"""
+        route_conf = self.config.get("routes", {}).get(route_name, {})
+        raw_jitter = route_conf.get("refresh_jitter", 0) or 0
+        try:
+            jitter = float(raw_jitter)
+        except (TypeError, ValueError):
+            logger.warning(f"[{route_name}] refresh_jitter={raw_jitter!r} 非法，已忽略")
+            return 0
+        if jitter < 0:
+            logger.warning(f"[{route_name}] refresh_jitter={raw_jitter!r} 为负数，已忽略")
+            return 0
+        return jitter
+
+    async def _sleep_refresh_jitter(
+        self, label: str, route_name: str, feed_id: str
+    ) -> None:
+        """仅对定时刷新应用随机抖动；预热和动态触发保持即时执行。"""
+        if label != "定时刷新":
+            return
+        max_jitter = self._get_refresh_jitter(route_name)
+        if max_jitter <= 0:
+            return
+        delay = random.uniform(0, max_jitter)
+        if delay <= 0:
+            return
+        logger.info(f"[{route_name}/{feed_id}] 定时刷新随机延迟 {delay:.2f} 秒")
+        await asyncio.sleep(delay)
+
     def get_status(self) -> dict:
         """返回按路由分组的状态"""
         grouped: dict[str, dict] = {}
@@ -198,6 +228,7 @@ class BackgroundRefresher:
                     f"[{route_name}] feed 配置缺少 {feed_id_field} 字段，跳过: {feed_conf}"
                 )
                 continue
+            await self._sleep_refresh_jitter(label, route_name, feed_id)
             fetch_kwargs = self._passthrough_fields(feed_conf, feed_id_field)
             await self._refresh_one(route_name, [feed_id], fetch_kwargs=fetch_kwargs)
         logger.info(f"[{route_name}] {label}完成")

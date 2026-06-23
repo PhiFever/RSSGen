@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from RSSGen.core.cache import Cache
 from RSSGen.core.notifier import Notifier
@@ -278,6 +278,75 @@ class TestRefreshInterval:
         await refresher._run_route_loop("afdian")
 
 
+# ── refresh_jitter 随机错峰 ───────────────────────────────
+
+
+class TestRefreshJitter:
+    @pytest.mark.asyncio
+    async def test_no_jitter_config_preserves_immediate_refresh(
+        self, caches, multi_route_config
+    ):
+        """未配置 refresh_jitter 时，定时刷新不额外 sleep。"""
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
+
+        with (
+            patch("RSSGen.core.refresher.asyncio.sleep", new_callable=AsyncMock) as sleep,
+            patch.object(refresher, "_refresh_one", new_callable=AsyncMock) as refresh,
+        ):
+            await refresher._refresh_feeds("定时刷新", "zhihu")
+
+        sleep.assert_not_awaited()
+        refresh.assert_awaited_once_with(
+            "zhihu", ["user1"], fetch_kwargs={"limit": 10}
+        )
+
+    @pytest.mark.asyncio
+    async def test_jitter_applies_before_each_scheduled_feed(
+        self, caches, multi_route_config
+    ):
+        """定时刷新配置 refresh_jitter 时，每个 feed 刷新前随机等待。"""
+        multi_route_config["routes"]["zhihu"]["refresh_jitter"] = 30
+        multi_route_config["routes"]["zhihu"]["feeds"] = [
+            {"user_id": "user1", "limit": 10},
+            {"user_id": "user2", "limit": 20},
+        ]
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
+
+        with (
+            patch("RSSGen.core.refresher.random.uniform", side_effect=[3.0, 7.5]) as uniform,
+            patch("RSSGen.core.refresher.asyncio.sleep", new_callable=AsyncMock) as sleep,
+            patch.object(refresher, "_refresh_one", new_callable=AsyncMock) as refresh,
+        ):
+            await refresher._refresh_feeds("定时刷新", "zhihu")
+
+        assert uniform.call_args_list == [call(0, 30.0), call(0, 30.0)]
+        assert sleep.await_args_list == [call(3.0), call(7.5)]
+        assert refresh.await_args_list == [
+            call("zhihu", ["user1"], fetch_kwargs={"limit": 10}),
+            call("zhihu", ["user2"], fetch_kwargs={"limit": 20}),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_jitter_does_not_apply_to_preheat(self, caches, multi_route_config):
+        """预热阶段保持即时执行，不使用 refresh_jitter。"""
+        multi_route_config["routes"]["zhihu"]["refresh_jitter"] = 30
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
+
+        with (
+            patch("RSSGen.core.refresher.asyncio.sleep", new_callable=AsyncMock) as sleep,
+            patch.object(refresher, "_refresh_one", new_callable=AsyncMock) as refresh,
+        ):
+            await refresher._refresh_feeds("预热", "zhihu")
+
+        sleep.assert_not_awaited()
+        refresh.assert_awaited_once_with(
+            "zhihu", ["user1"], fetch_kwargs={"limit": 10}
+        )
+
+
 # ── preinit ───────────────────────────────────────────────
 
 
@@ -389,6 +458,28 @@ class TestFetchKwargsPassthrough:
             assert call_kwargs["custom_param"] == "value"
             assert "user_id" not in call_kwargs  # feed_id_field 不透传
             assert "alias" not in call_kwargs  # alias 不透传
+
+    @pytest.mark.asyncio
+    async def test_zhihu_include_passed_to_fetch(self, caches, multi_route_config):
+        """zhihu feed_conf 中的 include 与 limit 原样透传给 fetch"""
+        multi_route_config["routes"]["zhihu"]["feeds"] = [
+            {
+                "user_id": "user1",
+                "alias": "用户A",
+                "limit": 15,
+                "include": ["answer", "article"],
+            }
+        ]
+        feed_cache, article_store = caches
+        refresher = BackgroundRefresher(feed_cache, article_store, multi_route_config)
+
+        with patch.object(refresher, "_refresh_one", new_callable=AsyncMock) as mock:
+            await refresher._refresh_feeds("测试", "zhihu")
+            call_kwargs = mock.call_args.kwargs["fetch_kwargs"]
+            assert call_kwargs["limit"] == 15
+            assert call_kwargs["include"] == ["answer", "article"]
+            assert "user_id" not in call_kwargs
+            assert "alias" not in call_kwargs
 
 
 # ── notifier 集成：业务错误禁用 feed ──────────────────────
