@@ -1,9 +1,8 @@
 name: Build and Push Go Docker Image
 
 on:
-  push:
-    branches:
-      - go
+  # Go 版已切到 main，保留该 workflow 仅供手动临时回溯使用。
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
