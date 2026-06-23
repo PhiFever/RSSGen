@@ -76,6 +76,7 @@ type RouteConfig struct {
 	Impersonate            *string      `yaml:"impersonate,omitempty"`
 	PreheatOnStartup       bool         `yaml:"preheat_on_startup"`
 	RefreshInterval        int          `yaml:"refresh_interval"`
+	RefreshJitter          int          `yaml:"refresh_jitter"`
 	Feeds                  []FeedConfig `yaml:"feeds"`
 	DefaultInclude         []string     `yaml:"default_include,omitempty"`
 	IncludeSelfInteraction *bool        `yaml:"include_self_interaction,omitempty"`

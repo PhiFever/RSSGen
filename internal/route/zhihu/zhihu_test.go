@@ -23,6 +23,20 @@ func withZhihuTestHost(t *testing.T, url string) {
 	t.Cleanup(func() { zhihuHostURL = old })
 }
 
+func writeZhihuJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Fatalf("写入 JSON 响应失败: %v", err)
+	}
+}
+
+func writeZhihuBody(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatalf("写入响应失败: %v", err)
+	}
+}
+
 func TestRouteMetadataAndScraper(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test;", RateLimit: 0.001})
 	if r.Name() != "zhihu" {
@@ -49,7 +63,7 @@ func TestFetchActivitiesPaginationAndActor(t *testing.T) {
 		page++
 		switch page {
 		case 1:
-			json.NewEncoder(w).Encode(map[string]any{
+			writeZhihuJSON(t, w, map[string]any{
 				"data": []map[string]any{{
 					"actor": map[string]any{"name": "Alice", "headline": "Hello"},
 					"target": map[string]any{
@@ -63,7 +77,7 @@ func TestFetchActivitiesPaginationAndActor(t *testing.T) {
 				},
 			})
 		case 2:
-			json.NewEncoder(w).Encode(map[string]any{
+			writeZhihuJSON(t, w, map[string]any{
 				"data": []map[string]any{{
 					"target": map[string]any{
 						"type": "article",
@@ -116,7 +130,7 @@ func TestFetchActivitiesErrors(t *testing.T) {
 
 	t.Run("invalid json", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{bad json`))
+			writeZhihuBody(t, w, `{bad json`)
 		}))
 		defer server.Close()
 		withZhihuTestHost(t, server.URL)
@@ -1213,24 +1227,6 @@ func TestFetchBuildsCorrectHeaders(t *testing.T) {
 }
 
 // --- Fetch 分页测试（迁移自 Python TestZhihuRouteFetchActivitiesPagination） ---
-
-// mockPagedFetchActivities 创建模拟分页行为的 fetchActivitiesFunc。
-// pages 是每页返回的 activities 列表，paging 控制每页的翻页信息。
-func mockPagedFetchActivities(pages [][]map[string]interface{}, isEnds []bool) fetchActivitiesFunc {
-	callCount := 0
-	return func(userID string, limit int) ([]map[string]interface{}, error) {
-		if callCount >= len(pages) {
-			return nil, fmt.Errorf("unexpected call #%d", callCount)
-		}
-		result := pages[callCount]
-		callCount++
-		// 截断到 limit
-		if len(result) > limit {
-			return result[:limit], nil
-		}
-		return result, nil
-	}
-}
 
 func TestFetchStopsWhenLimitReached(t *testing.T) {
 	activities := []map[string]interface{}{

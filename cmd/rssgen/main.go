@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -47,7 +48,11 @@ func main() {
 		slog.Error("初始化运行时失败", "error", err)
 		os.Exit(1)
 	}
-	defer app.articleStore.Close()
+	defer func() {
+		if err := app.articleStore.Close(); err != nil {
+			slog.Error("关闭文章存储失败", "error", err)
+		}
+	}()
 
 	// 优雅关停
 	done := make(chan os.Signal, 1)
@@ -148,7 +153,9 @@ func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if ref == nil {
-			w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`))
+			if _, err := w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`)); err != nil {
+				slog.Error("写入状态响应失败", "error", err)
+			}
 			return
 		}
 		resp := map[string]any{
@@ -171,7 +178,7 @@ func makeRouter(
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.RealIP)
+	// 不接入已弃用的 RealIP；当前服务不基于客户端 IP 做信任决策。
 
 	// 首页：列出所有路由
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -182,8 +189,15 @@ func makeRouter(
 			result[name] = routeInst.Description()
 		}
 		w.Header().Set("Content-Type", "application/json")
-		routesJSON, _ := json.Marshal(result)
-		fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON)
+		routesJSON, err := json.Marshal(result)
+		if err != nil {
+			slog.Error("编码路由列表失败", "error", err)
+			http.Error(w, "编码路由列表失败", http.StatusInternalServerError)
+			return
+		}
+		if _, err := fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON); err != nil {
+			slog.Error("写入首页响应失败", "error", err)
+		}
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
@@ -238,7 +252,9 @@ func makeFeedHandler(
 		// 检查缓存
 		if cached, ok := feedCache.Get(cacheKey); ok {
 			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-			w.Write([]byte(cached))
+			if _, err := w.Write([]byte(cached)); err != nil {
+				slog.Error("写入缓存 feed 响应失败", "route", routeName, "error", err)
+			}
 			return
 		}
 
@@ -261,7 +277,9 @@ func makeFeedHandler(
 			Limit: 20,
 		}
 		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			fmt.Sscanf(limitStr, "%d", &opts.Limit)
+			if limit, err := strconv.Atoi(limitStr); err == nil {
+				opts.Limit = limit
+			}
 		}
 		if includeStr := r.URL.Query().Get("include"); includeStr != "" {
 			opts.Include = strings.Split(includeStr, ",")
@@ -297,6 +315,8 @@ func makeFeedHandler(
 		feedCache.Set(cacheKey, xml)
 
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-		w.Write([]byte(xml))
+		if _, err := w.Write([]byte(xml)); err != nil {
+			slog.Error("写入 feed 响应失败", "route", routeName, "error", err)
+		}
 	}
 }

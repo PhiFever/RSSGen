@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,7 +60,20 @@ type Refresher struct {
 	pendingMu  sync.Mutex
 	errorStats map[string]*ErrorStatus
 	statsMu    sync.RWMutex
+
+	jitterDurationFn func(time.Duration) time.Duration
+	sleepFn          func(time.Duration) bool
 }
+
+type refreshPhase struct {
+	label     string
+	scheduled bool
+}
+
+var (
+	refreshPhasePreheat   = refreshPhase{label: "预热"}
+	refreshPhaseScheduled = refreshPhase{label: "定时刷新", scheduled: true}
+)
 
 // ErrorStatus 记录 feed 的错误状态。
 type ErrorStatus struct {
@@ -131,7 +147,7 @@ func (r *Refresher) preinitHTTPClient() {
 		slog.Warn("HTTP 客户端预初始化失败", "url", r.preinitURL, "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		slog.Warn("HTTP 客户端预初始化响应异常", "url", r.preinitURL, "status", resp.StatusCode)
 		return
@@ -141,6 +157,13 @@ func (r *Refresher) preinitHTTPClient() {
 
 func shouldScheduleRoute(rc config.RouteConfig) bool {
 	return rc.Enabled && (rc.PreheatOnStartup || rc.RefreshInterval > 0)
+}
+
+func defaultJitterDuration(max time.Duration) time.Duration {
+	if max <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(max)))
 }
 
 // Stop 停止所有后台刷新任务。
@@ -212,7 +235,7 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 			slog.Info("路由已有数据，跳过预热", "route", routeName)
 		} else {
 			slog.Info("开始预热", "route", routeName)
-			r.refreshFeeds("预热", routeName, rc)
+			r.refreshFeeds(refreshPhasePreheat, routeName, rc)
 		}
 	} else {
 		slog.Info("预热已关闭", "route", routeName)
@@ -233,13 +256,14 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 		case <-r.ctx.Done():
 			return
 		case <-ticker.C:
-			r.refreshFeeds("定时刷新", routeName, rc)
+			r.refreshFeeds(refreshPhaseScheduled, routeName, rc)
 		}
 	}
 }
 
 // refreshFeeds 刷新路由下的所有 feed。
-func (r *Refresher) refreshFeeds(label string, routeName string, rc config.RouteConfig) {
+func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config.RouteConfig) {
+	label := phase.label
 	if len(rc.Feeds) == 0 {
 		slog.Info("未配置 feed 列表，跳过", "route", routeName, "label", label)
 		return
@@ -251,14 +275,47 @@ func (r *Refresher) refreshFeeds(label string, routeName string, rc config.Route
 			slog.Warn("feed 配置缺少 user_id，跳过", "route", routeName)
 			continue
 		}
+		if !r.sleepRefreshJitter(phase, routeName, fc.UserID, rc) {
+			return
+		}
 		pathParams := []string{fc.UserID}
 		extraParams := make(map[string]string)
 		if fc.Limit > 0 {
 			extraParams["limit"] = fmt.Sprintf("%d", fc.Limit)
 		}
+		if len(fc.Include) > 0 {
+			extraParams["include"] = strings.Join(fc.Include, ",")
+		}
 		r.refreshOne(routeName, pathParams, extraParams)
 	}
 	slog.Info("刷新完成", "route", routeName, "label", label)
+}
+
+func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, feedID string, rc config.RouteConfig) bool {
+	if !phase.scheduled || rc.RefreshJitter <= 0 {
+		return true
+	}
+
+	maxJitter := time.Duration(rc.RefreshJitter) * time.Second
+	jitterDuration := defaultJitterDuration
+	if r.jitterDurationFn != nil {
+		jitterDuration = r.jitterDurationFn
+	}
+	delay := jitterDuration(maxJitter)
+	if delay <= 0 {
+		return true
+	}
+
+	slog.Info("定时刷新随机延迟", "route", routeName, "feed", feedID, "delay", delay)
+	if r.sleepFn != nil {
+		return r.sleepFn(delay)
+	}
+	select {
+	case <-r.ctx.Done():
+		return false
+	case <-time.After(delay):
+		return true
+	}
 }
 
 // refreshOne 刷新单个 feed。
@@ -298,7 +355,12 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 		Limit: 20,
 	}
 	if v, ok := extraParams["limit"]; ok {
-		fmt.Sscanf(v, "%d", &opts.Limit)
+		if limit, err := strconv.Atoi(v); err == nil {
+			opts.Limit = limit
+		}
+	}
+	if v, ok := extraParams["include"]; ok && v != "" {
+		opts.Include = strings.Split(v, ",")
 	}
 
 	var lastErr error

@@ -148,7 +148,9 @@ func New(cfg Config) (*Scraper, error) {
 
 	// 设置代理
 	if cfg.Proxy != "" {
-		client.SetProxy(cfg.Proxy)
+		if err := client.SetProxy(cfg.Proxy); err != nil {
+			return nil, fmt.Errorf("设置代理失败: %w", err)
+		}
 	}
 
 	s := &Scraper{
@@ -222,7 +224,7 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 	if err != nil {
 		return nil, fmt.Errorf("%s 请求失败 %s: %w", method, url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

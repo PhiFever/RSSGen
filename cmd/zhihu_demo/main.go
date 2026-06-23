@@ -117,8 +117,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "标准请求失败: %v\n", err)
 	} else {
-		bodyBytes, _ := io.ReadAll(stdResp.Body)
-		stdResp.Body.Close()
+		bodyBytes, readErr := io.ReadAll(stdResp.Body)
+		if closeErr := stdResp.Body.Close(); closeErr != nil {
+			fmt.Fprintf(os.Stderr, "关闭标准请求响应失败: %v\n", closeErr)
+		}
+		if readErr != nil {
+			fmt.Fprintf(os.Stderr, "读取标准请求响应失败: %v\n", readErr)
+			return
+		}
 		fmt.Printf("状态码: %d\n", stdResp.StatusCode)
 		if stdResp.StatusCode != 200 {
 			fmt.Printf("响应: %s\n", string(bodyBytes[:min(len(bodyBytes), 500)]))
@@ -137,4 +143,3 @@ func extractDC0(cookie string) (string, error) {
 	}
 	return matches[1], nil
 }
-

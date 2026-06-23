@@ -117,7 +117,9 @@ func TestNotifyWithFeishuService(t *testing.T) {
 	received := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- struct{}{}
-		w.Write([]byte(`{"code":0,"msg":"success"}`))
+		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -137,7 +139,9 @@ func TestNotifyWithFeishuService(t *testing.T) {
 
 func TestStateCombinationSmoke(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"code":0,"msg":"success"}`))
+		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 	n := New(Config{
@@ -167,7 +171,9 @@ func TestSendNotificationExceptionHandled(t *testing.T) {
 	// 模拟飞书 Webhook 返回错误
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"code":1,"msg":"internal error"}`))
+		if _, err := w.Write([]byte(`{"code":1,"msg":"internal error"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 

@@ -112,7 +112,7 @@ func (r *Route) getScraper() (*scraper.Scraper, error) {
 func (r *Route) getDC0() (string, error) {
 	matches := dc0Re.FindStringSubmatch(r.cfg.Cookie)
 	if len(matches) < 2 {
-		return "", fmt.Errorf("Cookie 中缺少 d_c0 字段")
+		return "", fmt.Errorf("cookie 中缺少 d_c0 字段")
 	}
 	return matches[1], nil
 }

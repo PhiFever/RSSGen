@@ -155,7 +155,11 @@ func TestBuildRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRuntime 返回错误: %v", err)
 	}
-	defer app.articleStore.Close()
+	defer func() {
+		if err := app.articleStore.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 
 	if app.server == nil || app.server.Handler == nil {
 		t.Fatal("buildRuntime 应创建 HTTP server 和 handler")
@@ -190,7 +194,11 @@ func TestBuildRuntimeStartsRefresherWhenRouteScheduled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRuntime 返回错误: %v", err)
 	}
-	defer app.articleStore.Close()
+	defer func() {
+		if err := app.articleStore.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
 	if app.refresher == nil {
 		t.Fatal("启用后台调度的路由应创建 refresher")
 	}

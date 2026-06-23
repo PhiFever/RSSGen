@@ -33,6 +33,20 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+	t.Helper()
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		t.Fatalf("写入 JSON 响应失败: %v", err)
+	}
+}
+
+func writeBody(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatalf("写入响应失败: %v", err)
+	}
+}
+
 func TestFeedInfo(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{
 		Cookie: "test",
@@ -74,7 +88,7 @@ func TestFetchWithMockServer(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			writeJSON(t, w, resp)
 
 		case "/api/post/get-list":
 			// 返回帖子列表
@@ -93,7 +107,7 @@ func TestFetchWithMockServer(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			writeJSON(t, w, resp)
 
 		case "/api/post/get-detail":
 			// 返回文章详情
@@ -105,7 +119,7 @@ func TestFetchWithMockServer(t *testing.T) {
 					},
 				},
 			}
-			json.NewEncoder(w).Encode(resp)
+			writeJSON(t, w, resp)
 
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -177,7 +191,9 @@ func makePost(postID string) afdianPost {
 func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	store := newMockStore()
 	// 预填充缓存
-	store.Save("afdian", "post1", "<p>cached content</p>")
+	if err := store.Save("afdian", "post1", "<p>cached content</p>"); err != nil {
+		t.Fatalf("预填充缓存失败: %v", err)
+	}
 
 	detailCalled := false
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
@@ -453,7 +469,7 @@ func TestGetAuthorIDSuccessAndErrors(t *testing.T) {
 			if r.URL.Query().Get("url_slug") != "alice" {
 				t.Fatalf("url_slug 未透传")
 			}
-			json.NewEncoder(w).Encode(map[string]any{
+			writeJSON(t, w, map[string]any{
 				"ec": 200,
 				"data": map[string]any{
 					"user": map[string]any{"user_id": "uid-alice"},
@@ -487,7 +503,7 @@ func TestGetAuthorIDSuccessAndErrors(t *testing.T) {
 
 	t.Run("missing user id", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{
+			writeJSON(t, w, map[string]any{
 				"ec":   200,
 				"data": map[string]any{"user": map[string]any{}},
 			})
@@ -509,7 +525,7 @@ func TestGetPostListPaginationAndLimit(t *testing.T) {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		page++
-		list := []map[string]any{}
+		var list []map[string]any
 		switch page {
 		case 1:
 			list = []map[string]any{
@@ -526,7 +542,7 @@ func TestGetPostListPaginationAndLimit(t *testing.T) {
 		default:
 			t.Fatalf("不应请求第 %d 页", page)
 		}
-		json.NewEncoder(w).Encode(map[string]any{
+		writeJSON(t, w, map[string]any{
 			"ec":   200,
 			"data": map[string]any{"list": list},
 		})
@@ -546,7 +562,7 @@ func TestGetPostListPaginationAndLimit(t *testing.T) {
 func TestGetPostListEmptyAndInvalidResponse(t *testing.T) {
 	t.Run("empty data stops", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{"ec": 200})
+			writeJSON(t, w, map[string]any{"ec": 200})
 		}))
 		defer server.Close()
 		withTestHost(t, server.URL)
@@ -562,7 +578,7 @@ func TestGetPostListEmptyAndInvalidResponse(t *testing.T) {
 
 	t.Run("invalid list json", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"ec":200,"data":{"list":"bad"}}`))
+			writeBody(t, w, `{"ec":200,"data":{"list":"bad"}}`)
 		}))
 		defer server.Close()
 		withTestHost(t, server.URL)
@@ -593,7 +609,7 @@ func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
 			if r.URL.Path != "/api/post/get-detail" || r.URL.Query().Get("post_id") != "p1" {
 				t.Fatalf("unexpected request %s", r.URL.String())
 			}
-			json.NewEncoder(w).Encode(map[string]any{
+			writeJSON(t, w, map[string]any{
 				"ec":   200,
 				"data": map[string]any{"post": map[string]any{"content": "<p>body</p>"}},
 			})
@@ -612,7 +628,7 @@ func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
 
 	t.Run("empty data", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			json.NewEncoder(w).Encode(map[string]any{"ec": 200})
+			writeJSON(t, w, map[string]any{"ec": 200})
 		}))
 		defer server.Close()
 		withTestHost(t, server.URL)
@@ -628,7 +644,7 @@ func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
 
 	t.Run("api error", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"ec":500,"em":"bad"}`))
+			writeBody(t, w, `{"ec":500,"em":"bad"}`)
 		}))
 		defer server.Close()
 		withTestHost(t, server.URL)
@@ -641,7 +657,7 @@ func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
 
 	t.Run("invalid detail json", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte(`{"ec":200,"data":{"post":"bad"}}`))
+			writeBody(t, w, `{"ec":200,"data":{"post":"bad"}}`)
 		}))
 		defer server.Close()
 		withTestHost(t, server.URL)

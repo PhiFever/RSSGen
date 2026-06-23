@@ -86,6 +86,31 @@ routes: {}
 	}
 }
 
+func TestLoadParsesRouteRefreshJitter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := []byte(`
+routes:
+  zhihu:
+    enabled: true
+    refresh_interval: 14400
+    refresh_jitter: 900
+    feeds:
+      - user_id: "u1"
+        limit: 20
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("写入临时配置失败: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.Routes["zhihu"].RefreshJitter != 900 {
+		t.Fatalf("RefreshJitter = %d, want 900", cfg.Routes["zhihu"].RefreshJitter)
+	}
+}
+
 func TestLoadErrors(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "missing.yml")); err == nil {
 		t.Fatal("缺失配置文件应返回错误")

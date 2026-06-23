@@ -46,18 +46,6 @@ func Generate(info *route.FeedInfo, items []route.FeedItem, format string) (stri
 	}
 }
 
-// atomFeed 是 Atom 1.0 feed 的 XML 结构。
-type atomFeed struct {
-	XMLName  xml.Name    `xml:"feed"`
-	Xmlns    string      `xml:"xmlns,attr"`
-	Title    string      `xml:"title"`
-	Subtitle string      `xml:"subtitle,omitempty"`
-	ID       string      `xml:"id"`
-	Link     atomLink    `xml:"link"`
-	Updated  string      `xml:"updated"`
-	Entries  []atomEntry `xml:"entry"`
-}
-
 type atomLink struct {
 	Href string `xml:"href,attr"`
 	Rel  string `xml:"rel,attr,omitempty"`
@@ -174,7 +162,7 @@ func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) 
 		entryEnc := xml.NewEncoder(&entryBuf)
 		entryEnc.Indent("", "  ")
 		if err := entryEnc.Encode(entry); err != nil {
-			return "", fmt.Errorf("Atom entry XML 编码失败: %w", err)
+			return "", fmt.Errorf("atom entry XML 编码失败: %w", err)
 		}
 		entryStr := entryBuf.String()
 
@@ -210,17 +198,33 @@ func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) 
 		entriesXML = append(entriesXML, entryStr)
 	}
 
+	escapedTitle, err := xmlEscape(info.Title)
+	if err != nil {
+		return "", fmt.Errorf("atom title XML 转义失败: %w", err)
+	}
+	escapedLink, err := xmlEscape(info.Link)
+	if err != nil {
+		return "", fmt.Errorf("atom link XML 转义失败: %w", err)
+	}
+	var escapedDescription string
+	if info.Description != "" {
+		escapedDescription, err = xmlEscape(info.Description)
+		if err != nil {
+			return "", fmt.Errorf("atom subtitle XML 转义失败: %w", err)
+		}
+	}
+
 	// 构建完整 feed XML
 	var buf bytes.Buffer
 	buf.WriteString(xml.Header)
 	buf.WriteString(`<feed xmlns="http://www.w3.org/2005/Atom">`)
 	buf.WriteString("\n")
-	fmt.Fprintf(&buf, "  <title>%s</title>\n", xmlEscape(info.Title))
+	fmt.Fprintf(&buf, "  <title>%s</title>\n", escapedTitle)
 	if info.Description != "" {
-		fmt.Fprintf(&buf, "  <subtitle>%s</subtitle>\n", xmlEscape(info.Description))
+		fmt.Fprintf(&buf, "  <subtitle>%s</subtitle>\n", escapedDescription)
 	}
-	fmt.Fprintf(&buf, "  <id>%s</id>\n", xmlEscape(info.Link))
-	fmt.Fprintf(&buf, "  <link href=\"%s\" rel=\"alternate\"/>\n", xmlEscape(info.Link))
+	fmt.Fprintf(&buf, "  <id>%s</id>\n", escapedLink)
+	fmt.Fprintf(&buf, "  <link href=\"%s\" rel=\"alternate\"/>\n", escapedLink)
 	fmt.Fprintf(&buf, "  <updated>%s</updated>\n", now)
 	for _, entryXML := range entriesXML {
 		// 去掉 xml 声明行和外层缩进，重新缩进为 feed 内容
@@ -240,10 +244,12 @@ func generateAtom(info *route.FeedInfo, items []route.FeedItem) (string, error) 
 }
 
 // xmlEscape 转义 XML 特殊字符。
-func xmlEscape(s string) string {
+func xmlEscape(s string) (string, error) {
 	var buf bytes.Buffer
-	xml.EscapeText(&buf, []byte(s))
-	return buf.String()
+	if err := xml.EscapeText(&buf, []byte(s)); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }
 
 func generateRSS(info *route.FeedInfo, items []route.FeedItem) (string, error) {
@@ -273,9 +279,7 @@ func generateRSS(info *route.FeedInfo, items []route.FeedItem) (string, error) {
 			rItem.Author = item.Author
 		}
 
-		for _, cat := range item.Categories {
-			rItem.Category = append(rItem.Category, cat)
-		}
+		rItem.Category = append(rItem.Category, item.Categories...)
 
 		// RSS 只取第一个 enclosure
 		if len(item.Enclosures) > 0 && item.Enclosures[0].URL != "" {
@@ -299,7 +303,7 @@ func generateRSS(info *route.FeedInfo, items []route.FeedItem) (string, error) {
 	enc := xml.NewEncoder(&buf)
 	enc.Indent("", "  ")
 	if err := enc.Encode(feed); err != nil {
-		return "", fmt.Errorf("RSS XML 编码失败: %w", err)
+		return "", fmt.Errorf("rss XML 编码失败: %w", err)
 	}
 	return buf.String(), nil
 }

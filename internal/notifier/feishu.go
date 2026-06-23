@@ -30,9 +30,9 @@ func newFeishuSender(webhookURL, secret string) *feishuSender {
 
 // feishuRequest 飞书 Webhook 请求体。
 type feishuRequest struct {
-	MsgType string      `json:"msg_type"`
-	Content feishuText  `json:"content"`
-	Sign    string      `json:"sign,omitempty"`
+	MsgType string     `json:"msg_type"`
+	Content feishuText `json:"content"`
+	Sign    string     `json:"sign,omitempty"`
 }
 
 type feishuText struct {
@@ -65,7 +65,7 @@ func (f *feishuSender) Send(message string) error {
 	if err != nil {
 		return fmt.Errorf("飞书 Webhook 请求失败: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// 统一读取 Body，避免双读风险
 	respBody, err := io.ReadAll(resp.Body)

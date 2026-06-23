@@ -12,6 +12,13 @@ func tempDB(t *testing.T) string {
 	return filepath.Join(dir, "test.db")
 }
 
+func closeStore(t *testing.T, s *ArticleStore) {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
 func TestInitAndClose(t *testing.T) {
 	s := New(tempDB(t))
 	if err := s.Init(); err != nil {
@@ -30,7 +37,7 @@ func TestInitCreatesDir(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
 	if _, err := os.Stat(dbPath); err != nil {
 		t.Fatalf("expected db file to exist: %v", err)
@@ -60,7 +67,7 @@ func TestSaveAndGet(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
 	if err := s.Save("zhihu", "item1", "<p>hello</p>"); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -83,7 +90,7 @@ func TestGetMissing(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
 	content, found, err := s.Get("zhihu", "nonexistent")
 	if err != nil {
@@ -102,10 +109,14 @@ func TestSaveOverwrite(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
-	s.Save("zhihu", "item1", "old")
-	s.Save("zhihu", "item1", "new")
+	if err := s.Save("zhihu", "item1", "old"); err != nil {
+		t.Fatalf("Save old: %v", err)
+	}
+	if err := s.Save("zhihu", "item1", "new"); err != nil {
+		t.Fatalf("Save new: %v", err)
+	}
 
 	content, found, _ := s.Get("zhihu", "item1")
 	if !found {
@@ -121,7 +132,7 @@ func TestHasArticles(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
 	has, err := s.HasArticles("zhihu")
 	if err != nil {
@@ -131,7 +142,9 @@ func TestHasArticles(t *testing.T) {
 		t.Fatal("expected no articles initially")
 	}
 
-	s.Save("zhihu", "item1", "content")
+	if err := s.Save("zhihu", "item1", "content"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 
 	has, err = s.HasArticles("zhihu")
 	if err != nil {
@@ -213,7 +226,7 @@ func TestSaveAndGetUnicodeHTML(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
 	content := "<p>你好世界 🌍</p><script>alert('xss')</script>"
 	if err := s.Save("zhihu", "unicode1", content); err != nil {
@@ -238,10 +251,14 @@ func TestDifferentRoutesIsolated(t *testing.T) {
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	defer s.Close()
+	defer closeStore(t, s)
 
-	s.Save("zhihu", "item1", "zhihu内容")
-	s.Save("afdian", "item1", "afdian内容")
+	if err := s.Save("zhihu", "item1", "zhihu内容"); err != nil {
+		t.Fatalf("Save zhihu: %v", err)
+	}
+	if err := s.Save("afdian", "item1", "afdian内容"); err != nil {
+		t.Fatalf("Save afdian: %v", err)
+	}
 
 	zhihu, found, _ := s.Get("zhihu", "item1")
 	if !found || zhihu != "zhihu内容" {
@@ -260,14 +277,22 @@ func TestPersistenceSurvivesCloseAndReopen(t *testing.T) {
 
 	// 写入并关闭
 	s1 := New(path)
-	s1.Init()
-	s1.Save("zhihu", "persist1", "持久化内容")
-	s1.Close()
+	if err := s1.Init(); err != nil {
+		t.Fatalf("Init s1: %v", err)
+	}
+	if err := s1.Save("zhihu", "persist1", "持久化内容"); err != nil {
+		t.Fatalf("Save s1: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close s1: %v", err)
+	}
 
 	// 重新打开
 	s2 := New(path)
-	s2.Init()
-	defer s2.Close()
+	if err := s2.Init(); err != nil {
+		t.Fatalf("Init s2: %v", err)
+	}
+	defer closeStore(t, s2)
 
 	got, found, err := s2.Get("zhihu", "persist1")
 	if err != nil {
@@ -305,9 +330,15 @@ func TestSaveSilentWhenUninitialized(t *testing.T) {
 
 func TestGetAfterCloseReturnsNone(t *testing.T) {
 	s := New(tempDB(t))
-	s.Init()
-	s.Save("r", "i", "c")
-	s.Close()
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Save("r", "i", "c"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	content, found, err := s.Get("r", "i")
 	if err != nil {
@@ -320,8 +351,12 @@ func TestGetAfterCloseReturnsNone(t *testing.T) {
 
 func TestSaveAfterCloseReturnsError(t *testing.T) {
 	s := New(tempDB(t))
-	s.Init()
-	s.Close()
+	if err := s.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	// Go 实现：关闭后 Save 返回 error（Python 版静默吞错，行为不同）
 	err := s.Save("r", "i", "c")

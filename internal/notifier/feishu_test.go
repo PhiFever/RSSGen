@@ -39,7 +39,9 @@ func TestFeishuSenderSend(t *testing.T) {
 		contentType = r.Header.Get("Content-Type")
 		receivedBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"code":0,"msg":"success"}`))
+		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -73,8 +75,12 @@ func TestFeishuSenderSendWithSign(t *testing.T) {
 	var req feishuRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &req)
-		w.Write([]byte(`{"code":0,"msg":"success"}`))
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("解析请求失败: %v", err)
+		}
+		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -95,7 +101,9 @@ func TestFeishuSenderSendWithSign(t *testing.T) {
 func TestFeishuSenderSendError(t *testing.T) {
 	// 模拟飞书返回错误
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"code":9499,"msg":"bad request"}`))
+		if _, err := w.Write([]byte(`{"code":9499,"msg":"bad request"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -109,7 +117,9 @@ func TestFeishuSenderSendError(t *testing.T) {
 func TestFeishuSenderSendHTTPError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		w.Write([]byte("forbidden"))
+		if _, err := w.Write([]byte("forbidden")); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -122,7 +132,9 @@ func TestFeishuSenderSendHTTPError(t *testing.T) {
 
 func TestFeishuSenderSendInvalidJSONResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{bad json`))
+		if _, err := w.Write([]byte(`{bad json`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 

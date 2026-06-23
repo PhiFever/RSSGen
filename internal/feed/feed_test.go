@@ -9,10 +9,6 @@ import (
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
-// --- 辅助函数 ---
-
-func ptrTime(t time.Time) *time.Time { return &t }
-
 // --- Generate 基础 ---
 
 func TestGenerateEmptyItems(t *testing.T) {

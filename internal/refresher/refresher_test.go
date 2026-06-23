@@ -312,10 +312,110 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 		Notifier:     notifier.New(notifier.Config{}),
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
-	ref.refreshFeeds("test", "_test_refresh_feeds_skip", config.RouteConfig{})
-	ref.refreshFeeds("test", "_test_refresh_feeds_skip", config.RouteConfig{
+	ref.refreshFeeds(refreshPhase{label: "test"}, "_test_refresh_feeds_skip", config.RouteConfig{})
+	ref.refreshFeeds(refreshPhase{label: "test"}, "_test_refresh_feeds_skip", config.RouteConfig{
 		Feeds: []config.FeedConfig{{UserID: ""}},
 	})
+}
+
+func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
+	route.Register("_test_refresh_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_refresh_no_jitter"}
+	})
+	defer route.Unregister("_test_refresh_no_jitter")
+
+	sleepCount := 0
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	ref.sleepFn = func(time.Duration) bool {
+		sleepCount++
+		return true
+	}
+
+	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_no_jitter", config.RouteConfig{
+		Feeds: []config.FeedConfig{{UserID: "u1", Limit: 10}},
+	})
+
+	if sleepCount != 0 {
+		t.Fatalf("未配置 refresh_jitter 时不应 sleep，实际 %d 次", sleepCount)
+	}
+}
+
+func TestRefreshFeedsAppliesJitterBeforeEachScheduledFeed(t *testing.T) {
+	route.Register("_test_refresh_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_refresh_jitter"}
+	})
+	defer route.Unregister("_test_refresh_jitter")
+
+	var jitterMax []time.Duration
+	jitterValues := []time.Duration{3 * time.Second, 7500 * time.Millisecond}
+	var slept []time.Duration
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	ref.jitterDurationFn = func(max time.Duration) time.Duration {
+		jitterMax = append(jitterMax, max)
+		next := jitterValues[0]
+		jitterValues = jitterValues[1:]
+		return next
+	}
+	ref.sleepFn = func(delay time.Duration) bool {
+		slept = append(slept, delay)
+		return true
+	}
+
+	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_jitter", config.RouteConfig{
+		RefreshJitter: 30,
+		Feeds: []config.FeedConfig{
+			{UserID: "u1", Limit: 10},
+			{UserID: "u2", Limit: 20},
+		},
+	})
+
+	wantMax := []time.Duration{30 * time.Second, 30 * time.Second}
+	if fmt.Sprint(jitterMax) != fmt.Sprint(wantMax) {
+		t.Fatalf("jitter max = %v, want %v", jitterMax, wantMax)
+	}
+	wantSlept := []time.Duration{3 * time.Second, 7500 * time.Millisecond}
+	if fmt.Sprint(slept) != fmt.Sprint(wantSlept) {
+		t.Fatalf("sleep delays = %v, want %v", slept, wantSlept)
+	}
+}
+
+func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
+	route.Register("_test_preheat_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{name: "_test_preheat_no_jitter"}
+	})
+	defer route.Unregister("_test_preheat_no_jitter")
+
+	sleepCount := 0
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+	ref.sleepFn = func(time.Duration) bool {
+		sleepCount++
+		return true
+	}
+
+	ref.refreshFeeds(refreshPhasePreheat, "_test_preheat_no_jitter", config.RouteConfig{
+		RefreshJitter: 30,
+		Feeds:         []config.FeedConfig{{UserID: "u1", Limit: 10}},
+	})
+
+	if sleepCount != 0 {
+		t.Fatalf("预热不应应用 refresh_jitter，实际 sleep %d 次", sleepCount)
+	}
 }
 
 func TestStopCancelsAllTasks(t *testing.T) {
@@ -815,5 +915,45 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 
 	if capturedOpts.Limit != 5 {
 		t.Errorf("Limit = %d, want 5", capturedOpts.Limit)
+	}
+}
+
+func TestRefreshFeedsPassesZhihuIncludeAndLimit(t *testing.T) {
+	var capturedOpts route.FetchOptions
+	route.Register("_test_r1_include", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_r1_include",
+			fetchFn: func(_ route.ArticleStore, _ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+				capturedOpts = opts
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+	defer route.Unregister("_test_r1_include")
+
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	ref.refreshFeeds(refreshPhase{label: "测试"}, "_test_r1_include", config.RouteConfig{
+		Feeds: []config.FeedConfig{
+			{
+				UserID:  "user1",
+				Alias:   "用户A",
+				Limit:   15,
+				Include: []string{"answer", "article"},
+			},
+		},
+	})
+
+	if capturedOpts.Limit != 15 {
+		t.Fatalf("Limit = %d, want 15", capturedOpts.Limit)
+	}
+	wantInclude := []string{"answer", "article"}
+	if fmt.Sprint(capturedOpts.Include) != fmt.Sprint(wantInclude) {
+		t.Fatalf("Include = %v, want %v", capturedOpts.Include, wantInclude)
 	}
 }

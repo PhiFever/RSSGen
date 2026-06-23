@@ -127,7 +127,9 @@ func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 		}
 		w.Header().Set("X-Reply", "ok")
 		w.WriteHeader(http.StatusAccepted)
-		w.Write([]byte("hello"))
+		if _, err := w.Write([]byte("hello")); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -163,7 +165,9 @@ func TestPostAndPostJSON(t *testing.T) {
 			if r.Method != http.MethodPost || string(body) != "raw-body" {
 				t.Fatalf("raw POST = %s %q", r.Method, string(body))
 			}
-			w.Write([]byte("posted"))
+			if _, err := w.Write([]byte("posted")); err != nil {
+				t.Fatalf("写入响应失败: %v", err)
+			}
 		case "/json":
 			if r.Header.Get("Content-Type") != "application/json" {
 				t.Fatalf("Content-Type = %q", r.Header.Get("Content-Type"))
@@ -175,7 +179,9 @@ func TestPostAndPostJSON(t *testing.T) {
 			if payload["k"] != "v" || r.Header.Get("X-Mode") != "json" {
 				t.Fatalf("JSON 请求未保留 body/header")
 			}
-			w.Write([]byte("json"))
+			if _, err := w.Write([]byte("json")); err != nil {
+				t.Fatalf("写入响应失败: %v", err)
+			}
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}

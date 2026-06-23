@@ -54,12 +54,16 @@ func (s *ArticleStore) Init() error {
 
 	// 确保连接可用
 	if err := db.Ping(); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			slog.Warn("关闭初始化失败的数据库连接失败", "path", s.dbPath, "error", closeErr)
+		}
 		return fmt.Errorf("连接数据库 %s: %w", s.dbPath, err)
 	}
 
 	if _, err := db.Exec(createTableSQL); err != nil {
-		db.Close()
+		if closeErr := db.Close(); closeErr != nil {
+			slog.Warn("关闭初始化失败的数据库连接失败", "path", s.dbPath, "error", closeErr)
+		}
 		return fmt.Errorf("创建 articles 表: %w", err)
 	}
 
