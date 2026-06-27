@@ -4,7 +4,10 @@ package afdian
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,6 +59,38 @@ type afdianPostDetail struct {
 	} `json:"post"`
 }
 
+type afdianUnixTime int64
+
+func (t *afdianUnixTime) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	raw = strings.Trim(raw, `"`)
+	if raw == "" || raw == "null" {
+		*t = 0
+		return nil
+	}
+
+	seconds, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fmt.Errorf("解析评论发布时间失败: %w", err)
+	}
+	*t = afdianUnixTime(int64(seconds))
+	return nil
+}
+
+// afdianComment 是爱发电评论接口返回的单条评论。
+type afdianComment struct {
+	User        afdianUser     `json:"user"`
+	PublishTime afdianUnixTime `json:"publish_time"`
+	Content     string         `json:"content"`
+	ReplyUser   *afdianUser    `json:"reply_user"`
+}
+
+// afdianCommentList 是爱发电评论接口响应 data。
+type afdianCommentList struct {
+	HotList []afdianComment `json:"hot_list"`
+	List    []afdianComment `json:"list"`
+}
+
 // parseAfdianResponse 解析爱发电 API 响应，返回原始 data 字节。
 // 统一处理 JSON 解析和 ec 码校验。
 func parseAfdianResponse(body []byte) (json.RawMessage, error) {
@@ -79,10 +114,11 @@ func init() {
 
 // Route 是爱发电路由实现。
 type Route struct {
-	cfg             config.ResolvedRouteConfig
-	getAuthorIDFn   func(sc *scraper.Scraper, authorSlug string) (string, error)
-	getPostListFn   func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
-	getPostDetailFn func(sc *scraper.Scraper, postID string) (string, error)
+	cfg               config.ResolvedRouteConfig
+	getAuthorIDFn     func(sc *scraper.Scraper, authorSlug string) (string, error)
+	getPostListFn     func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
+	getPostDetailFn   func(sc *scraper.Scraper, postID string) (string, error)
+	getPostCommentsFn func(sc *scraper.Scraper, postID string) (afdianCommentList, error)
 }
 
 // New 创建爱发电路由实例。
@@ -179,6 +215,10 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	if r.getPostDetailFn != nil {
 		detailFn = r.getPostDetailFn
 	}
+	commentsFn := r.getPostComments
+	if r.getPostCommentsFn != nil {
+		commentsFn = r.getPostCommentsFn
+	}
 
 	var wg sync.WaitGroup
 	for _, idx := range missing {
@@ -192,6 +232,12 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 				// 获取详情失败，跳过此条目（与 Python 行为一致）
 				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
 				return
+			}
+			comments, err := commentsFn(sc, postID)
+			if err != nil {
+				slog.Warn("文章评论获取失败，省略评论", "post_id", postID, "error", err)
+			} else {
+				content = appendRenderedComments(content, comments)
 			}
 			contents[idx] = content
 			contentOK[idx] = true
@@ -360,4 +406,80 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", fmt.Errorf("解析帖子详情失败: %w", err)
 	}
 	return detail.Post.Content, nil
+}
+
+func (r *Route) getPostComments(sc *scraper.Scraper, postID string) (afdianCommentList, error) {
+	apiURL := fmt.Sprintf("%s/api/comment/get-list?post_id=%s&publish_sn=&type=old&hot=1", hostURL, postID)
+	referer := fmt.Sprintf("%s/p/%s", hostURL, postID)
+
+	resp, err := sc.Get(apiURL, referer, nil)
+	if err != nil {
+		return afdianCommentList{}, err
+	}
+	if resp.StatusCode != 200 {
+		return afdianCommentList{}, &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
+	}
+
+	data, err := parseAfdianResponse(resp.Body)
+	if err != nil {
+		return afdianCommentList{}, err
+	}
+	if len(data) == 0 {
+		return afdianCommentList{}, nil
+	}
+
+	var comments afdianCommentList
+	if err := json.Unmarshal(data, &comments); err != nil {
+		return afdianCommentList{}, fmt.Errorf("解析帖子评论失败: %w", err)
+	}
+	return comments, nil
+}
+
+func renderComments(comments afdianCommentList) string {
+	var sections []string
+	if len(comments.HotList) > 0 {
+		sections = append(sections, renderCommentSection("热评", comments.HotList))
+	}
+	if len(comments.List) > 0 {
+		sections = append(sections, renderCommentSection("评论", comments.List))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func appendRenderedComments(content string, comments afdianCommentList) string {
+	rendered := renderComments(comments)
+	if rendered == "" {
+		return content
+	}
+	if strings.TrimSpace(content) == "" {
+		return rendered
+	}
+	return strings.TrimRight(content, "\n") + "\n\n" + rendered
+}
+
+func renderCommentSection(title string, comments []afdianComment) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(title))
+	for i, comment := range comments {
+		b.WriteString("<hr>\n")
+		fmt.Fprintf(
+			&b,
+			"<h5><span>[%d] %s by %s</span></h5>\n",
+			i,
+			formatCommentTime(comment.PublishTime),
+			html.EscapeString(comment.User.Name),
+		)
+		if comment.ReplyUser != nil && comment.ReplyUser.Name != "" {
+			fmt.Fprintf(&b, "<blockquote>回复 %s: </blockquote>\n", html.EscapeString(comment.ReplyUser.Name))
+		}
+		fmt.Fprintf(&b, "<p>%s</p>\n", html.EscapeString(comment.Content))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatCommentTime(publishTime afdianUnixTime) string {
+	if publishTime <= 0 {
+		return ""
+	}
+	return time.Unix(int64(publishTime), 0).UTC().Format("2006-01-02 15:04:05")
 }

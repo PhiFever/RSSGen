@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -188,6 +189,30 @@ func makePost(postID string) afdianPost {
 	}
 }
 
+func emptyComments(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+	return afdianCommentList{}, nil
+}
+
+func sampleComments() afdianCommentList {
+	return afdianCommentList{
+		HotList: []afdianComment{
+			{
+				User:        afdianUser{Name: "热评用户"},
+				PublishTime: afdianUnixTime(1700000000),
+				Content:     "热评内容",
+			},
+		},
+		List: []afdianComment{
+			{
+				User:        afdianUser{Name: "普通用户"},
+				PublishTime: afdianUnixTime(1700000100),
+				Content:     "普通评论",
+				ReplyUser:   &afdianUser{Name: "被回复者"},
+			},
+		},
+	}
+}
+
 func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	store := newMockStore()
 	// 预填充缓存
@@ -196,6 +221,7 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	}
 
 	detailCalled := false
+	commentsCalled := false
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
 	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "uid1", nil
@@ -207,6 +233,10 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 		detailCalled = true
 		return "<p>should not be called</p>", nil
 	}
+	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+		commentsCalled = true
+		return sampleComments(), nil
+	}
 
 	items, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -214,6 +244,9 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	}
 	if detailCalled {
 		t.Error("store 命中时不应调用 getPostDetail")
+	}
+	if commentsCalled {
+		t.Error("store 命中时不应调用 getPostComments")
 	}
 	if len(items) != 1 {
 		t.Fatalf("应返回 1 个 item, 实得 %d", len(items))
@@ -236,17 +269,23 @@ func TestFetchStoreMissCallsAPIAndSaves(t *testing.T) {
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "<p>fresh</p>", nil
 	}
+	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+		return sampleComments(), nil
+	}
 
 	items, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if items[0].Content != "<p>fresh</p>" {
+	if !strings.Contains(items[0].Content, "<p>fresh</p>") {
 		t.Errorf("Content = %q", items[0].Content)
+	}
+	if !strings.Contains(items[0].Content, "<h2>热评</h2>") || !strings.Contains(items[0].Content, "<h2>评论</h2>") {
+		t.Errorf("Content 应包含热评和评论: %q", items[0].Content)
 	}
 	// 验证已落库
 	saved, found, _ := store.Get("afdian", "post2")
-	if !found || saved != "<p>fresh</p>" {
+	if !found || saved != items[0].Content {
 		t.Errorf("store 应保存 post2, found=%v, content=%q", found, saved)
 	}
 }
@@ -262,6 +301,7 @@ func TestFetchNoStoreStillWorks(t *testing.T) {
 	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
 		return "<p>detail</p>", nil
 	}
+	r.getPostCommentsFn = emptyComments
 
 	items, err := r.Fetch(nil, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -290,6 +330,7 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 	r.getPostDetailFn = func(_ *scraper.Scraper, postID string) (string, error) {
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
+	r.getPostCommentsFn = emptyComments
 
 	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -332,6 +373,7 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 		atomic.AddInt32(&active, -1)
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
+	r.getPostCommentsFn = emptyComments
 
 	items, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -365,6 +407,7 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 		}
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
+	r.getPostCommentsFn = emptyComments
 
 	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -394,6 +437,39 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 	}
 }
 
+func TestFetchCommentFailureKeepsBody(t *testing.T) {
+	store := newMockStore()
+
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("p1")}, nil
+	}
+	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "<p>body</p>", nil
+	}
+	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+		return afdianCommentList{}, fmt.Errorf("comment boom")
+	}
+
+	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("应返回 1 个 item, 实得 %d", len(items))
+	}
+	if items[0].Content != "<p>body</p>" {
+		t.Fatalf("评论失败时应保留正文, got %q", items[0].Content)
+	}
+	saved, found, _ := store.Get("afdian", "p1")
+	if !found || saved != "<p>body</p>" {
+		t.Fatalf("评论失败时应落库正文, found=%v, content=%q", found, saved)
+	}
+}
+
 func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 	// 验证详情失败时跳过该条目（与 Python 行为一致）
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
@@ -414,6 +490,31 @@ func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 	// 全部失败应返回空列表
 	if len(items) != 0 {
 		t.Fatalf("详情失败应跳过条目, 实得 %d 个 item", len(items))
+	}
+}
+
+func TestRenderCommentsHotBeforeNormalAndReply(t *testing.T) {
+	rendered := renderComments(sampleComments())
+	hotIdx := strings.Index(rendered, "<h2>热评</h2>")
+	normalIdx := strings.Index(rendered, "<h2>评论</h2>")
+	if hotIdx < 0 || normalIdx < 0 {
+		t.Fatalf("应渲染热评和评论两段: %q", rendered)
+	}
+	if hotIdx > normalIdx {
+		t.Fatalf("热评应在评论之前: %q", rendered)
+	}
+
+	for _, want := range []string{
+		"热评用户",
+		"热评内容",
+		"普通用户",
+		"普通评论",
+		"回复 被回复者",
+		"2023-11-14 22:13:20",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("渲染结果缺少 %q: %q", want, rendered)
+		}
 	}
 }
 
@@ -601,6 +702,63 @@ func TestGetPostListEmptyAndInvalidResponse(t *testing.T) {
 			t.Fatal("HTTP 非 200 应返回错误")
 		}
 	})
+}
+
+func TestGetPostCommentsRequestAndParse(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/comment/get-list" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		query := r.URL.Query()
+		if query.Get("post_id") != "p1" || query.Get("type") != "old" || query.Get("hot") != "1" {
+			t.Fatalf("unexpected query %s", r.URL.RawQuery)
+		}
+		publishSN, ok := query["publish_sn"]
+		if !ok || len(publishSN) != 1 || publishSN[0] != "" {
+			t.Fatalf("publish_sn 应为空值参数, raw query=%s", r.URL.RawQuery)
+		}
+		if got := r.Header.Get("Referer"); got != server.URL+"/p/p1" {
+			t.Fatalf("Referer = %q", got)
+		}
+
+		writeJSON(t, w, map[string]any{
+			"ec": 200,
+			"data": map[string]any{
+				"hot_list": []map[string]any{
+					{
+						"user":         map[string]any{"name": "热评用户"},
+						"publish_time": "1700000000",
+						"content":      "热评内容",
+					},
+				},
+				"list": []map[string]any{
+					{
+						"user":         map[string]any{"name": "普通用户"},
+						"publish_time": 1700000100,
+						"content":      "普通评论",
+						"reply_user":   map[string]any{"name": "被回复者"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+	withTestHost(t, server.URL)
+
+	comments, err := New(config.ResolvedRouteConfig{}).getPostComments(newTestScraper(t), "p1")
+	if err != nil {
+		t.Fatalf("getPostComments 返回错误: %v", err)
+	}
+	if len(comments.HotList) != 1 || comments.HotList[0].User.Name != "热评用户" {
+		t.Fatalf("hot_list 解析错误: %+v", comments.HotList)
+	}
+	if comments.HotList[0].PublishTime != afdianUnixTime(1700000000) {
+		t.Fatalf("热评发布时间解析错误: %v", comments.HotList[0].PublishTime)
+	}
+	if len(comments.List) != 1 || comments.List[0].ReplyUser == nil || comments.List[0].ReplyUser.Name != "被回复者" {
+		t.Fatalf("list/reply_user 解析错误: %+v", comments.List)
+	}
 }
 
 func TestGetPostDetailSuccessEmptyAndErrors(t *testing.T) {
