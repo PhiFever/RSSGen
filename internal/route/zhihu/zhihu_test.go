@@ -472,16 +472,26 @@ func TestMakeFeedItemPinVideoBlockLogsOriginalURL(t *testing.T) {
 	target := map[string]interface{}{
 		"id": "111", "type": "pin",
 		"content": []interface{}{
-			map[string]interface{}{"type": PinBlockVideo, "url": "https://www.zhihu.com/video/123"},
+			map[string]interface{}{
+				"type":      PinBlockVideo,
+				"thumbnail": "https://pic.zhimg.com/video.jpg",
+				"playlist": []interface{}{
+					map[string]interface{}{"quality": "ld", "url": "https://vdn.vzuu.com/ld.mp4"},
+					map[string]interface{}{"quality": "hd", "url": "https://vdn.vzuu.com/hd.mp4"},
+				},
+			},
 		},
 	}
 	item := r.makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", "发布了想法"))
 	if item.Link != "https://www.zhihu.com/pin/111" {
 		t.Errorf("Link = %q", item.Link)
 	}
+	if !strings.Contains(item.Content, "<video") || !strings.Contains(item.Content, "https://vdn.vzuu.com/hd.mp4") {
+		t.Errorf("video block 应渲染为视频标签并选择高清 URL, 实得内容: %q", item.Content)
+	}
 	logs := buf.String()
-	if !strings.Contains(logs, PinBlockVideo) || !strings.Contains(logs, item.Link) {
-		t.Errorf("video block 应输出带 pin 原文链接的 slog.Warn, 实得日志: %q", logs)
+	if strings.Contains(logs, "知乎 pin video block") {
+		t.Errorf("可渲染 video block 不应输出告警, 实得日志: %q", logs)
 	}
 }
 
@@ -724,6 +734,55 @@ func TestRenderPinContentHTMLPreserved(t *testing.T) {
 	}
 }
 
+func TestRenderPinContentTypedTextBlock(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	blocks := []interface{}{
+		map[string]interface{}{"type": PinBlockText, "block_text": "Column", "text": "收录于 · Another Way"},
+	}
+	got := renderPinContent(blocks, "https://www.zhihu.com/pin/2055771938740499306")
+	if !strings.Contains(got, "收录于 · Another Way") {
+		t.Errorf("应包含 text 字段内容, 实得 %q", got)
+	}
+	if strings.Contains(buf.String(), "未识别的知乎 pin block 类型") {
+		t.Errorf("text block 不应输出未识别告警, 实得日志: %q", buf.String())
+	}
+}
+
+func TestRenderPinContentTypedTextBlockEscapesPlainText(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{"type": PinBlockText, "text": `<script>alert("x")</script>`},
+	}
+	got := renderPinContent(blocks, "")
+	if strings.Contains(got, "<script>") {
+		t.Errorf("text 字段应作为纯文本转义, 实得 %q", got)
+	}
+	if !strings.Contains(got, "&lt;script&gt;") {
+		t.Errorf("应包含转义后的 text 字段, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentTypedEmptyTextBlockDoesNotWarn(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	blocks := []interface{}{
+		map[string]interface{}{"type": PinBlockText, "block_text": "ThanksForInvitingLabel", "text": ""},
+	}
+	got := renderPinContent(blocks, "https://www.zhihu.com/pin/2055771938740499306")
+	if got != "" {
+		t.Errorf("空 text block 不应渲染内容, 实得 %q", got)
+	}
+	if strings.Contains(buf.String(), "未识别的知乎 pin block 类型") {
+		t.Errorf("空 text block 不应输出未识别告警, 实得日志: %q", buf.String())
+	}
+}
+
 func TestRenderPinContentImageBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "image", "original_url": "https://pic.zhimg.com/img.jpg"},
@@ -753,15 +812,79 @@ func TestRenderPinContentKnownVideoBlock(t *testing.T) {
 
 	zhihuURL := "https://www.zhihu.com/pin/123"
 	blocks := []interface{}{
+		map[string]interface{}{
+			"type":      PinBlockVideo,
+			"thumbnail": "https://pic3.zhimg.com/80/v2-video_b.jpg",
+			"width":     float64(478),
+			"playlist": []interface{}{
+				map[string]interface{}{"quality": "ld", "url": "https://vdn3.vzuu.com/SD/video.mp4"},
+				map[string]interface{}{"quality": "hd", "url": "https://vdn3.vzuu.com/HD/video.mp4"},
+				map[string]interface{}{"quality": "sd", "url": "https://vdn3.vzuu.com/SD/video.mp4"},
+			},
+		},
+	}
+	got := renderPinContent(blocks, zhihuURL)
+	if !strings.Contains(got, "<video") || !strings.Contains(got, `<source src="https://vdn3.vzuu.com/HD/video.mp4"`) {
+		t.Errorf("video block 应渲染为 video 标签并选择 hd URL, 实得 %q", got)
+	}
+	if !strings.Contains(got, `poster="https://pic3.zhimg.com/80/v2-video_b.jpg"`) || !strings.Contains(got, `width="478"`) {
+		t.Errorf("video block 应包含封面和宽度, 实得 %q", got)
+	}
+	logs := buf.String()
+	if strings.Contains(logs, "知乎 pin video block") {
+		t.Errorf("可渲染 video block 不应输出告警, 实得日志: %q", logs)
+	}
+}
+
+func TestRenderPinContentVideoInfoPlaylist(t *testing.T) {
+	blocks := []interface{}{
+		map[string]interface{}{
+			"type": PinBlockVideo,
+			"video_info": map[string]interface{}{
+				"thumbnail": "https://pic.zhimg.com/video-info.jpg",
+				"playlist": map[string]interface{}{
+					"ld":  map[string]interface{}{"play_url": "https://vdn.vzuu.com/ld.mp4"},
+					"fhd": map[string]interface{}{"play_url": "https://vdn.vzuu.com/fhd.mp4"},
+				},
+			},
+		},
+	}
+	got := renderPinContent(blocks, "")
+	if !strings.Contains(got, "https://vdn.vzuu.com/fhd.mp4") {
+		t.Errorf("video_info.playlist 应优先选择 fhd URL, 实得 %q", got)
+	}
+	if !strings.Contains(got, `poster="https://pic.zhimg.com/video-info.jpg"`) {
+		t.Errorf("video_info.thumbnail 应作为封面, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentVideoBlockLinkFallback(t *testing.T) {
+	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockVideo, "url": "https://www.zhihu.com/video/123"},
+	}
+	got := renderPinContent(blocks, "")
+	if got != `<a href="https://www.zhihu.com/video/123">查看视频</a>` {
+		t.Errorf("非 mp4 video URL 应渲染为链接, 实得 %q", got)
+	}
+}
+
+func TestRenderPinContentVideoBlockMissingURLWarns(t *testing.T) {
+	var buf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	zhihuURL := "https://www.zhihu.com/pin/123"
+	blocks := []interface{}{
+		map[string]interface{}{"type": PinBlockVideo, "thumbnail": "https://pic.zhimg.com/video.jpg"},
 	}
 	got := renderPinContent(blocks, zhihuURL)
 	if got != "" {
-		t.Errorf("video block 暂不渲染内容, 实得 %q", got)
+		t.Errorf("缺少 URL 的 video block 不应渲染内容, 实得 %q", got)
 	}
 	logs := buf.String()
-	if !strings.Contains(logs, PinBlockVideo) || !strings.Contains(logs, zhihuURL) {
-		t.Errorf("video block 应输出带原文链接的 slog.Warn, 实得日志: %q", logs)
+	if !strings.Contains(logs, "知乎 pin video block 缺少可渲染 URL") || !strings.Contains(logs, zhihuURL) {
+		t.Errorf("缺少 URL 的 video block 应输出带原文链接的 slog.Warn, 实得日志: %q", logs)
 	}
 }
 

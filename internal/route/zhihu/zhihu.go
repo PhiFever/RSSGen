@@ -35,6 +35,7 @@ const (
 const (
 	PinBlockImage    = "image"
 	PinBlockLinkCard = "link_card"
+	PinBlockText     = "text"
 	PinBlockVideo    = "video"
 )
 
@@ -474,6 +475,11 @@ func renderPinContent(blocks []interface{}, zhihuURL string) string {
 		}
 		blockType, _ := blockMap["type"].(string)
 		switch blockType {
+		case PinBlockText:
+			text, _ := blockMap["text"].(string)
+			if text != "" {
+				parts = append(parts, html.EscapeString(text))
+			}
 		case PinBlockImage:
 			url, _ := blockMap["original_url"].(string)
 			if url == "" {
@@ -492,7 +498,11 @@ func renderPinContent(blocks []interface{}, zhihuURL string) string {
 				parts = append(parts, fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(url), html.EscapeString(linkTitle)))
 			}
 		case PinBlockVideo:
-			slog.Warn("知乎 pin video block 暂未渲染", "block_type", blockType, "zhihu_url", zhihuURL)
+			if rendered := renderPinVideoBlock(blockMap); rendered != "" {
+				parts = append(parts, rendered)
+			} else {
+				slog.Warn("知乎 pin video block 缺少可渲染 URL", "block_type", blockType, "zhihu_url", zhihuURL)
+			}
 		default:
 			if blockType != "" {
 				slog.Warn("未识别的知乎 pin block 类型", "block_type", blockType, "zhihu_url", zhihuURL)
@@ -500,6 +510,109 @@ func renderPinContent(blocks []interface{}, zhihuURL string) string {
 		}
 	}
 	return strings.Join(parts, "<br/>")
+}
+
+func renderPinVideoBlock(block map[string]interface{}) string {
+	videoURL := selectPinVideoURL(block)
+	if videoURL == "" {
+		return ""
+	}
+	if !strings.Contains(videoURL, ".mp4") {
+		return fmt.Sprintf(`<a href="%s">查看视频</a>`, html.EscapeString(videoURL))
+	}
+
+	poster := getString(block, "thumbnail")
+	if poster == "" {
+		if videoInfo, _ := block["video_info"].(map[string]interface{}); videoInfo != nil {
+			poster = getString(videoInfo, "thumbnail")
+		}
+	}
+
+	var attrs []string
+	attrs = append(attrs, `controls`, `preload="metadata"`)
+	if poster != "" {
+		attrs = append(attrs, fmt.Sprintf(`poster="%s"`, html.EscapeString(poster)))
+	}
+	if width := numberAttr(block, "width"); width != "" {
+		attrs = append(attrs, fmt.Sprintf(`width="%s"`, width))
+	}
+	return fmt.Sprintf(`<video %s><source src="%s" type="video/mp4" /></video>`, strings.Join(attrs, " "), html.EscapeString(videoURL))
+}
+
+func selectPinVideoURL(block map[string]interface{}) string {
+	if playlist, _ := block["playlist"].([]interface{}); len(playlist) > 0 {
+		if url := selectPinVideoURLFromList(playlist); url != "" {
+			return url
+		}
+	}
+	if videoInfo, _ := block["video_info"].(map[string]interface{}); videoInfo != nil {
+		if playlist, _ := videoInfo["playlist"].(map[string]interface{}); playlist != nil {
+			for _, quality := range []string{"fhd", "hd", "sd", "ld"} {
+				item, _ := playlist[quality].(map[string]interface{})
+				if item == nil {
+					continue
+				}
+				if url := getString(item, "play_url"); url != "" {
+					return url
+				}
+				if url := getString(item, "url"); url != "" {
+					return url
+				}
+			}
+		}
+	}
+	return getString(block, "url")
+}
+
+func selectPinVideoURLFromList(playlist []interface{}) string {
+	bestRank := len(pinVideoQualityRank)
+	bestURL := ""
+	for _, rawItem := range playlist {
+		item, _ := rawItem.(map[string]interface{})
+		if item == nil {
+			continue
+		}
+		url := getString(item, "url")
+		if url == "" {
+			continue
+		}
+		quality := getString(item, "quality")
+		rank, ok := pinVideoQualityRank[quality]
+		if !ok {
+			rank = len(pinVideoQualityRank)
+		}
+		if bestURL == "" || rank < bestRank {
+			bestRank = rank
+			bestURL = url
+		}
+	}
+	return bestURL
+}
+
+var pinVideoQualityRank = map[string]int{
+	"fhd": 0,
+	"hd":  1,
+	"sd":  2,
+	"ld":  3,
+}
+
+func getString(values map[string]interface{}, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func numberAttr(values map[string]interface{}, key string) string {
+	switch value := values[key].(type) {
+	case float64:
+		if value > 0 {
+			return fmt.Sprintf("%.0f", value)
+		}
+	case int:
+		if value > 0 {
+			return fmt.Sprintf("%d", value)
+		}
+	}
+	return ""
 }
 
 // fixLazyImages 修复知乎懒加载图片：将 SVG 占位符的 src 替换为 data-actualsrc /
