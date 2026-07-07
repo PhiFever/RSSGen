@@ -82,7 +82,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 
 ## 注意事项
 
-- 架构评审与待办清单（已知 bug、重构计划、执行顺序）见 `docs/architecture-review-2026-07.md`，改动核心流程前先核对相关条目，完成后更新条目状态
+- 架构评审与待办清单（已知 bug、重构计划、执行顺序）见 `docs/architecture-review.md`，改动核心流程前先核对相关条目，完成后更新条目状态
 - 所有文档和代码注释使用简体中文
 - Dockerfile 需兼容 ARM64 架构
 - 仓库根目录的 `*.json` 抓包样本、`*.sh` 脚本、二进制均为本地调试产物，已被 .gitignore 忽略，勿提交；测试夹具放 `internal/**/testdata/`（.gitignore 已豁免）
