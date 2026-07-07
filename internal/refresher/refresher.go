@@ -13,6 +13,7 @@ import (
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/health"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
@@ -30,6 +31,7 @@ type Config struct {
 	FeedCache      *cache.TTLCache
 	ArticleStore   ArticleStore
 	Notifier       *notifier.Notifier
+	FeedHealth     *health.FeedHealth
 	Pipeline       *pipeline.Pipeline
 	StartupDelay   int
 	MaxRetries     int
@@ -43,6 +45,7 @@ type Config struct {
 type Refresher struct {
 	articleStore   ArticleStore
 	notifier       *notifier.Notifier
+	feedHealth     *health.FeedHealth
 	pipe           *pipeline.Pipeline
 	startupDelay   int
 	maxRetries     int
@@ -105,10 +108,15 @@ func New(cfg Config) *Refresher {
 			RoutesConfig:  cfg.RoutesConfig,
 		})
 	}
+	feedHealth := cfg.FeedHealth
+	if feedHealth == nil {
+		feedHealth = health.New(health.Config{})
+	}
 
 	return &Refresher{
 		articleStore:   cfg.ArticleStore,
 		notifier:       cfg.Notifier,
+		feedHealth:     feedHealth,
 		pipe:           pipe,
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
@@ -194,7 +202,7 @@ func (r *Refresher) Trigger(routeName string, pathParams []string, queryParams m
 	r.pendingMu.Unlock()
 
 	// 检查 feed 是否被禁用
-	if r.notifier.IsFeedDisabled(feedKey) {
+	if r.feedHealth.IsFeedDisabled(feedKey) {
 		r.pendingMu.Lock()
 		delete(r.pending, refreshKey)
 		r.pendingMu.Unlock()
@@ -340,7 +348,7 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 	}()
 
 	// 检查 feed 是否被禁用
-	if r.notifier.IsFeedDisabled(feedKey) {
+	if r.feedHealth.IsFeedDisabled(feedKey) {
 		slog.Warn("feed 已被禁用，跳过刷新", "key", feedKey)
 		return
 	}
@@ -392,9 +400,11 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 	// 检查是否是业务错误
 	if lastErr != nil {
 		statusCode := extractStatusCode(lastErr)
-		if statusCode > 0 && r.notifier.IsBusinessError(statusCode) {
-			r.notifier.Notify(feedKey, statusCode, fmt.Sprintf("%v", lastErr))
-			r.notifier.DisableFeed(feedKey)
+		if statusCode > 0 && r.feedHealth.IsBusinessError(statusCode) {
+			if r.notifier != nil {
+				r.notifier.Notify(feedKey, statusCode, fmt.Sprintf("%v", lastErr))
+			}
+			r.feedHealth.DisableFeed(feedKey)
 			slog.Warn("feed 已禁用（业务错误）", "key", feedKey, "status", statusCode)
 		}
 	}

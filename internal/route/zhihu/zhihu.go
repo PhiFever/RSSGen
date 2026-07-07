@@ -84,7 +84,80 @@ func init() {
 }
 
 // fetchActivitiesFunc 是 fetchActivities 的函数签名，用于测试注入。
-type fetchActivitiesFunc func(userID string, limit int) ([]map[string]interface{}, error)
+type fetchActivitiesFunc func(userID string, limit int) ([]zhihuActivity, error)
+
+type activitiesResponse struct {
+	Data   []zhihuActivity `json:"data"`
+	Paging zhihuPaging     `json:"paging"`
+}
+
+type zhihuPaging struct {
+	IsEnd bool   `json:"is_end"`
+	Next  string `json:"next"`
+}
+
+type zhihuActivity struct {
+	ID          string          `json:"id"`
+	Type        string          `json:"type"`
+	Target      *zhihuTarget    `json:"target"`
+	Verb        string          `json:"verb"`
+	ActionText  string          `json:"action_text"`
+	CreatedTime float64         `json:"created_time"`
+	Actor       *zhihuPerson    `json:"actor"`
+	Raw         json.RawMessage `json:"-"`
+}
+
+type zhihuTarget struct {
+	ID           string          `json:"id"`
+	Type         string          `json:"type"`
+	Title        string          `json:"title"`
+	Content      json.RawMessage `json:"content"`
+	Detail       string          `json:"detail"`
+	Excerpt      string          `json:"excerpt"`
+	ExcerptTitle string          `json:"excerpt_title"`
+	CreatedTime  float64         `json:"created_time"`
+	Created      float64         `json:"created"`
+	Author       *zhihuPerson    `json:"author"`
+	Question     *zhihuQuestion  `json:"question"`
+	Raw          json.RawMessage `json:"-"`
+}
+
+type zhihuQuestion struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+}
+
+type zhihuPerson struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Headline string `json:"headline"`
+}
+
+type zhihuPinBlock struct {
+	Type           string                 `json:"type"`
+	Content        string                 `json:"content"`
+	Text           string                 `json:"text"`
+	OriginalURL    string                 `json:"original_url"`
+	URL            string                 `json:"url"`
+	DataDraftTitle string                 `json:"data_draft_title"`
+	Thumbnail      string                 `json:"thumbnail"`
+	Width          float64                `json:"width"`
+	Playlist       []zhihuPinPlaylistItem `json:"playlist"`
+	VideoInfo      *zhihuVideoInfo        `json:"video_info"`
+	Raw            json.RawMessage        `json:"-"`
+}
+
+type zhihuVideoInfo struct {
+	Thumbnail string                          `json:"thumbnail"`
+	Playlist  map[string]zhihuPinPlaylistItem `json:"playlist"`
+}
+
+type zhihuPinPlaylistItem struct {
+	Quality string `json:"quality"`
+	URL     string `json:"url"`
+	PlayURL string `json:"play_url"`
+}
 
 // Route 是知乎路由实现。
 type Route struct {
@@ -133,7 +206,7 @@ func (r *Route) getDC0() (string, error) {
 	return matches[1], nil
 }
 
-func (r *Route) feedInfo(pathParams []string, actor map[string]interface{}) (route.FeedInfo, error) {
+func (r *Route) feedInfo(pathParams []string, actor *zhihuPerson) (route.FeedInfo, error) {
 	if len(pathParams) == 0 {
 		return route.FeedInfo{}, fmt.Errorf("需要指定用户 ID，如 /feed/zhihu/{user_id}")
 	}
@@ -141,17 +214,13 @@ func (r *Route) feedInfo(pathParams []string, actor map[string]interface{}) (rou
 
 	displayName := userID
 
-	if actor != nil {
-		if name, ok := actor["name"].(string); ok && name != "" {
-			displayName = name
-		}
+	if actor != nil && actor.Name != "" {
+		displayName = actor.Name
 	}
 
 	description := fmt.Sprintf("知乎用户 %s 的最新动态", displayName)
-	if actor != nil {
-		if headline, ok := actor["headline"].(string); ok && headline != "" {
-			description = headline
-		}
+	if actor != nil && actor.Headline != "" {
+		description = actor.Headline
 	}
 
 	return route.FeedInfo{
@@ -198,8 +267,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 
 	var items []route.FeedItem
 	for _, act := range activities {
-		target, ok := act["target"].(map[string]interface{})
-		if !ok || target == nil {
+		if act.Target == nil {
 			continue
 		}
 
@@ -220,7 +288,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 }
 
 // fetchActivities 请求知乎用户动态 API。
-func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interface{}, error) {
+func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -237,7 +305,7 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 		zhihuHostURL, userID,
 	)
 
-	var activities []map[string]interface{}
+	var activities []zhihuActivity
 
 	for nextURL != "" && len(activities) < limit {
 		// 获取签名
@@ -261,32 +329,21 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 			return activities, &route.HTTPError{StatusCode: resp.StatusCode, URL: nextURL}
 		}
 
-		var data map[string]interface{}
+		var data activitiesResponse
 		if err := json.Unmarshal(resp.Body, &data); err != nil {
 			return activities, fmt.Errorf("解析响应 JSON 失败: %w", err)
 		}
 
-		if dataList, ok := data["data"].([]interface{}); ok {
-			for _, item := range dataList {
-				if act, ok := item.(map[string]interface{}); ok {
-					activities = append(activities, act)
-				}
-			}
-		}
+		activities = append(activities, data.Data...)
 
 		// 翻页
-		paging, ok := data["paging"].(map[string]interface{})
-		if !ok {
+		if data.Paging.IsEnd {
 			break
 		}
-		if isEnd, ok := paging["is_end"].(bool); ok && isEnd {
+		if data.Paging.Next == "" {
 			break
 		}
-		next, ok := paging["next"].(string)
-		if !ok || next == "" {
-			break
-		}
-		nextURL = next
+		nextURL = data.Paging.Next
 	}
 
 	// 截断到 limit
@@ -297,12 +354,11 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 	return activities, nil
 }
 
-func actorFromActivities(activities []map[string]interface{}) map[string]interface{} {
+func actorFromActivities(activities []zhihuActivity) *zhihuPerson {
 	if len(activities) == 0 {
 		return nil
 	}
-	actor, _ := activities[0]["actor"].(map[string]interface{})
-	return actor
+	return activities[0].Actor
 }
 
 // getFeedInclude 从配置中获取指定用户的 include 过滤。
@@ -315,15 +371,15 @@ func (r *Route) getFeedInclude(userID string) []string {
 	return nil
 }
 
-// makeFeedItem 根据 activity dict 构造 FeedItem。
-func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
-	target, _ := act["target"].(map[string]interface{})
+// makeFeedItem 根据 activity 构造 FeedItem。
+func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
+	target := act.Target
 	if target == nil {
-		target = make(map[string]interface{})
+		target = &zhihuTarget{}
 	}
 
-	targetID, _ := target["id"].(string)
-	targetType, _ := target["type"].(string)
+	targetID := target.ID
+	targetType := target.Type
 	if targetType == "" {
 		targetType = "unknown"
 	}
@@ -333,19 +389,18 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 
 	switch targetType {
 	case "answer":
-		question, _ := target["question"].(map[string]interface{})
-		if question != nil {
-			title, _ = question["title"].(string)
-			questionID, _ := question["id"].(string)
+		if target.Question != nil {
+			title = target.Question.Title
+			questionID := target.Question.ID
 			link = fmt.Sprintf("%s/question/%s/answer/%s", zhihuHostURL, questionID, targetID)
 		}
 	case "article":
-		title, _ = target["title"].(string)
+		title = target.Title
 		link = fmt.Sprintf("https://zhuanlan.zhihu.com/p/%s", targetID)
 	case "pin":
-		excerpt, _ := target["excerpt_title"].(string)
+		excerpt := target.ExcerptTitle
 		if excerpt == "" {
-			excerpt, _ = target["excerpt"].(string)
+			excerpt = target.Excerpt
 		}
 		cleaned := truncateRunes(htmlTagRe.ReplaceAllString(excerpt, ""), 50)
 		if cleaned != "" {
@@ -355,13 +410,12 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 		}
 		link = fmt.Sprintf("%s/pin/%s", zhihuHostURL, targetID)
 	case "question":
-		title, _ = target["title"].(string)
+		title = target.Title
 		link = fmt.Sprintf("%s/question/%s", zhihuHostURL, targetID)
 	default:
-		title, _ = target["title"].(string)
+		title = target.Title
 		if title == "" {
-			excerpt, _ := target["excerpt"].(string)
-			title = truncateRunes(excerpt, 50)
+			title = truncateRunes(target.Excerpt, 50)
 		}
 		if title == "" {
 			title = "未知内容"
@@ -371,13 +425,12 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 
 	// 空 title 通常意味着抓取字段的位置变了（如 question.title 改名）
 	if title == "" {
-		slog.Warn("知乎动态条目 title 为空", "target_id", targetID, "target_type", targetType, "verb", act["verb"])
+		slog.Warn("知乎动态条目 title 为空", "target_id", targetID, "target_type", targetType, "verb", act.Verb)
 	}
 
 	// 添加 action_text 前缀
-	actionText, _ := act["action_text"].(string)
-	if actionText != "" {
-		title = fmt.Sprintf("[%s] %s", actionText, title)
+	if act.ActionText != "" {
+		title = fmt.Sprintf("[%s] %s", act.ActionText, title)
 	}
 
 	// 生成 guid
@@ -390,12 +443,12 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 
 	// 解析时间
 	var pubDate *time.Time
-	createdTime, _ := act["created_time"].(float64)
+	createdTime := act.CreatedTime
 	if createdTime == 0 {
-		createdTime, _ = target["created_time"].(float64)
+		createdTime = target.CreatedTime
 	}
 	if createdTime == 0 {
-		createdTime, _ = target["created"].(float64)
+		createdTime = target.Created
 	}
 	if createdTime > 0 {
 		t := time.Unix(int64(createdTime), 0).UTC()
@@ -404,24 +457,20 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 
 	// 获取内容
 	var content string
-	if rawContent, ok := target["content"].([]interface{}); ok {
-		content = renderPinContent(rawContent, link)
-	} else if rawContent, ok := target["content"].(string); ok {
+	if rawContent, ok := target.renderContent(link); ok {
 		content = rawContent
-	} else if detail, ok := target["detail"].(string); ok {
-		content = detail
-	} else if excerpt, ok := target["excerpt"].(string); ok {
-		content = excerpt
+	} else if target.Detail != "" {
+		content = target.Detail
+	} else if target.Excerpt != "" {
+		content = target.Excerpt
 	}
 	content = fixLazyImages(content)
 
 	// answer 类型：在正文前添加问题描述
 	if targetType == "answer" {
-		question, _ := target["question"].(map[string]interface{})
-		if question != nil {
-			questionDetail, _ := question["detail"].(string)
-			if questionDetail != "" {
-				questionDesc := formatQuestionDescription(questionDetail)
+		if target.Question != nil {
+			if target.Question.Detail != "" {
+				questionDesc := formatQuestionDescription(target.Question.Detail)
 				content = questionDesc + "\n<br/>\n" + content
 			}
 		}
@@ -429,8 +478,8 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 
 	// 提取作者
 	author := ""
-	if authorMap, ok := target["author"].(map[string]interface{}); ok {
-		author, _ = authorMap["name"].(string)
+	if target.Author != nil {
+		author = target.Author.Name
 	}
 
 	return route.FeedItem{
@@ -444,74 +493,81 @@ func (r *Route) makeFeedItem(act map[string]interface{}) route.FeedItem {
 	}
 }
 
+func (t *zhihuTarget) renderContent(zhihuURL string) (string, bool) {
+	if t == nil || len(t.Content) == 0 {
+		return "", false
+	}
+	raw := strings.TrimSpace(string(t.Content))
+	if raw == "" || raw == "null" {
+		return "", false
+	}
+
+	var content string
+	if err := json.Unmarshal(t.Content, &content); err == nil {
+		return content, true
+	}
+
+	var blocks []zhihuPinBlock
+	if err := json.Unmarshal(t.Content, &blocks); err == nil {
+		return renderPinContent(blocks, zhihuURL), true
+	}
+
+	return "", false
+}
+
 // deriveCategory 从 activity 派生 category。
-func deriveCategory(act map[string]interface{}) string {
-	verb, _ := act["verb"].(string)
-	if cat, ok := verbCategoryMap[verb]; ok {
+func deriveCategory(act zhihuActivity) string {
+	if cat, ok := verbCategoryMap[act.Verb]; ok {
 		return cat
 	}
-	target, _ := act["target"].(map[string]interface{})
-	if target == nil {
+	if act.Target == nil {
 		return "unknown"
 	}
-	targetType, _ := target["type"].(string)
-	if cat, ok := targetTypeFallback[targetType]; ok {
+	if cat, ok := targetTypeFallback[act.Target.Type]; ok {
 		return cat
 	}
-	slog.Warn("未识别的知乎动态", "verb", verb, "target_type", targetType, "action_text", act["action_text"])
-	return targetType
+	slog.Warn("未识别的知乎动态", "verb", act.Verb, "target_type", act.Target.Type, "action_text", act.ActionText)
+	return act.Target.Type
 }
 
 // isSelfInteraction 判定 activity 是否为作者对自己内容的互动。
-func isSelfInteraction(act map[string]interface{}) bool {
-	verb, _ := act["verb"].(string)
-	if !selfInteractableVerbs[verb] {
+func isSelfInteraction(act zhihuActivity) bool {
+	if !selfInteractableVerbs[act.Verb] {
 		return false
 	}
-	actor, _ := act["actor"].(map[string]interface{})
-	target, _ := act["target"].(map[string]interface{})
-	if actor == nil || target == nil {
+	if act.Actor == nil || act.Target == nil {
 		return false
 	}
-	actorID, _ := actor["id"].(string)
-	authorMap, _ := target["author"].(map[string]interface{})
-	if authorMap == nil {
+	if act.Target.Author == nil {
 		return false
 	}
-	targetAuthorID, _ := authorMap["id"].(string)
-	return actorID != "" && actorID == targetAuthorID
+	return act.Actor.ID != "" && act.Actor.ID == act.Target.Author.ID
 }
 
 // renderPinContent 将 PIN 类型的 content blocks 渲染为 HTML。
-func renderPinContent(blocks []interface{}, zhihuURL string) string {
+func renderPinContent(blocks []zhihuPinBlock, zhihuURL string) string {
 	var parts []string
 	for _, block := range blocks {
-		blockMap, ok := block.(map[string]interface{})
-		if !ok {
+		if block.Content != "" {
+			parts = append(parts, block.Content)
 			continue
 		}
-		if text, ok := blockMap["content"].(string); ok && text != "" {
-			parts = append(parts, text)
-			continue
-		}
-		blockType, _ := blockMap["type"].(string)
-		switch blockType {
+		switch block.Type {
 		case PinBlockText:
-			text, _ := blockMap["text"].(string)
-			if text != "" {
-				parts = append(parts, html.EscapeString(text))
+			if block.Text != "" {
+				parts = append(parts, html.EscapeString(block.Text))
 			}
 		case PinBlockImage:
-			url, _ := blockMap["original_url"].(string)
+			url := block.OriginalURL
 			if url == "" {
-				url, _ = blockMap["url"].(string)
+				url = block.URL
 			}
 			if url != "" {
 				parts = append(parts, fmt.Sprintf(`<img src="%s" />`, html.EscapeString(url)))
 			}
 		case PinBlockLinkCard:
-			url, _ := blockMap["url"].(string)
-			linkTitle, _ := blockMap["data_draft_title"].(string)
+			url := block.URL
+			linkTitle := block.DataDraftTitle
 			if linkTitle == "" {
 				linkTitle = url
 			}
@@ -519,21 +575,21 @@ func renderPinContent(blocks []interface{}, zhihuURL string) string {
 				parts = append(parts, fmt.Sprintf(`<a href="%s">%s</a>`, html.EscapeString(url), html.EscapeString(linkTitle)))
 			}
 		case PinBlockVideo:
-			if rendered := renderPinVideoBlock(blockMap); rendered != "" {
+			if rendered := renderPinVideoBlock(block); rendered != "" {
 				parts = append(parts, rendered)
 			} else {
-				slog.Warn("知乎 pin video block 缺少可渲染 URL", "block_type", blockType, "zhihu_url", zhihuURL)
+				slog.Warn("知乎 pin video block 缺少可渲染 URL", "block_type", block.Type, "zhihu_url", zhihuURL)
 			}
 		default:
-			if blockType != "" {
-				slog.Warn("未识别的知乎 pin block 类型", "block_type", blockType, "zhihu_url", zhihuURL)
+			if block.Type != "" {
+				slog.Warn("未识别的知乎 pin block 类型", "block_type", block.Type, "zhihu_url", zhihuURL)
 			}
 		}
 	}
 	return strings.Join(parts, "<br/>")
 }
 
-func renderPinVideoBlock(block map[string]interface{}) string {
+func renderPinVideoBlock(block zhihuPinBlock) string {
 	videoURL := selectPinVideoURL(block)
 	if videoURL == "" {
 		return ""
@@ -542,11 +598,9 @@ func renderPinVideoBlock(block map[string]interface{}) string {
 		return fmt.Sprintf(`<a href="%s">查看视频</a>`, html.EscapeString(videoURL))
 	}
 
-	poster := getString(block, "thumbnail")
-	if poster == "" {
-		if videoInfo, _ := block["video_info"].(map[string]interface{}); videoInfo != nil {
-			poster = getString(videoInfo, "thumbnail")
-		}
+	poster := block.Thumbnail
+	if poster == "" && block.VideoInfo != nil {
+		poster = block.VideoInfo.Thumbnail
 	}
 
 	var attrs []string
@@ -554,57 +608,49 @@ func renderPinVideoBlock(block map[string]interface{}) string {
 	if poster != "" {
 		attrs = append(attrs, fmt.Sprintf(`poster="%s"`, html.EscapeString(poster)))
 	}
-	if width := numberAttr(block, "width"); width != "" {
-		attrs = append(attrs, fmt.Sprintf(`width="%s"`, width))
+	if block.Width > 0 {
+		attrs = append(attrs, fmt.Sprintf(`width="%.0f"`, block.Width))
 	}
 	return fmt.Sprintf(`<video %s><source src="%s" type="video/mp4" /></video>`, strings.Join(attrs, " "), html.EscapeString(videoURL))
 }
 
-func selectPinVideoURL(block map[string]interface{}) string {
-	if playlist, _ := block["playlist"].([]interface{}); len(playlist) > 0 {
-		if url := selectPinVideoURLFromList(playlist); url != "" {
+func selectPinVideoURL(block zhihuPinBlock) string {
+	if len(block.Playlist) > 0 {
+		if url := selectPinVideoURLFromList(block.Playlist); url != "" {
 			return url
 		}
 	}
-	if videoInfo, _ := block["video_info"].(map[string]interface{}); videoInfo != nil {
-		if playlist, _ := videoInfo["playlist"].(map[string]interface{}); playlist != nil {
-			for _, quality := range []string{"fhd", "hd", "sd", "ld"} {
-				item, _ := playlist[quality].(map[string]interface{})
-				if item == nil {
-					continue
-				}
-				if url := getString(item, "play_url"); url != "" {
-					return url
-				}
-				if url := getString(item, "url"); url != "" {
-					return url
-				}
+	if block.VideoInfo != nil && block.VideoInfo.Playlist != nil {
+		for _, quality := range []string{"fhd", "hd", "sd", "ld"} {
+			item, ok := block.VideoInfo.Playlist[quality]
+			if !ok {
+				continue
+			}
+			if item.PlayURL != "" {
+				return item.PlayURL
+			}
+			if item.URL != "" {
+				return item.URL
 			}
 		}
 	}
-	return getString(block, "url")
+	return block.URL
 }
 
-func selectPinVideoURLFromList(playlist []interface{}) string {
+func selectPinVideoURLFromList(playlist []zhihuPinPlaylistItem) string {
 	bestRank := len(pinVideoQualityRank)
 	bestURL := ""
-	for _, rawItem := range playlist {
-		item, _ := rawItem.(map[string]interface{})
-		if item == nil {
+	for _, item := range playlist {
+		if item.URL == "" {
 			continue
 		}
-		url := getString(item, "url")
-		if url == "" {
-			continue
-		}
-		quality := getString(item, "quality")
-		rank, ok := pinVideoQualityRank[quality]
+		rank, ok := pinVideoQualityRank[item.Quality]
 		if !ok {
 			rank = len(pinVideoQualityRank)
 		}
 		if bestURL == "" || rank < bestRank {
 			bestRank = rank
-			bestURL = url
+			bestURL = item.URL
 		}
 	}
 	return bestURL
@@ -615,25 +661,6 @@ var pinVideoQualityRank = map[string]int{
 	"hd":  1,
 	"sd":  2,
 	"ld":  3,
-}
-
-func getString(values map[string]interface{}, key string) string {
-	value, _ := values[key].(string)
-	return value
-}
-
-func numberAttr(values map[string]interface{}, key string) string {
-	switch value := values[key].(type) {
-	case float64:
-		if value > 0 {
-			return fmt.Sprintf("%.0f", value)
-		}
-	case int:
-		if value > 0 {
-			return fmt.Sprintf("%d", value)
-		}
-	}
-	return ""
 }
 
 // fixLazyImages 修复知乎懒加载图片：将 SVG 占位符的 src 替换为 data-actualsrc /

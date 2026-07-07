@@ -112,7 +112,7 @@ func TestFetchActivitiesPaginationAndActor(t *testing.T) {
 		t.Fatalf("activities len = %d", len(activities))
 	}
 	actor := actorFromActivities(activities)
-	if actor["name"] != "Alice" {
+	if actor == nil || actor.Name != "Alice" {
 		t.Fatalf("actor 未提取: %+v", actor)
 	}
 }
@@ -325,7 +325,7 @@ func TestFeedInfoFallbackWithoutActor(t *testing.T) {
 
 func TestFeedInfoUsesActorName(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	actor := map[string]interface{}{"name": "张三", "headline": "知乎签名档"}
+	actor := &zhihuPerson{Name: "张三", Headline: "知乎签名档"}
 	info, err := r.feedInfo([]string{"kvxjr369f"}, actor)
 	if err != nil {
 		t.Fatalf("FeedInfo 返回错误: %v", err)
@@ -340,7 +340,7 @@ func TestFeedInfoUsesActorName(t *testing.T) {
 
 func TestFeedInfoActorEmptyHeadlineFallback(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	actor := map[string]interface{}{"name": "李四", "headline": ""}
+	actor := &zhihuPerson{Name: "李四"}
 	info, err := r.feedInfo([]string{"kvxjr369f"}, actor)
 	if err != nil {
 		t.Fatalf("FeedInfo 返回错误: %v", err)
@@ -368,12 +368,40 @@ func newTestRoute() *Route {
 	return New(config.ResolvedRouteConfig{Cookie: "test"})
 }
 
-func mkAct(target map[string]interface{}, verb, actionText string) map[string]interface{} {
-	return map[string]interface{}{
+func activityFromMap(values map[string]interface{}) zhihuActivity {
+	b, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
+	var act zhihuActivity
+	if err := json.Unmarshal(b, &act); err != nil {
+		panic(err)
+	}
+	return act
+}
+
+func pinBlocksFromList(values []interface{}) []zhihuPinBlock {
+	b, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
+	var blocks []zhihuPinBlock
+	if err := json.Unmarshal(b, &blocks); err != nil {
+		panic(err)
+	}
+	return blocks
+}
+
+func renderPinContentFromMaps(blocks []interface{}, zhihuURL string) string {
+	return renderPinContent(pinBlocksFromList(blocks), zhihuURL)
+}
+
+func mkAct(target map[string]interface{}, verb, actionText string) zhihuActivity {
+	return activityFromMap(map[string]interface{}{
 		"target":      target,
 		"verb":        verb,
 		"action_text": actionText,
-	}
+	})
 }
 
 func TestMakeFeedItemAnswerType(t *testing.T) {
@@ -536,7 +564,7 @@ func TestMakeFeedItemCollectAnswerCategory(t *testing.T) {
 		"target": target, "verb": "MEMBER_COLLECT_ANSWER",
 		"action_text": "收藏了回答", "created_time": float64(1700000000),
 	}
-	item := r.makeFeedItem(a)
+	item := r.makeFeedItem(activityFromMap(a))
 	if len(item.Categories) != 1 || item.Categories[0] != TypeCollectedAnswer {
 		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeCollectedAnswer)
 	}
@@ -597,7 +625,7 @@ func TestMakeFeedItemFollowedQuestionViaEmptyVerb(t *testing.T) {
 		"target": target, "verb": "", "action_text": "关注了问题",
 		"created_time": float64(1777708519),
 	}
-	item := r.makeFeedItem(a)
+	item := r.makeFeedItem(activityFromMap(a))
 	if len(item.Categories) != 1 || item.Categories[0] != TypeFollowedQuestion {
 		t.Errorf("Categories = %v, want [%s]", item.Categories, TypeFollowedQuestion)
 	}
@@ -675,7 +703,7 @@ func TestIsSelfInteraction(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isSelfInteraction(tt.act)
+			got := isSelfInteraction(activityFromMap(tt.act))
 			if got != tt.want {
 				t.Errorf("isSelfInteraction(%v) = %v, want %v", tt.act, got, tt.want)
 			}
@@ -700,7 +728,7 @@ func TestDeriveCategoryKnownTypes(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := deriveCategory(tt.act)
+			got := deriveCategory(activityFromMap(tt.act))
 			if got != tt.want {
 				t.Errorf("deriveCategory(%v) = %q, want %q", tt.act, got, tt.want)
 			}
@@ -713,7 +741,7 @@ func TestDeriveCategoryUnknownType(t *testing.T) {
 		"verb":   "MEMBER_FUTURE_ACTION",
 		"target": map[string]interface{}{"type": "future_type"},
 	}
-	got := deriveCategory(act)
+	got := deriveCategory(activityFromMap(act))
 	if got != "future_type" {
 		t.Errorf("未知类型应回退到 target.type, 实得 %q", got)
 	}
@@ -725,7 +753,7 @@ func TestRenderPinContentTextBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"content": "纯文本内容"},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if !strings.Contains(got, "纯文本内容") {
 		t.Errorf("应包含文本内容, 实得 %q", got)
 	}
@@ -735,7 +763,7 @@ func TestRenderPinContentHTMLPreserved(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"content": "<p>带有<b>HTML</b>标签的内容</p>"},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if strings.Contains(got, "&lt;") || strings.Contains(got, "&gt;") {
 		t.Errorf("HTML 标签不应被转义, 实得 %q", got)
 	}
@@ -753,7 +781,7 @@ func TestRenderPinContentTypedTextBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockText, "block_text": "Column", "text": "收录于 · Another Way"},
 	}
-	got := renderPinContent(blocks, "https://www.zhihu.com/pin/2055771938740499306")
+	got := renderPinContentFromMaps(blocks, "https://www.zhihu.com/pin/2055771938740499306")
 	if !strings.Contains(got, "收录于 · Another Way") {
 		t.Errorf("应包含 text 字段内容, 实得 %q", got)
 	}
@@ -766,7 +794,7 @@ func TestRenderPinContentTypedTextBlockEscapesPlainText(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockText, "text": `<script>alert("x")</script>`},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if strings.Contains(got, "<script>") {
 		t.Errorf("text 字段应作为纯文本转义, 实得 %q", got)
 	}
@@ -784,7 +812,7 @@ func TestRenderPinContentTypedEmptyTextBlockDoesNotWarn(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockText, "block_text": "ThanksForInvitingLabel", "text": ""},
 	}
-	got := renderPinContent(blocks, "https://www.zhihu.com/pin/2055771938740499306")
+	got := renderPinContentFromMaps(blocks, "https://www.zhihu.com/pin/2055771938740499306")
 	if got != "" {
 		t.Errorf("空 text block 不应渲染内容, 实得 %q", got)
 	}
@@ -797,7 +825,7 @@ func TestRenderPinContentImageBlock(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "image", "original_url": "https://pic.zhimg.com/img.jpg"},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if !strings.Contains(got, "https://pic.zhimg.com/img.jpg") {
 		t.Errorf("应包含图片URL, 实得 %q", got)
 	}
@@ -807,7 +835,7 @@ func TestRenderPinContentLinkCard(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "link_card", "url": "https://example.com", "data_draft_title": "链接标题"},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if !strings.Contains(got, "https://example.com") || !strings.Contains(got, "链接标题") {
 		t.Errorf("应包含链接和标题, 实得 %q", got)
 	}
@@ -833,7 +861,7 @@ func TestRenderPinContentKnownVideoBlock(t *testing.T) {
 			},
 		},
 	}
-	got := renderPinContent(blocks, zhihuURL)
+	got := renderPinContentFromMaps(blocks, zhihuURL)
 	if !strings.Contains(got, "<video") || !strings.Contains(got, `<source src="https://vdn3.vzuu.com/HD/video.mp4"`) {
 		t.Errorf("video block 应渲染为 video 标签并选择 hd URL, 实得 %q", got)
 	}
@@ -859,7 +887,7 @@ func TestRenderPinContentVideoInfoPlaylist(t *testing.T) {
 			},
 		},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if !strings.Contains(got, "https://vdn.vzuu.com/fhd.mp4") {
 		t.Errorf("video_info.playlist 应优先选择 fhd URL, 实得 %q", got)
 	}
@@ -872,7 +900,7 @@ func TestRenderPinContentVideoBlockLinkFallback(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockVideo, "url": "https://www.zhihu.com/video/123"},
 	}
-	got := renderPinContent(blocks, "")
+	got := renderPinContentFromMaps(blocks, "")
 	if got != `<a href="https://www.zhihu.com/video/123">查看视频</a>` {
 		t.Errorf("非 mp4 video URL 应渲染为链接, 实得 %q", got)
 	}
@@ -888,7 +916,7 @@ func TestRenderPinContentVideoBlockMissingURLWarns(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": PinBlockVideo, "thumbnail": "https://pic.zhimg.com/video.jpg"},
 	}
-	got := renderPinContent(blocks, zhihuURL)
+	got := renderPinContentFromMaps(blocks, zhihuURL)
 	if got != "" {
 		t.Errorf("缺少 URL 的 video block 不应渲染内容, 实得 %q", got)
 	}
@@ -909,7 +937,7 @@ func TestRenderPinContentUnknownBlockType(t *testing.T) {
 	blocks := []interface{}{
 		map[string]interface{}{"type": "future_block_type", "foo": "bar"},
 	}
-	got := renderPinContent(blocks, zhihuURL)
+	got := renderPinContentFromMaps(blocks, zhihuURL)
 	if got != "" {
 		t.Errorf("未知 block type 应返回空串, 实得 %q", got)
 	}
@@ -924,15 +952,19 @@ func TestRenderPinContentUnknownBlockType(t *testing.T) {
 
 // mockFetchActivities 创建一个返回固定 activities 的 fetchActivitiesFunc。
 func mockFetchActivities(activities []map[string]interface{}, err error) fetchActivitiesFunc {
-	return func(userID string, limit int) ([]map[string]interface{}, error) {
+	return func(userID string, limit int) ([]zhihuActivity, error) {
 		if err != nil {
 			return nil, err
 		}
-		// 模拟截断行为
-		if len(activities) > limit {
-			return activities[:limit], nil
+		var typed []zhihuActivity
+		for _, act := range activities {
+			typed = append(typed, activityFromMap(act))
 		}
-		return activities, nil
+		// 模拟截断行为
+		if len(typed) > limit {
+			return typed[:limit], nil
+		}
+		return typed, nil
 	}
 }
 
@@ -1187,7 +1219,7 @@ func TestDeriveCategoryWarnsOnUnknownType(t *testing.T) {
 		"target":      map[string]interface{}{"type": "future_type"},
 		"action_text": "做了某事",
 	}
-	category := deriveCategory(act)
+	category := deriveCategory(activityFromMap(act))
 	if category != "future_type" {
 		t.Errorf("deriveCategory = %q, want 'future_type'", category)
 	}
@@ -1208,13 +1240,13 @@ func TestDeriveCategoryNoWarnOnKnownTypes(t *testing.T) {
 	defer slog.SetDefault(oldLogger)
 
 	// 已知 verb
-	deriveCategory(map[string]interface{}{
+	deriveCategory(activityFromMap(map[string]interface{}{
 		"verb": "MEMBER_ANSWER_QUESTION", "target": map[string]interface{}{"type": "answer"},
-	})
+	}))
 	// 已知 fallback type
-	deriveCategory(map[string]interface{}{
+	deriveCategory(activityFromMap(map[string]interface{}{
 		"verb": "", "target": map[string]interface{}{"type": "question"},
-	})
+	}))
 
 	if buf.Len() > 0 {
 		t.Errorf("已知类型不应打 warning, 实得: %s", buf.String())
@@ -1416,7 +1448,7 @@ func TestFetchStopsWhenNextMissing(t *testing.T) {
 
 func TestFetchRaisesOnNon200(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = func(userID string, limit int) ([]map[string]interface{}, error) {
+	r.fetchActivitiesFn = func(userID string, limit int) ([]zhihuActivity, error) {
 		return nil, &route.HTTPError{StatusCode: 403, URL: "https://www.zhihu.com/api/v3/moments/test/activities"}
 	}
 

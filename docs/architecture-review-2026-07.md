@@ -44,8 +44,8 @@
 
 ## P3：可维护性（不紧急，逐项独立派发）
 
-8. **zhihu.go 类型化**：afdian 用 typed struct，zhihu 全程 `map[string]interface{}` + 类型断言（约 400 行）。1477 行测试打底，重构安全。建议定义 activity/target struct，变化大的字段用 `json.RawMessage`。
-9. **Notifier 职责拆分**：`disabledFeeds` 熔断状态与通知发送耦合（`internal/notifier/notifier.go`），HTTP handler 为路由决策依赖通知器。熔断属健康状态管理，建议拆出（并入 pipeline 或独立小组件）。
+8. ~~**zhihu.go 类型化**：afdian 用 typed struct，zhihu 全程 `map[string]interface{}` + 类型断言（约 400 行）。1477 行测试打底，重构安全。建议定义 activity/target struct，变化大的字段用 `json.RawMessage`。~~ → 已完成（2026-07-07）：`internal/route/zhihu` 新增 activity/target/person/question/pin block 结构体，`target.content` 保留 `json.RawMessage` 以兼容字符串正文和 pin block 列表。
+9. ~~**Notifier 职责拆分**：`disabledFeeds` 熔断状态与通知发送耦合（`internal/notifier/notifier.go`），HTTP handler 为路由决策依赖通知器。熔断属健康状态管理，建议拆出（并入 pipeline 或独立小组件）。~~ → 已完成（2026-07-07）：新增 `internal/health.FeedHealth` 管理业务错误码和 feed 禁用状态；`notifier.Notifier` 仅负责发送通知，HTTP handler/refresher 依赖健康组件做熔断判断。
 10. **死配置清理**：`Server.CacheTTL` 从未被读取；`Cache.ArticleTTL` 只设默认值无人使用（均在 `internal/config/config.go`）。要么删除，要么实现——SQLite `articles` 表目前无限增长，树莓派上值得加基于 `fetched_at` 的保留策略，正好把 ArticleTTL 用起来。
 11. ~~`.gitignore` 现代化~~ → 已随 P0 完成
 

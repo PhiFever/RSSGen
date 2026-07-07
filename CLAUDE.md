@@ -56,9 +56,10 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 - **scraper/** — tls-client 封装：Chrome 指纹 profile、请求头及其顺序（风控敏感，头顺序必须手动维护）、Cookie、按实例限速、代理
 - **feed/** — FeedItem → Atom/RSS XML，bluemonday 白名单消毒
 - **refresher/** — 后台调度器，含 pending 去重、重试、熔断触发和错误状态统计（`/status` 端点数据源）
+- **health/** — feed 健康状态管理：业务错误状态码判定与进程内 feed 禁用状态（重启恢复）
 - **cache/** — 内存 TTL 缓存（存 feed XML）+ 基础 feed 键/变体缓存键构造
 - **store/** — SQLite 文章持久化（`articles` 表，避免重复抓详情页；运行期错误降级为 cache miss）
-- **notifier/** — 业务错误通知（飞书 webhook）+ feed 熔断：后台刷新重试耗尽且状态码属于业务错误（默认 400/401/403/404/410/422/451）时通知并禁用该 feed（内存态，重启恢复）
+- **notifier/** — 业务错误通知发送（飞书 webhook）；不持有 feed 熔断状态
 - **config/** — YAML 加载、默认值、`ResolveRoute` 合并全局 scraper 配置与路由级覆盖（同步/后台两条路径共用，保证行为一致）
 
 ### 新增路由的模式

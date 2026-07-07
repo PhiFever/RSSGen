@@ -10,6 +10,7 @@ import (
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/health"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
@@ -147,13 +148,15 @@ func TestTriggerDedup(t *testing.T) {
 func TestTriggerSkipsDisabledFeed(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
+	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
+		FeedHealth:   feedHealth,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
-	notif.DisableFeed("zhihu/user1")
+	feedHealth.DisableFeed("zhihu/user1")
 	// 被禁用的 feed 不应启动刷新
 	ref.Trigger("zhihu", []string{"user1"}, nil)
 	// 不 panic 即为通过；pending 应被清理
@@ -622,22 +625,24 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
+	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:      feedCache,
 		Notifier:       notif,
+		FeedHealth:     feedHealth,
 		MaxRetries:     1,
 		RetryBaseDelay: 0,
 		RoutesConfig:   map[string]config.RouteConfig{},
 	})
 
 	cacheKey := "_test_r1_biz/user1"
-	if notif.IsFeedDisabled(cacheKey) {
+	if feedHealth.IsFeedDisabled(cacheKey) {
 		t.Fatal("初始状态 feed 不应被禁用")
 	}
 
 	ref.refreshOne("_test_r1_biz", []string{"user1"}, nil)
 
-	if !notif.IsFeedDisabled(cacheKey) {
+	if !feedHealth.IsFeedDisabled(cacheKey) {
 		t.Error("业务错误(403)后 feed 应被禁用")
 	}
 }
@@ -655,9 +660,11 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
+	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:      feedCache,
 		Notifier:       notif,
+		FeedHealth:     feedHealth,
 		MaxRetries:     1,
 		RetryBaseDelay: 0,
 		RoutesConfig:   map[string]config.RouteConfig{},
@@ -666,7 +673,7 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	cacheKey := "_test_r1_temp/user1"
 	ref.refreshOne("_test_r1_temp", []string{"user1"}, nil)
 
-	if notif.IsFeedDisabled(cacheKey) {
+	if feedHealth.IsFeedDisabled(cacheKey) {
 		t.Error("临时错误(500)不应禁用 feed")
 	}
 }
@@ -686,15 +693,17 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 
 	feedCache := cache.New(10 * time.Second)
 	notif := notifier.New(notifier.Config{Enabled: false})
+	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
+		FeedHealth:   feedHealth,
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
 	cacheKey := "_test_r1_skip/user1"
-	notif.DisableFeed(cacheKey)
+	feedHealth.DisableFeed(cacheKey)
 
 	ref.refreshOne("_test_r1_skip", []string{"user1"}, nil)
 

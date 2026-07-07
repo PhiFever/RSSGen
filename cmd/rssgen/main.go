@@ -17,6 +17,7 @@ import (
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/health"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/refresher"
@@ -103,10 +104,12 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		})
 	}
 	notif := notifier.New(notifier.Config{
-		Enabled:            cfg.Notifier.Enabled,
-		ServiceURLs:        cfg.Notifier.ServiceURLs,
+		Enabled:     cfg.Notifier.Enabled,
+		ServiceURLs: cfg.Notifier.ServiceURLs,
+		Services:    notifierServices,
+	})
+	feedHealth := health.New(health.Config{
 		BusinessErrorCodes: cfg.Notifier.BusinessErrorCodes,
-		Services:           notifierServices,
 	})
 
 	pipe := pipeline.New(pipeline.Config{
@@ -122,6 +125,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 			FeedCache:      feedCache,
 			ArticleStore:   articleStore,
 			Notifier:       notif,
+			FeedHealth:     feedHealth,
 			Pipeline:       pipe,
 			StartupDelay:   cfg.Refresher.StartupDelay,
 			MaxRetries:     cfg.Refresher.MaxRetries,
@@ -134,7 +138,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(notif, feedCache, ref, articleStore, cfg, pipe)
+	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -176,7 +180,7 @@ func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
 }
 
 func makeRouter(
-	notif *notifier.Notifier,
+	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	ref *refresher.Refresher,
 	articleStore *store.ArticleStore,
@@ -209,7 +213,7 @@ func makeRouter(
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(notif, feedCache, pipe))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe))
 
 	// 状态接口
 	r.Get("/status", makeStatusHandler(ref))
@@ -231,12 +235,12 @@ func splitPath(path string) []string {
 
 // makeFeedHandler 创建 feed HTTP handler，便于测试。
 func makeFeedHandler(
-	notif *notifier.Notifier,
+	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	articleStore *store.ArticleStore,
 	cfg *config.Config,
 ) http.HandlerFunc {
-	return makeFeedHandlerWithPipeline(notif, feedCache, pipeline.New(pipeline.Config{
+	return makeFeedHandlerWithPipeline(feedHealth, feedCache, pipeline.New(pipeline.Config{
 		FeedCache:     feedCache,
 		ArticleStore:  articleStore,
 		ScraperConfig: cfg.Scraper,
@@ -245,10 +249,13 @@ func makeFeedHandler(
 }
 
 func makeFeedHandlerWithPipeline(
-	notif *notifier.Notifier,
+	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	pipe *pipeline.Pipeline,
 ) http.HandlerFunc {
+	if feedHealth == nil {
+		feedHealth = health.New(health.Config{})
+	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		routeName := chi.URLParam(r, "route_name")
 		path := chi.URLParam(r, "*")
@@ -265,7 +272,7 @@ func makeFeedHandlerWithPipeline(
 		cacheKey := pipe.CacheKey(routeName, pathParts, opts)
 
 		// 检查 feed 是否被禁用
-		if notif.IsFeedDisabled(feedKey) {
+		if feedHealth.IsFeedDisabled(feedKey) {
 			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", feedKey), http.StatusBadGateway)
 			return
 		}
