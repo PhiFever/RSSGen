@@ -4,85 +4,74 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-RSSGen 是一个自托管 RSS 源生成框架（类似 RSSHub），使用 Python 编写。用户通过编写路由脚本将任意网站（爱发电、知乎、微信公众号等）转为标准 RSS/Atom 订阅源，通过 Docker Compose 与 Miniflux 阅读器集成部署。
+RSSGen 是一个自托管 RSS 源生成框架（类似 RSSHub），使用 **Go** 编写。通过编写路由模块将网站（知乎、爱发电等）转为标准 RSS/Atom 订阅源，与 Miniflux 阅读器通过 Docker Compose 集成部署，目标平台含 ARM64（树莓派）。
+
+> 项目曾为 Python/FastAPI 实现，已完全重写为 Go。任何提及 FastAPI、uv、curl_cffi、`RSSGen/` Python 包的历史文档均已过时。
 
 ## 技术栈
 
-- **Python 3.12**，包管理使用 uv（见 pyproject.toml）
-- **Web 框架**: FastAPI + uvicorn
-- **HTTP 客户端**: curl_cffi（异步，自动模拟浏览器 TLS 指纹）
-- **HTML 解析**: BeautifulSoup4 / parsel
-- **Feed 生成**: feedgen
-- **无头浏览器**: Playwright（用于需要 JS 渲染的场景如微信公众号）
-- **配置**: PyYAML + Pydantic
-- **缓存**: cachetools（内存） / Redis（可选）
-- **部署**: Docker Compose（RSSGen + Miniflux + PostgreSQL）
+- **Go 1.25**，测试只用标准库 `testing` + `httptest`（无 testify）
+- **HTTP 路由**: chi v5
+- **反爬 HTTP 客户端**: bogdanfinn/tls-client（Chrome TLS/JA3 指纹模拟，见 `internal/scraper/`）
+- **HTML**: bluemonday（消毒白名单）、golang.org/x/net/html（解析）
+- **持久化**: modernc.org/sqlite（纯 Go 实现，全程 CGO_ENABLED=0，勿引入 CGO 依赖）
+- **配置**: gopkg.in/yaml.v3
+- **部署**: Dockerfile 多阶段构建 → scratch 镜像；Docker Compose（RSSGen + Miniflux + PostgreSQL）
 
 ## 常用命令
 
 ```bash
-# 虚拟环境
-uv sync                              # 安装依赖
-source .venv/bin/activate            # 激活虚拟环境（Linux/macOS）
-
-# 运行服务
-uvicorn RSSGen.app:app --host 0.0.0.0 --port 8000 --reload
-
-# Docker 部署（含 Miniflux + PostgreSQL）
-docker compose up -d
-
-# 测试
-pytest
-pytest tests/test_xxx.py::test_func  # 运行单个测试
+go build ./...                                        # 编译
+go test ./...                                         # 全部测试
+go test ./internal/route/zhihu/ -run TestName -v      # 单个测试
+go vet ./...                                          # 静态检查
+go run ./cmd/rssgen                                   # 本地运行（需当前目录有 config.yml）
+docker compose up -d                                  # 部署（含 Miniflux + PostgreSQL）
 ```
+
+发版：推送 `v*` tag 触发 GitHub Actions 构建 amd64/arm64 双架构镜像推送 GHCR。
 
 ## 架构
 
 ### 请求流程
 
-**读写分离架构（爱发电路由）：**
-
-```
-Miniflux 定时拉取 → GET /feed/afdian/{slug}
-  → FastAPI 路由分发
-  → 检查 FeedCache（命中直接返回 XML，响应时间 <1ms）
-  → 缓存未命中：
-     - 触发 BackgroundRefresher 后台刷新（非阻塞）
-     - 返回空 feed（首次请求约 50ms）
-  → 后台刷新完成后，后续请求命中缓存
-```
-
-**其他路由（同步模式）：**
-
 ```
 Miniflux 定时拉取 → GET /feed/{route_name}/{params}
-  → FastAPI 路由分发 → 匹配路由脚本
-  → 检查缓存（命中直接返回 XML）
-  → 调用 Route.fetch(article_cache) 抓取数据源
-  → feed.py 将 FeedItem 列表转为 Atom XML
-  → 写入双层缓存，返回响应
+  → cmd/rssgen/main.go 的 makeFeedHandler
+  → 查 FeedCache（命中直接返回 XML）
+  → 未命中：触发 refresher 后台刷新 + 同步抓取
+      Route.Fetch → Route.FeedInfo → feed.Generate → 写缓存 → 返回
 ```
 
-### 核心模块（RSSGen/）
+后台路径：`refresher` 按 config.yml 中各路由的 `refresh_interval` 定时刷新（启动预热、随机抖动、指数退避重试），生成 XML 写入同一 FeedCache。
 
-- **app.py** — FastAPI 主服务入口，初始化双层缓存和后台刷新器
-- **config.py** — YAML 配置加载，Pydantic 校验
-- **core/route.py** — `Route` 基类（定义 `feed_info()` 和 `fetch()` 接口）、`FeedItem`/`FeedInfo` 数据类、路由注册机制
-- **core/feed.py** — feedgen 封装，FeedItem → Atom/RSS XML
-- **core/scraper.py** — 基于 curl_cffi 的反爬封装（TLS 指纹模拟、Cookie 管理、频率控制、代理）
-- **core/browser.py** — Playwright 无头浏览器封装
-- **core/cache.py** — 双层缓存（FeedCache + ArticleCache，内存 TTLCache）
-- **core/refresher.py** — BackgroundRefresher 后台调度器（预热 + 定时刷新 + 动态触发）
-- **routes/** — 路由脚本目录，自动发现继承 `Route` 的类并注册
+**注意**：同步路径（`main.go` makeFeedHandler）和后台路径（`refresher.refreshOne`）目前各自实现了一遍「解析配置 → 抓取 → 生成 → 写缓存」流水线，修改其中一处时必须检查另一处是否需要同步（收敛计划见 `docs/architecture-review-2026-07.md` P2-5）。
 
-### 路由编写模式
+### 模块地图（internal/）
 
-每个路由是 `routes/` 下的独立 Python 文件，继承 `Route` 基类，实现 `feed_info()` 和 `fetch()` 方法。`name` 属性决定 URL 前缀（`/feed/{name}/...`）。
+- **route/** — `Route` 接口、`FeedItem`/`FeedInfo` 数据结构、`HTTPError`（携带上游状态码供熔断判定）、路由注册表
+- **route/zhihu/**、**route/afdian/** — 具体路由实现
+- **sign/zhihu/** — 知乎 x-zse-96 签名算法还原（打乱 base64 + SM4 变体 + XOR）。上游 JS 改版时最先失效的模块，版本常量集中在 `sign.go` 顶部
+- **scraper/** — tls-client 封装：Chrome 指纹 profile、请求头及其顺序（风控敏感，头顺序必须手动维护）、Cookie、按实例限速、代理
+- **feed/** — FeedItem → Atom/RSS XML，bluemonday 白名单消毒
+- **refresher/** — 后台调度器，含错误状态统计（`/status` 端点数据源）
+- **cache/** — 内存 TTL 缓存（存 feed XML）+ 缓存键构造（`BuildCacheKey`，键 = routeName/pathParams，不含查询参数）
+- **store/** — SQLite 文章持久化（`articles` 表，避免重复抓详情页；运行期错误降级为 cache miss）
+- **notifier/** — 业务错误通知（飞书 webhook）+ feed 熔断：后台刷新重试耗尽且状态码属于业务错误（默认 400/401/403/404/410/422/451）时通知并禁用该 feed（内存态，重启恢复）
+- **config/** — YAML 加载、默认值、`ResolveRoute` 合并全局 scraper 配置与路由级覆盖（同步/后台两条路径共用，保证行为一致）
+
+### 新增路由的模式
+
+1. 建包 `internal/route/{name}/`，实现 `route.Route` 接口（`Name`/`Description`/`FeedIDField`/`FeedInfo`/`Fetch`）
+2. 在包的 `init()` 中 `route.Register("{name}", factory)`，factory 接收 `config.ResolvedRouteConfig` 强类型配置
+3. 在 `cmd/rssgen/main.go` 匿名 import 该包
+4. 上游返回非 2xx 时返回 `*route.HTTPError`，否则熔断/通知机制不生效
+5. 测试注入用函数字段模式：路由结构体上放可替换的抓取函数字段（参考 afdian 的 `getPostListFn`、zhihu 的 `fetchActivitiesFn`），测试中替换为假实现
 
 ### 配置
 
 - `config.example.yml` — 配置模板
-- `config.yml` — 用户实际配置（已 gitignore），包含凭证、风控参数等
+- `config.yml` — 用户实际配置（已 gitignore），包含 Cookie 凭证、限速、代理、各路由的 feeds 列表
 
 ## 部署注意事项
 
@@ -91,5 +80,7 @@ Miniflux 定时拉取 → GET /feed/{route_name}/{params}
 
 ## 注意事项
 
+- 架构评审与待办清单（已知 bug、重构计划、执行顺序）见 `docs/architecture-review-2026-07.md`，改动核心流程前先核对相关条目，完成后更新条目状态
 - 所有文档和代码注释使用简体中文
 - Dockerfile 需兼容 ARM64 架构
+- 仓库根目录的 `*.json` 抓包样本、`*.sh` 脚本、二进制均为本地调试产物，已被 .gitignore 忽略，勿提交；测试夹具放 `internal/**/testdata/`（.gitignore 已豁免）
