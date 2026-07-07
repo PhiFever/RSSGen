@@ -7,6 +7,7 @@ require (
 	github.com/bogdanfinn/tls-client v1.15.0
 	github.com/go-chi/chi/v5 v5.3.0
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/tidwall/gjson v1.19.0
 	golang.org/x/net v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.52.0
@@ -31,6 +32,8 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.32.0 // indirect

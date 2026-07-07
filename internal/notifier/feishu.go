@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/tidwall/gjson"
 )
 
 // feishuSender 通过飞书 Incoming Webhook 发送通知。
@@ -77,16 +79,13 @@ func (f *feishuSender) Send(message string) error {
 		return fmt.Errorf("飞书 Webhook 返回 %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// 飞书返回 {"code":0,"msg":"success"} 或 {"code":9499,"msg":"bad request"}
-	var result struct {
-		Code int    `json:"code"`
-		Msg  string `json:"msg"`
+	if !gjson.ValidBytes(respBody) {
+		return fmt.Errorf("解析飞书响应失败")
 	}
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Errorf("解析飞书响应失败: %w", err)
-	}
-	if result.Code != 0 {
-		return fmt.Errorf("飞书 Webhook 错误: code=%d, msg=%s", result.Code, result.Msg)
+	code := gjson.GetBytes(respBody, "code").Int()
+	if code != 0 {
+		msg := gjson.GetBytes(respBody, "msg").String()
+		return fmt.Errorf("飞书 Webhook 错误: code=%d, msg=%s", code, msg)
 	}
 
 	return nil

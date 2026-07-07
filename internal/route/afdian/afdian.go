@@ -14,16 +14,10 @@ import (
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
+	"github.com/tidwall/gjson"
 )
 
 var hostURL = "https://afdian.com"
-
-// afdianResponse 爱发电 API 通用响应结构。
-type afdianResponse struct {
-	EC   int             `json:"ec"`
-	EM   string          `json:"em"`
-	Data json.RawMessage `json:"data"`
-}
 
 // afdianUser 爱发电用户信息。
 type afdianUser struct {
@@ -45,18 +39,6 @@ type afdianPost struct {
 // afdianPostList 爱发电帖子列表响应。
 type afdianPostList struct {
 	List []afdianPost `json:"list"`
-}
-
-// afdianUserProfile 爱发电用户资料响应。
-type afdianUserProfile struct {
-	User afdianUser `json:"user"`
-}
-
-// afdianPostDetail 爱发电帖子详情响应。
-type afdianPostDetail struct {
-	Post struct {
-		Content string `json:"content"`
-	} `json:"post"`
 }
 
 type afdianUnixTime int64
@@ -94,16 +76,21 @@ type afdianCommentList struct {
 // parseAfdianResponse 解析爱发电 API 响应，返回原始 data 字节。
 // 统一处理 JSON 解析和 ec 码校验。
 func parseAfdianResponse(body []byte) (json.RawMessage, error) {
-	var resp afdianResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("解析响应 JSON 失败: %w", err)
+	if !gjson.ValidBytes(body) {
+		return nil, fmt.Errorf("解析响应 JSON 失败")
 	}
 
-	if resp.EC != 200 {
-		return nil, fmt.Errorf("爱发电 API 错误: ec=%d, em=%s", resp.EC, resp.EM)
+	ec := gjson.GetBytes(body, "ec").Int()
+	if ec != 200 {
+		em := gjson.GetBytes(body, "em").String()
+		return nil, fmt.Errorf("爱发电 API 错误: ec=%d, em=%s", ec, em)
 	}
 
-	return resp.Data, nil
+	data := gjson.GetBytes(body, "data")
+	if !data.Exists() {
+		return nil, nil
+	}
+	return json.RawMessage([]byte(data.Raw)), nil
 }
 
 func init() {
@@ -334,15 +321,20 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 		return "", fmt.Errorf("响应缺少 data 字段")
 	}
 
-	var profile afdianUserProfile
-	if err := json.Unmarshal(data, &profile); err != nil {
-		return "", fmt.Errorf("解析用户资料失败: %w", err)
-	}
-	if profile.User.UserID == "" {
-		return "", fmt.Errorf("响应缺少 user_id 字段")
+	profile := gjson.ParseBytes(data)
+	if !profile.IsObject() {
+		return "", fmt.Errorf("解析用户资料失败: data 不是对象")
 	}
 
-	return profile.User.UserID, nil
+	userID := profile.Get("user.user_id")
+	if !userID.Exists() || userID.Type == gjson.Null || userID.String() == "" {
+		return "", fmt.Errorf("响应缺少 user_id 字段")
+	}
+	if userID.Type != gjson.String {
+		return "", fmt.Errorf("解析用户资料失败: data.user.user_id 不是字符串")
+	}
+
+	return userID.String(), nil
 }
 
 // getPostList 获取作者动态列表（简化版，只取第一页）。
@@ -421,11 +413,21 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", nil
 	}
 
-	var detail afdianPostDetail
-	if err := json.Unmarshal(data, &detail); err != nil {
-		return "", fmt.Errorf("解析帖子详情失败: %w", err)
+	post := gjson.GetBytes(data, "post")
+	if !post.Exists() {
+		return "", nil
 	}
-	return detail.Post.Content, nil
+	if !post.IsObject() {
+		return "", fmt.Errorf("解析帖子详情失败: data.post 不是对象")
+	}
+	content := post.Get("content")
+	if !content.Exists() || content.Type == gjson.Null {
+		return "", nil
+	}
+	if content.Type != gjson.String {
+		return "", fmt.Errorf("解析帖子详情失败: data.post.content 不是字符串")
+	}
+	return content.String(), nil
 }
 
 func (r *Route) getPostComments(sc *scraper.Scraper, postID string) (afdianCommentList, error) {
