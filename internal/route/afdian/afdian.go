@@ -115,6 +115,8 @@ func init() {
 // Route 是爱发电路由实现。
 type Route struct {
 	cfg               config.ResolvedRouteConfig
+	scraperMu         sync.Mutex
+	scraper           *scraper.Scraper
 	getAuthorIDFn     func(sc *scraper.Scraper, authorSlug string) (string, error)
 	getPostListFn     func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
 	getPostDetailFn   func(sc *scraper.Scraper, postID string) (string, error)
@@ -131,17 +133,30 @@ func (r *Route) Description() string { return "爱发电创作者动态订阅" }
 func (r *Route) FeedIDField() string { return "user_id" }
 
 func (r *Route) getScraper() (*scraper.Scraper, error) {
-	return scraper.New(scraper.Config{
+	r.scraperMu.Lock()
+	defer r.scraperMu.Unlock()
+
+	if r.scraper != nil {
+		r.scraper.SetCookies(scraper.ParseCookieString(r.cfg.Cookie))
+		return r.scraper, nil
+	}
+
+	sc, err := scraper.New(scraper.Config{
 		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
 		RateLimit:   r.cfg.RateLimit,
 		Proxy:       r.cfg.Proxy,
 		Impersonate: r.cfg.Impersonate,
 	})
+	if err != nil {
+		return nil, err
+	}
+	r.scraper = sc
+	return r.scraper, nil
 }
 
-func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
+func (r *Route) feedInfo(pathParams []string) (route.FeedInfo, error) {
 	if len(pathParams) == 0 {
-		return nil, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
+		return route.FeedInfo{}, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
 	}
 	authorSlug := pathParams[0]
 	displayName := authorSlug
@@ -153,17 +168,22 @@ func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
 		}
 	}
 
-	return &route.FeedInfo{
+	return route.FeedInfo{
 		Title:       fmt.Sprintf("爱发电 - %s", displayName),
 		Link:        fmt.Sprintf("%s/a/%s", hostURL, authorSlug),
 		Description: fmt.Sprintf("爱发电创作者 %s 的最新动态", displayName),
 	}, nil
 }
 
-func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	if len(pathParams) == 0 {
-		return nil, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
+		return route.FeedResult{}, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
 	}
+	info, err := r.feedInfo(pathParams)
+	if err != nil {
+		return route.FeedResult{}, err
+	}
+
 	authorSlug := pathParams[0]
 	limit := opts.Limit
 	if limit <= 0 {
@@ -172,7 +192,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 
 	sc, err := r.getScraper()
 	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
+		return route.FeedResult{}, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
 
 	// 获取作者 ID
@@ -182,7 +202,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	}
 	userID, err := authorIDFn(sc, authorSlug)
 	if err != nil {
-		return nil, fmt.Errorf("获取作者 ID 失败: %w", err)
+		return route.FeedResult{}, fmt.Errorf("获取作者 ID 失败: %w", err)
 	}
 
 	// 获取帖子列表
@@ -192,7 +212,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	}
 	posts, err := postListFn(sc, userID, authorSlug, limit)
 	if err != nil {
-		return nil, fmt.Errorf("获取帖子列表失败: %w", err)
+		return route.FeedResult{}, fmt.Errorf("获取帖子列表失败: %w", err)
 	}
 
 	contents := make([]string, len(posts))
@@ -289,7 +309,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		items = append(items, item)
 	}
 
-	return items, nil
+	return route.FeedResult{Info: info, Items: items}, nil
 }
 
 // getAuthorID 通过 url_slug 获取作者 user_id。

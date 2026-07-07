@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/notifier"
+	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/refresher"
 	"github.com/PhiFever/RSSGen/internal/route"
 	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
@@ -91,7 +93,15 @@ func TestIndexEndpoint(t *testing.T) {
 	defer route.Unregister("_main_index")
 
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{}}
-	handler := makeRouter(notifier.New(notifier.Config{}), cache.New(10*time.Second), nil, nil, cfg)
+	feedCache := cache.New(10 * time.Second)
+	handler := makeRouter(
+		notifier.New(notifier.Config{}),
+		feedCache,
+		nil,
+		nil,
+		cfg,
+		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
+	)
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -256,7 +266,7 @@ func setupTestRouter(notif *notifier.Notifier, feedCache *cache.TTLCache) *chi.M
 		Scraper: config.ScraperConfig{},
 		Routes:  map[string]config.RouteConfig{},
 	}
-	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, nil, nil, cfg))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, nil, cfg))
 	return r
 }
 
@@ -282,7 +292,7 @@ func TestSiblingFeedNotBlocked(t *testing.T) {
 	notif.DisableFeed("afdian/author1")
 
 	// 预填充缓存，避免走真实 fetch
-	feedCache.Set("afdian/author2", "<feed/>")
+	feedCache.Set(pipeline.CacheKey("afdian", []string{"author2"}, route.FetchOptions{}), "<feed/>")
 
 	router := setupTestRouter(notif, feedCache)
 
@@ -301,7 +311,7 @@ func TestSiblingFeedNotBlocked(t *testing.T) {
 func TestFeedCacheHitReturnsXML(t *testing.T) {
 	notif := notifier.New(notifier.Config{Enabled: false})
 	feedCache := cache.New(10 * time.Second)
-	feedCache.Set("afdian/user1", `<?xml version="1.0"?><feed/>`)
+	feedCache.Set(pipeline.CacheKey("afdian", []string{"user1"}, route.FetchOptions{}), `<?xml version="1.0"?><feed/>`)
 
 	router := setupTestRouter(notif, feedCache)
 
@@ -339,29 +349,30 @@ type mainTestRoute struct {
 	info        *route.FeedInfo
 	items       []route.FeedItem
 	capturedOpt route.FetchOptions
+	fetchCount  atomic.Int32
 }
 
 func (r *mainTestRoute) Name() string        { return r.name }
 func (r *mainTestRoute) Description() string { return "main test route" }
 func (r *mainTestRoute) FeedIDField() string { return "user_id" }
-func (r *mainTestRoute) FeedInfo([]string) (*route.FeedInfo, error) {
-	if r.infoErr != nil {
-		return nil, r.infoErr
-	}
-	if r.info != nil {
-		return r.info, nil
-	}
-	return &route.FeedInfo{Title: "Test", Link: "https://example.com"}, nil
-}
-func (r *mainTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+func (r *mainTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) (route.FeedResult, error) {
+	r.fetchCount.Add(1)
 	r.capturedOpt = opts
 	if r.fetchErr != nil {
-		return nil, r.fetchErr
+		return route.FeedResult{}, r.fetchErr
 	}
+	if r.infoErr != nil {
+		return route.FeedResult{}, r.infoErr
+	}
+	info := route.FeedInfo{Title: "Test", Link: "https://example.com"}
+	if r.info != nil {
+		info = *r.info
+	}
+	items := []route.FeedItem{{Title: "Item", Link: "https://example.com/1"}}
 	if r.items != nil {
-		return r.items, nil
+		items = r.items
 	}
-	return []route.FeedItem{{Title: "Item", Link: "https://example.com/1"}}, nil
+	return route.FeedResult{Info: info, Items: items}, nil
 }
 
 func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
@@ -373,7 +384,7 @@ func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_success": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, nil, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, (*store.ArticleStore)(nil), cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_success/u1?limit=7&include=a,b&format=rss", nil)
 	w := httptest.NewRecorder()
@@ -388,8 +399,66 @@ func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 	if len(testRoute.capturedOpt.Include) != 2 || testRoute.capturedOpt.Include[0] != "a" {
 		t.Fatalf("Include = %+v", testRoute.capturedOpt.Include)
 	}
-	if cached, ok := feedCache.Get("_main_success/u1"); !ok || cached == "" {
+	cacheKey := pipeline.CacheKey("_main_success", []string{"u1"}, route.FetchOptions{
+		Format:  "rss",
+		Limit:   7,
+		Include: []string{"a", "b"},
+	})
+	if cached, ok := feedCache.Get(cacheKey); !ok || cached == "" {
 		t.Fatal("同步抓取成功后应写入缓存")
+	}
+}
+
+func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
+	testRoute := &mainTestRoute{name: "_main_variant"}
+	route.Register("_main_variant", func(config.ResolvedRouteConfig) route.Route { return testRoute })
+	defer route.Unregister("_main_variant")
+
+	notif := notifier.New(notifier.Config{})
+	feedCache := cache.New(10 * time.Second)
+	rssKey := pipeline.CacheKey("_main_variant", []string{"u1"}, route.FetchOptions{Format: "rss"})
+	feedCache.Set(rssKey, "<rss/>")
+
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_variant": {Enabled: true}}}
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, (*store.ArticleStore)(nil), cfg))
+
+	req := httptest.NewRequest("GET", "/feed/_main_variant/u1?format=atom", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, body=%s", w.Code, w.Body.String())
+	}
+	if w.Body.String() == "<rss/>" {
+		t.Fatal("atom 请求不应命中 rss 变体缓存")
+	}
+	if testRoute.fetchCount.Load() != 1 {
+		t.Fatalf("atom 变体未命中时应同步抓取一次, got %d", testRoute.fetchCount.Load())
+	}
+}
+
+func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
+	testRoute := &mainTestRoute{name: "_main_no_trigger"}
+	route.Register("_main_no_trigger", func(config.ResolvedRouteConfig) route.Route { return testRoute })
+	defer route.Unregister("_main_no_trigger")
+
+	notif := notifier.New(notifier.Config{})
+	feedCache := cache.New(10 * time.Second)
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_no_trigger": {Enabled: true}}}
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, (*store.ArticleStore)(nil), cfg))
+
+	req := httptest.NewRequest("GET", "/feed/_main_no_trigger/u1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	time.Sleep(50 * time.Millisecond)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d, body=%s", w.Code, w.Body.String())
+	}
+	if testRoute.fetchCount.Load() != 1 {
+		t.Fatalf("缓存未命中时不应额外触发后台抓取, Fetch 调用数 = %d", testRoute.fetchCount.Load())
 	}
 }
 
@@ -401,7 +470,7 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeFeedHandler(notifier.New(notifier.Config{}), cache.New(10*time.Second), nil, (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeFeedHandler(notifier.New(notifier.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_fetch_err/u1", nil)
 		w := httptest.NewRecorder()
@@ -411,20 +480,20 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("feed info error", func(t *testing.T) {
+	t.Run("result info error", func(t *testing.T) {
 		testRoute := &mainTestRoute{name: "_main_info_err", infoErr: errors.New("bad info")}
 		route.Register("_main_info_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 		defer route.Unregister("_main_info_err")
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_info_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeFeedHandler(notifier.New(notifier.Config{}), cache.New(10*time.Second), nil, (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeFeedHandler(notifier.New(notifier.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_info_err/u1", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("FeedInfo 错误应返回 500，got %d", w.Code)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("Fetch 错误应返回 502，got %d", w.Code)
 		}
 	})
 }

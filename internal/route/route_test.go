@@ -12,11 +12,11 @@ type testRoute struct{}
 func (testRoute) Name() string        { return "_test_route" }
 func (testRoute) Description() string { return "test route" }
 func (testRoute) FeedIDField() string { return "user_id" }
-func (testRoute) FeedInfo([]string) (*FeedInfo, error) {
-	return &FeedInfo{Title: "test", Link: "https://example.com"}, nil
-}
-func (testRoute) Fetch(ArticleStore, []string, FetchOptions) ([]FeedItem, error) {
-	return []FeedItem{{Title: "item"}}, nil
+func (testRoute) Fetch(ArticleStore, []string, FetchOptions) (FeedResult, error) {
+	return FeedResult{
+		Info:  FeedInfo{Title: "test", Link: "https://example.com"},
+		Items: []FeedItem{{Title: "item"}},
+	}, nil
 }
 
 func TestHTTPErrorString(t *testing.T) {
@@ -52,5 +52,27 @@ func TestRegistrySnapshotAndUnregister(t *testing.T) {
 	Unregister("_test_route")
 	if _, ok := GetRegistry()["_test_route"]; ok {
 		t.Fatal("Unregister 后全局注册表不应包含测试路由")
+	}
+}
+
+func TestNormalizeFetchOptions(t *testing.T) {
+	opts := NormalizeFetchOptions(FetchOptions{
+		Format:  "JSON",
+		Include: []string{"pin", "", "answer", "pin"},
+	})
+
+	if opts.Format != "atom" {
+		t.Fatalf("未知 format 应归一为 atom, got %q", opts.Format)
+	}
+	if opts.Limit != 20 {
+		t.Fatalf("默认 Limit = %d, want 20", opts.Limit)
+	}
+	if got := strings.Join(opts.Include, ","); got != "answer,pin" {
+		t.Fatalf("Include = %q, want answer,pin", got)
+	}
+
+	opts = NormalizeFetchOptions(FetchOptions{Format: "RSS", Limit: 5})
+	if opts.Format != "rss" || opts.Limit != 5 {
+		t.Fatalf("RSS/Limit 规范化失败: %+v", opts)
 	}
 }

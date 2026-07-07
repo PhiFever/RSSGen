@@ -45,8 +45,17 @@ func TestRouteMetadataAndScraper(t *testing.T) {
 	if r.Description() == "" || r.FeedIDField() != "user_id" {
 		t.Fatalf("metadata 不符合预期")
 	}
-	if _, err := r.getScraper(); err != nil {
+	first, err := r.getScraper()
+	if err != nil {
 		t.Fatalf("getScraper 返回错误: %v", err)
+	}
+	r.cfg.Cookie = "d_c0=updated;"
+	second, err := r.getScraper()
+	if err != nil {
+		t.Fatalf("第二次 getScraper 返回错误: %v", err)
+	}
+	if first != second {
+		t.Fatal("同一路由实例应复用 scraper，以保留限速与连接状态")
 	}
 }
 
@@ -102,8 +111,9 @@ func TestFetchActivitiesPaginationAndActor(t *testing.T) {
 	if len(activities) != 2 {
 		t.Fatalf("activities len = %d", len(activities))
 	}
-	if r.actor["name"] != "Alice" {
-		t.Fatalf("actor 未提取: %+v", r.actor)
+	actor := actorFromActivities(activities)
+	if actor["name"] != "Alice" {
+		t.Fatalf("actor 未提取: %+v", actor)
 	}
 }
 
@@ -298,7 +308,7 @@ func TestFormatQuestionDescriptionEmpty(t *testing.T) {
 
 func TestFeedInfoFallbackWithoutActor(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	info, err := r.feedInfo([]string{"kvxjr369f"}, nil)
 	if err != nil {
 		t.Fatalf("FeedInfo 返回错误: %v", err)
 	}
@@ -315,8 +325,8 @@ func TestFeedInfoFallbackWithoutActor(t *testing.T) {
 
 func TestFeedInfoUsesActorName(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.actor = map[string]interface{}{"name": "张三", "headline": "知乎签名档"}
-	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	actor := map[string]interface{}{"name": "张三", "headline": "知乎签名档"}
+	info, err := r.feedInfo([]string{"kvxjr369f"}, actor)
 	if err != nil {
 		t.Fatalf("FeedInfo 返回错误: %v", err)
 	}
@@ -330,8 +340,8 @@ func TestFeedInfoUsesActorName(t *testing.T) {
 
 func TestFeedInfoActorEmptyHeadlineFallback(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.actor = map[string]interface{}{"name": "李四", "headline": ""}
-	info, err := r.FeedInfo([]string{"kvxjr369f"})
+	actor := map[string]interface{}{"name": "李四", "headline": ""}
+	info, err := r.feedInfo([]string{"kvxjr369f"}, actor)
 	if err != nil {
 		t.Fatalf("FeedInfo 返回错误: %v", err)
 	}
@@ -346,7 +356,7 @@ func TestFeedInfoActorEmptyHeadlineFallback(t *testing.T) {
 
 func TestFeedInfoRequiresUserID(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	_, err := r.FeedInfo(nil)
+	_, err := r.feedInfo(nil, nil)
 	if err == nil {
 		t.Error("缺少 user_id 应返回错误")
 	}
@@ -964,18 +974,18 @@ func TestFetchReturnsFeedItems(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("应返回 2 个 item, 实得 %d", len(items))
+	if len(result.Items) != 2 {
+		t.Fatalf("应返回 2 个 item, 实得 %d", len(result.Items))
 	}
-	if items[0].Title != "[回答了问题] 问题标题" {
-		t.Errorf("items[0].Title = %q", items[0].Title)
+	if result.Items[0].Title != "[回答了问题] 问题标题" {
+		t.Errorf("result.Items[0].Title = %q", result.Items[0].Title)
 	}
-	if items[1].Title != "[发表了文章] 文章标题" {
-		t.Errorf("items[1].Title = %q", items[1].Title)
+	if result.Items[1].Title != "[发表了文章] 文章标题" {
+		t.Errorf("result.Items[1].Title = %q", result.Items[1].Title)
 	}
 }
 
@@ -992,15 +1002,15 @@ func TestFetchFiltersByInclude(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("include=[answer] 应只返回 1 个 item, 实得 %d", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("include=[answer] 应只返回 1 个 item, 实得 %d", len(result.Items))
 	}
-	if items[0].Categories[0] != TypeAnswer {
-		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypeAnswer)
+	if result.Items[0].Categories[0] != TypeAnswer {
+		t.Errorf("Categories = %v, want [%s]", result.Items[0].Categories, TypeAnswer)
 	}
 }
 
@@ -1014,12 +1024,12 @@ func TestFetchReturnsAllWhenNoInclude(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("无 include 应返回全部 2 个 item, 实得 %d", len(items))
+	if len(result.Items) != 2 {
+		t.Fatalf("无 include 应返回全部 2 个 item, 实得 %d", len(result.Items))
 	}
 }
 
@@ -1033,18 +1043,18 @@ func TestFetchIncludeFromFetchOptions(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{
+	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{
 		Limit:   20,
 		Include: []string{"pin"},
 	})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("FetchOptions.Include=[pin] 应只返回 1 个 item, 实得 %d", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("FetchOptions.Include=[pin] 应只返回 1 个 item, 实得 %d", len(result.Items))
 	}
-	if items[0].Categories[0] != TypePin {
-		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypePin)
+	if result.Items[0].Categories[0] != TypePin {
+		t.Errorf("Categories = %v, want [%s]", result.Items[0].Categories, TypePin)
 	}
 }
 
@@ -1071,16 +1081,16 @@ func TestFetchFiltersSelfInteractionByDefault(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("默认应过滤自互动，保留 2 个 item, 实得 %d", len(items))
+	if len(result.Items) != 2 {
+		t.Fatalf("默认应过滤自互动，保留 2 个 item, 实得 %d", len(result.Items))
 	}
 	// 验证保留的是 act1 和 act3
 	guids := map[string]bool{}
-	for _, item := range items {
+	for _, item := range result.Items {
 		guids[item.GUID] = true
 	}
 	if !guids["1"] || !guids["collected_answer_2"] {
@@ -1106,12 +1116,12 @@ func TestFetchKeepsSelfInteractionWhenEnabled(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("IncludeSelfInteraction=true 应保留全部 2 个 item, 实得 %d", len(items))
+	if len(result.Items) != 2 {
+		t.Fatalf("IncludeSelfInteraction=true 应保留全部 2 个 item, 实得 %d", len(result.Items))
 	}
 }
 
@@ -1128,12 +1138,12 @@ func TestFetchCreateVerbNotFilteredEvenIfAuthorsMatch(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("创作类 verb 不应被过滤, 实得 %d 个 item", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("创作类 verb 不应被过滤, 实得 %d 个 item", len(result.Items))
 	}
 }
 
@@ -1150,15 +1160,15 @@ func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("include=[answer] 应排除 collected_answer, 实得 %d 个 item", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("include=[answer] 应排除 collected_answer, 实得 %d 个 item", len(result.Items))
 	}
-	if items[0].Categories[0] != TypeAnswer {
-		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypeAnswer)
+	if result.Items[0].Categories[0] != TypeAnswer {
+		t.Errorf("Categories = %v, want [%s]", result.Items[0].Categories, TypeAnswer)
 	}
 }
 
@@ -1243,12 +1253,12 @@ func TestFetchSkipsNilTarget(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("nil target 应被跳过, 实得 %d 个 item", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("nil target 应被跳过, 实得 %d 个 item", len(result.Items))
 	}
 }
 
@@ -1363,12 +1373,12 @@ func TestFetchStopsWhenLimitReached(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 2})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 2})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 2 {
-		t.Errorf("limit=2 应返回 2 个 item, 实得 %d", len(items))
+	if len(result.Items) != 2 {
+		t.Errorf("limit=2 应返回 2 个 item, 实得 %d", len(result.Items))
 	}
 }
 
@@ -1381,12 +1391,12 @@ func TestFetchStopsWhenIsEndTrue(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Errorf("is_end=true 且 1 条数据应返回 1 个 item, 实得 %d", len(items))
+	if len(result.Items) != 1 {
+		t.Errorf("is_end=true 且 1 条数据应返回 1 个 item, 实得 %d", len(result.Items))
 	}
 }
 
@@ -1395,12 +1405,12 @@ func TestFetchStopsWhenNextMissing(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities([]map[string]interface{}{}, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 0 {
-		t.Errorf("空 activities 应返回 0 个 item, 实得 %d", len(items))
+	if len(result.Items) != 0 {
+		t.Errorf("空 activities 应返回 0 个 item, 实得 %d", len(result.Items))
 	}
 }
 
@@ -1436,15 +1446,15 @@ func TestFetchIncludeCollectedAnswer(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	items, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("include=[collected_answer] 应只返回收藏的回答, 实得 %d 个 item", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("include=[collected_answer] 应只返回收藏的回答, 实得 %d 个 item", len(result.Items))
 	}
-	if items[0].Categories[0] != TypeCollectedAnswer {
-		t.Errorf("Categories = %v, want [%s]", items[0].Categories, TypeCollectedAnswer)
+	if result.Items[0].Categories[0] != TypeCollectedAnswer {
+		t.Errorf("Categories = %v, want [%s]", result.Items[0].Categories, TypeCollectedAnswer)
 	}
 }
 

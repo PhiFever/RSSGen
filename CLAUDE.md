@@ -38,31 +38,32 @@ docker compose up -d                                  # 部署（含 Miniflux + 
 ```
 Miniflux 定时拉取 → GET /feed/{route_name}/{params}
   → cmd/rssgen/main.go 的 makeFeedHandler
-  → 查 FeedCache（命中直接返回 XML）
-  → 未命中：触发 refresher 后台刷新 + 同步抓取
-      Route.Fetch → Route.FeedInfo → feed.Generate → 写缓存 → 返回
+  → 解析 format/limit/include 并查 FeedCache（命中直接返回 XML）
+  → 未命中：调用 pipeline.Refresh
+      Route.Fetch → feed.Generate → 写缓存 → 返回
 ```
 
-后台路径：`refresher` 按 config.yml 中各路由的 `refresh_interval` 定时刷新（启动预热、随机抖动、指数退避重试），生成 XML 写入同一 FeedCache。
+后台路径：`refresher` 按 config.yml 中各路由的 `refresh_interval` 定时刷新（启动预热、随机抖动、指数退避重试），实际抓取与 XML 生成同样委托给 `pipeline.Refresh`。
 
-**注意**：同步路径（`main.go` makeFeedHandler）和后台路径（`refresher.refreshOne`）目前各自实现了一遍「解析配置 → 抓取 → 生成 → 写缓存」流水线，修改其中一处时必须检查另一处是否需要同步（收敛计划见 `docs/architecture-review-2026-07.md` P2-5）。
+Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&limit=20&include=a,b`。熔断/健康状态仍按基础 feed 键 `route/path` 管理。
 
 ### 模块地图（internal/）
 
-- **route/** — `Route` 接口、`FeedItem`/`FeedInfo` 数据结构、`HTTPError`（携带上游状态码供熔断判定）、路由注册表
+- **pipeline/** — feed 生成流水线：复用 route 实例，规范化 `FetchOptions`，执行 `Route.Fetch`、`feed.Generate` 并写入 FeedCache
+- **route/** — `Route` 接口、`FeedResult`/`FeedItem`/`FeedInfo` 数据结构、`HTTPError`（携带上游状态码供熔断判定）、路由注册表
 - **route/zhihu/**、**route/afdian/** — 具体路由实现
 - **sign/zhihu/** — 知乎 x-zse-96 签名算法还原（打乱 base64 + SM4 变体 + XOR）。上游 JS 改版时最先失效的模块，版本常量集中在 `sign.go` 顶部
 - **scraper/** — tls-client 封装：Chrome 指纹 profile、请求头及其顺序（风控敏感，头顺序必须手动维护）、Cookie、按实例限速、代理
 - **feed/** — FeedItem → Atom/RSS XML，bluemonday 白名单消毒
-- **refresher/** — 后台调度器，含错误状态统计（`/status` 端点数据源）
-- **cache/** — 内存 TTL 缓存（存 feed XML）+ 缓存键构造（`BuildCacheKey`，键 = routeName/pathParams，不含查询参数）
+- **refresher/** — 后台调度器，含 pending 去重、重试、熔断触发和错误状态统计（`/status` 端点数据源）
+- **cache/** — 内存 TTL 缓存（存 feed XML）+ 基础 feed 键/变体缓存键构造
 - **store/** — SQLite 文章持久化（`articles` 表，避免重复抓详情页；运行期错误降级为 cache miss）
 - **notifier/** — 业务错误通知（飞书 webhook）+ feed 熔断：后台刷新重试耗尽且状态码属于业务错误（默认 400/401/403/404/410/422/451）时通知并禁用该 feed（内存态，重启恢复）
 - **config/** — YAML 加载、默认值、`ResolveRoute` 合并全局 scraper 配置与路由级覆盖（同步/后台两条路径共用，保证行为一致）
 
 ### 新增路由的模式
 
-1. 建包 `internal/route/{name}/`，实现 `route.Route` 接口（`Name`/`Description`/`FeedIDField`/`FeedInfo`/`Fetch`）
+1. 建包 `internal/route/{name}/`，实现 `route.Route` 接口（`Name`/`Description`/`FeedIDField`/`Fetch`），`Fetch` 返回 `route.FeedResult`
 2. 在包的 `init()` 中 `route.Register("{name}", factory)`，factory 接收 `config.ResolvedRouteConfig` 强类型配置
 3. 在 `cmd/rssgen/main.go` 匿名 import 该包
 4. 上游返回非 2xx 时返回 `*route.HTTPError`，否则熔断/通知机制不生效

@@ -8,15 +8,13 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
-	"github.com/PhiFever/RSSGen/internal/feed"
 	"github.com/PhiFever/RSSGen/internal/notifier"
+	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
@@ -32,6 +30,7 @@ type Config struct {
 	FeedCache      *cache.TTLCache
 	ArticleStore   ArticleStore
 	Notifier       *notifier.Notifier
+	Pipeline       *pipeline.Pipeline
 	StartupDelay   int
 	MaxRetries     int
 	RetryBaseDelay int
@@ -42,14 +41,13 @@ type Config struct {
 
 // Refresher 是后台刷新调度器。
 type Refresher struct {
-	feedCache      *cache.TTLCache
 	articleStore   ArticleStore
 	notifier       *notifier.Notifier
+	pipe           *pipeline.Pipeline
 	startupDelay   int
 	maxRetries     int
 	retryBaseDelay int
 	preinitURL     string
-	scraperConfig  config.ScraperConfig
 	routesConfig   map[string]config.RouteConfig
 
 	ctx    context.Context
@@ -98,16 +96,24 @@ func New(cfg Config) *Refresher {
 	if retryBaseDelay <= 0 {
 		retryBaseDelay = 5
 	}
+	pipe := cfg.Pipeline
+	if pipe == nil {
+		pipe = pipeline.New(pipeline.Config{
+			FeedCache:     cfg.FeedCache,
+			ArticleStore:  cfg.ArticleStore,
+			ScraperConfig: cfg.ScraperConfig,
+			RoutesConfig:  cfg.RoutesConfig,
+		})
+	}
 
 	return &Refresher{
-		feedCache:      cfg.FeedCache,
 		articleStore:   cfg.ArticleStore,
 		notifier:       cfg.Notifier,
+		pipe:           pipe,
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
 		retryBaseDelay: retryBaseDelay,
 		preinitURL:     cfg.PreinitURL,
-		scraperConfig:  cfg.ScraperConfig,
 		routesConfig:   cfg.RoutesConfig,
 		ctx:            ctx,
 		cancel:         cancel,
@@ -175,25 +181,27 @@ func (r *Refresher) Stop() {
 
 // Trigger 动态触发：未知 feed 首次访问时调用，非阻塞。
 func (r *Refresher) Trigger(routeName string, pathParams []string, queryParams map[string]string) {
-	cacheKey := cache.BuildCacheKey(routeName, pathParams)
+	feedKey := cache.BuildCacheKey(routeName, pathParams)
+	opts := pipeline.OptionsFromParams(queryParams)
+	refreshKey := r.pipe.CacheKey(routeName, pathParams, opts)
 
 	r.pendingMu.Lock()
-	if r.pending[cacheKey] {
+	if r.pending[refreshKey] {
 		r.pendingMu.Unlock()
 		return
 	}
-	r.pending[cacheKey] = true
+	r.pending[refreshKey] = true
 	r.pendingMu.Unlock()
 
 	// 检查 feed 是否被禁用
-	if r.notifier.IsFeedDisabled(cacheKey) {
+	if r.notifier.IsFeedDisabled(feedKey) {
 		r.pendingMu.Lock()
-		delete(r.pending, cacheKey)
+		delete(r.pending, refreshKey)
 		r.pendingMu.Unlock()
 		return
 	}
 
-	go r.refreshOne(routeName, pathParams, queryParams)
+	go r.refreshOneWithOptions(routeName, pathParams, opts)
 }
 
 // GetStatus 返回按路由分组的状态。
@@ -279,14 +287,7 @@ func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config
 			return
 		}
 		pathParams := []string{fc.UserID}
-		extraParams := make(map[string]string)
-		if fc.Limit > 0 {
-			extraParams["limit"] = fmt.Sprintf("%d", fc.Limit)
-		}
-		if len(fc.Include) > 0 {
-			extraParams["include"] = strings.Join(fc.Include, ",")
-		}
-		r.refreshOne(routeName, pathParams, extraParams)
+		r.refreshOneWithOptions(routeName, pathParams, pipeline.OptionsFromFeedConfig(fc))
 	}
 	slog.Info("刷新完成", "route", routeName, "label", label)
 }
@@ -320,47 +321,28 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, fee
 
 // refreshOne 刷新单个 feed。
 func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParams map[string]string) {
-	cacheKey := cache.BuildCacheKey(routeName, pathParams)
+	r.refreshOneWithOptions(routeName, pathParams, pipeline.OptionsFromParams(extraParams))
+}
+
+func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string, opts route.FetchOptions) {
+	feedKey := cache.BuildCacheKey(routeName, pathParams)
+	refreshKey := r.pipe.CacheKey(routeName, pathParams, opts)
 
 	// 标记为 pending
 	r.pendingMu.Lock()
-	r.pending[cacheKey] = true
+	r.pending[refreshKey] = true
 	r.pendingMu.Unlock()
 
 	defer func() {
 		r.pendingMu.Lock()
-		delete(r.pending, cacheKey)
+		delete(r.pending, refreshKey)
 		r.pendingMu.Unlock()
 	}()
 
 	// 检查 feed 是否被禁用
-	if r.notifier.IsFeedDisabled(cacheKey) {
-		slog.Warn("feed 已被禁用，跳过刷新", "key", cacheKey)
+	if r.notifier.IsFeedDisabled(feedKey) {
+		slog.Warn("feed 已被禁用，跳过刷新", "key", feedKey)
 		return
-	}
-
-	// 查找路由工厂
-	registry := route.GetRegistry()
-	factory, ok := registry[routeName]
-	if !ok {
-		slog.Error("路由不存在", "route", routeName)
-		return
-	}
-
-	// 构建配置（全局 scraper 配置打底 + 路由级覆盖，与同步路径一致）
-	mergedConfig := config.ResolveRoute(r.scraperConfig, r.routesConfig[routeName])
-
-	// 构建 FetchOptions
-	opts := route.FetchOptions{
-		Limit: 20,
-	}
-	if v, ok := extraParams["limit"]; ok {
-		if limit, err := strconv.Atoi(v); err == nil {
-			opts.Limit = limit
-		}
-	}
-	if v, ok := extraParams["include"]; ok && v != "" {
-		opts.Include = strings.Split(v, ",")
 	}
 
 	var lastErr error
@@ -368,63 +350,40 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 	for attempt := 0; attempt < r.maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(r.retryBaseDelay) * time.Second * time.Duration(1<<(attempt-1))
-			slog.Info("重试中", "key", cacheKey, "attempt", attempt+1, "delay", delay)
+			slog.Info("重试中", "key", refreshKey, "attempt", attempt+1, "delay", delay)
 			select {
 			case <-r.ctx.Done():
 				return
 			case <-time.After(delay):
 			}
 		} else {
-			slog.Info("正在刷新", "key", cacheKey)
+			slog.Info("正在刷新", "key", refreshKey)
 		}
 
-		// 创建路由实例
-		rt := factory(mergedConfig)
-
-		// 抓取
-		items, err := rt.Fetch(r.articleStore, pathParams, opts)
+		result, err := r.pipe.Refresh(routeName, pathParams, opts)
 		if err != nil {
 			lastErr = err
-			slog.Warn("刷新失败", "key", cacheKey, "attempt", attempt+1, "error", err)
+			slog.Warn("刷新失败", "key", refreshKey, "attempt", attempt+1, "error", err)
 			continue
 		}
-
-		// 获取 feed 信息
-		info, err := rt.FeedInfo(pathParams)
-		if err != nil {
-			lastErr = err
-			slog.Warn("获取 feed 信息失败", "key", cacheKey, "attempt", attempt+1, "error", err)
-			continue
-		}
-
-		// 生成 feed XML
-		xml, err := feed.Generate(info, items, "atom")
-		if err != nil {
-			lastErr = err
-			slog.Warn("生成 feed 失败", "key", cacheKey, "attempt", attempt+1, "error", err)
-			continue
-		}
-
-		// 写入缓存
-		r.feedCache.Set(cacheKey, xml)
 
 		// 更新状态
 		r.statsMu.Lock()
-		r.errorStats[cacheKey] = &ErrorStatus{
+		r.errorStats[result.CacheKey] = &ErrorStatus{
 			LastSuccess: time.Now().UTC().Format(time.RFC3339),
-			ItemCount:   len(items),
+			ItemCount:   result.ItemCount,
 		}
 		r.statsMu.Unlock()
 
-		slog.Info("刷新完成", "key", cacheKey, "items", len(items))
+		slog.Info("刷新完成", "key", result.CacheKey, "items", result.ItemCount)
 		return
 	}
 
 	// 所有重试都失败
-	slog.Error("刷新失败：所有重试均失败", "key", cacheKey, "retries", r.maxRetries)
+	slog.Error("刷新失败：所有重试均失败", "key", refreshKey, "retries", r.maxRetries)
 
 	r.statsMu.Lock()
-	r.errorStats[cacheKey] = &ErrorStatus{
+	r.errorStats[refreshKey] = &ErrorStatus{
 		Error:     fmt.Sprintf("%v", lastErr),
 		ItemCount: 0,
 	}
@@ -434,9 +393,9 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 	if lastErr != nil {
 		statusCode := extractStatusCode(lastErr)
 		if statusCode > 0 && r.notifier.IsBusinessError(statusCode) {
-			r.notifier.Notify(cacheKey, statusCode, fmt.Sprintf("%v", lastErr))
-			r.notifier.DisableFeed(cacheKey)
-			slog.Warn("feed 已禁用（业务错误）", "key", cacheKey, "status", statusCode)
+			r.notifier.Notify(feedKey, statusCode, fmt.Sprintf("%v", lastErr))
+			r.notifier.DisableFeed(feedKey)
+			slog.Warn("feed 已禁用（业务错误）", "key", feedKey, "status", statusCode)
 		}
 	}
 }

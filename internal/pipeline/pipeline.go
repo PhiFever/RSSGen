@@ -1,0 +1,169 @@
+// Package pipeline 提供 feed 生成流水线。
+package pipeline
+
+import (
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+
+	"github.com/PhiFever/RSSGen/internal/cache"
+	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/feed"
+	"github.com/PhiFever/RSSGen/internal/route"
+)
+
+// Config 是 Pipeline 的配置。
+type Config struct {
+	FeedCache     *cache.TTLCache
+	ArticleStore  route.ArticleStore
+	ScraperConfig config.ScraperConfig
+	RoutesConfig  map[string]config.RouteConfig
+}
+
+// RefreshResult 是一次流水线刷新的结果。
+type RefreshResult struct {
+	XML       string
+	ItemCount int
+	CacheKey  string
+}
+
+// Pipeline 完成从路由抓取到 XML 落缓存的全过程。
+type Pipeline struct {
+	feedCache     *cache.TTLCache
+	articleStore  route.ArticleStore
+	scraperConfig config.ScraperConfig
+	routesConfig  map[string]config.RouteConfig
+
+	routesMu sync.Mutex
+	routes   map[string]route.Route
+}
+
+// New 创建 feed 生成流水线。
+func New(cfg Config) *Pipeline {
+	return &Pipeline{
+		feedCache:     cfg.FeedCache,
+		articleStore:  cfg.ArticleStore,
+		scraperConfig: cfg.ScraperConfig,
+		routesConfig:  cfg.RoutesConfig,
+		routes:        make(map[string]route.Route),
+	}
+}
+
+// OptionsFromQuery 从 HTTP 查询参数解析抓取选项。
+func OptionsFromQuery(values url.Values) route.FetchOptions {
+	opts := route.FetchOptions{
+		Format: values.Get("format"),
+	}
+	if limitStr := values.Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil {
+			opts.Limit = limit
+		}
+	}
+	if includeStr := values.Get("include"); includeStr != "" {
+		opts.Include = strings.Split(includeStr, ",")
+	}
+	return route.NormalizeFetchOptions(opts)
+}
+
+// OptionsFromParams 从字符串参数解析抓取选项，供调度器和测试入口复用。
+func OptionsFromParams(params map[string]string) route.FetchOptions {
+	values := make(url.Values, len(params))
+	for k, v := range params {
+		values.Set(k, v)
+	}
+	return OptionsFromQuery(values)
+}
+
+// OptionsFromFeedConfig 从配置中的 feed 条目构建抓取选项。
+func OptionsFromFeedConfig(fc config.FeedConfig) route.FetchOptions {
+	opts := route.FetchOptions{Limit: fc.Limit, Include: fc.Include}
+	return route.NormalizeFetchOptions(opts)
+}
+
+// CacheKey 返回指定路由、路径与抓取选项对应的 feed XML 缓存键。
+func CacheKey(routeName string, pathParams []string, opts route.FetchOptions) string {
+	opts = route.NormalizeFetchOptions(opts)
+	return cache.BuildFeedCacheKey(routeName, pathParams, cache.FeedVariant{
+		Format:  opts.Format,
+		Limit:   opts.Limit,
+		Include: opts.Include,
+	})
+}
+
+// CacheKey 返回当前 pipeline 配置下指定 feed 的缓存键。
+func (p *Pipeline) CacheKey(routeName string, pathParams []string, opts route.FetchOptions) string {
+	return CacheKey(routeName, pathParams, p.normalizeOptions(routeName, pathParams, opts))
+}
+
+// Refresh 完成一次抓取、生成 XML 并写入缓存。
+func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.FetchOptions) (RefreshResult, error) {
+	opts = p.normalizeOptions(routeName, pathParams, opts)
+	cacheKey := CacheKey(routeName, pathParams, opts)
+
+	rt, err := p.route(routeName)
+	if err != nil {
+		return RefreshResult{CacheKey: cacheKey}, err
+	}
+
+	result, err := rt.Fetch(p.articleStore, pathParams, opts)
+	if err != nil {
+		return RefreshResult{CacheKey: cacheKey}, err
+	}
+
+	xml, err := feed.Generate(&result.Info, result.Items, opts.Format)
+	if err != nil {
+		return RefreshResult{CacheKey: cacheKey, ItemCount: len(result.Items)}, err
+	}
+	if p.feedCache != nil {
+		p.feedCache.Set(cacheKey, xml)
+	}
+	return RefreshResult{
+		XML:       xml,
+		ItemCount: len(result.Items),
+		CacheKey:  cacheKey,
+	}, nil
+}
+
+func (p *Pipeline) normalizeOptions(routeName string, pathParams []string, opts route.FetchOptions) route.FetchOptions {
+	opts = route.NormalizeFetchOptions(opts)
+	if len(opts.Include) > 0 {
+		return opts
+	}
+
+	rc := p.routesConfig[routeName]
+	if len(pathParams) > 0 {
+		feedID := pathParams[0]
+		for _, fc := range rc.Feeds {
+			if fc.UserID == feedID && len(fc.Include) > 0 {
+				opts.Include = fc.Include
+				return route.NormalizeFetchOptions(opts)
+			}
+		}
+	}
+	if len(rc.DefaultInclude) > 0 {
+		opts.Include = rc.DefaultInclude
+		return route.NormalizeFetchOptions(opts)
+	}
+	return opts
+}
+
+func (p *Pipeline) route(routeName string) (route.Route, error) {
+	p.routesMu.Lock()
+	defer p.routesMu.Unlock()
+
+	if rt, ok := p.routes[routeName]; ok {
+		return rt, nil
+	}
+
+	registry := route.GetRegistry()
+	factory, ok := registry[routeName]
+	if !ok {
+		return nil, fmt.Errorf("路由不存在: %s", routeName)
+	}
+
+	rt := factory(config.ResolveRoute(p.scraperConfig, p.routesConfig[routeName]))
+	p.routes[routeName] = rt
+	return rt, nil
+}

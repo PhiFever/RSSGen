@@ -34,6 +34,22 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestGetScraperReusesInstance(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "a=1", RateLimit: 0.001})
+	first, err := r.getScraper()
+	if err != nil {
+		t.Fatalf("第一次 getScraper 返回错误: %v", err)
+	}
+	r.cfg.Cookie = "a=2"
+	second, err := r.getScraper()
+	if err != nil {
+		t.Fatalf("第二次 getScraper 返回错误: %v", err)
+	}
+	if first != second {
+		t.Fatal("同一路由实例应复用 scraper，以保留限速与连接状态")
+	}
+}
+
 func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 	t.Helper()
 	if err := json.NewEncoder(w).Encode(v); err != nil {
@@ -57,7 +73,7 @@ func TestFeedInfo(t *testing.T) {
 	})
 
 	// 测试正常情况
-	info, err := r.FeedInfo([]string{"test_user"})
+	info, err := r.feedInfo([]string{"test_user"})
 	if err != nil {
 		t.Fatalf("FeedInfo 错误: %v", err)
 	}
@@ -69,7 +85,7 @@ func TestFeedInfo(t *testing.T) {
 	}
 
 	// 测试无 pathParams
-	_, err = r.FeedInfo([]string{})
+	_, err = r.feedInfo([]string{})
 	if err == nil {
 		t.Error("期望返回错误，但没有")
 	}
@@ -238,7 +254,7 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 		return sampleComments(), nil
 	}
 
-	items, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
+	result, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -248,11 +264,11 @@ func TestFetchStoreHitSkipsAPI(t *testing.T) {
 	if commentsCalled {
 		t.Error("store 命中时不应调用 getPostComments")
 	}
-	if len(items) != 1 {
-		t.Fatalf("应返回 1 个 item, 实得 %d", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("应返回 1 个 item, 实得 %d", len(result.Items))
 	}
-	if items[0].Content != "<p>cached content</p>" {
-		t.Errorf("Content = %q, want cached content", items[0].Content)
+	if result.Items[0].Content != "<p>cached content</p>" {
+		t.Errorf("Content = %q, want cached content", result.Items[0].Content)
 	}
 }
 
@@ -273,19 +289,19 @@ func TestFetchStoreMissCallsAPIAndSaves(t *testing.T) {
 		return sampleComments(), nil
 	}
 
-	items, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
+	result, err := r.Fetch(store, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if !strings.Contains(items[0].Content, "<p>fresh</p>") {
-		t.Errorf("Content = %q", items[0].Content)
+	if !strings.Contains(result.Items[0].Content, "<p>fresh</p>") {
+		t.Errorf("Content = %q", result.Items[0].Content)
 	}
-	if !strings.Contains(items[0].Content, "<h2>热评</h2>") || !strings.Contains(items[0].Content, "<h2>评论</h2>") {
-		t.Errorf("Content 应包含热评和评论: %q", items[0].Content)
+	if !strings.Contains(result.Items[0].Content, "<h2>热评</h2>") || !strings.Contains(result.Items[0].Content, "<h2>评论</h2>") {
+		t.Errorf("Content 应包含热评和评论: %q", result.Items[0].Content)
 	}
 	// 验证已落库
 	saved, found, _ := store.Get("afdian", "post2")
-	if !found || saved != items[0].Content {
+	if !found || saved != result.Items[0].Content {
 		t.Errorf("store 应保存 post2, found=%v, content=%q", found, saved)
 	}
 }
@@ -303,12 +319,12 @@ func TestFetchNoStoreStillWorks(t *testing.T) {
 	}
 	r.getPostCommentsFn = emptyComments
 
-	items, err := r.Fetch(nil, []string{"slug1"}, route.FetchOptions{Limit: 5})
+	result, err := r.Fetch(nil, []string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if items[0].Content != "<p>detail</p>" {
-		t.Errorf("Content = %q", items[0].Content)
+	if result.Items[0].Content != "<p>detail</p>" {
+		t.Errorf("Content = %q", result.Items[0].Content)
 	}
 }
 
@@ -332,20 +348,20 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 	}
 	r.getPostCommentsFn = emptyComments
 
-	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 5 {
-		t.Fatalf("应返回 5 个 item, 实得 %d", len(items))
+	if len(result.Items) != 5 {
+		t.Fatalf("应返回 5 个 item, 实得 %d", len(result.Items))
 	}
 	expectedGUIDs := []string{"p1", "p2", "p3", "p4", "p5"}
-	for i, item := range items {
+	for i, item := range result.Items {
 		if item.GUID != expectedGUIDs[i] {
-			t.Errorf("items[%d].GUID = %q, want %q", i, item.GUID, expectedGUIDs[i])
+			t.Errorf("result.Items[%d].GUID = %q, want %q", i, item.GUID, expectedGUIDs[i])
 		}
 		if item.Content != fmt.Sprintf("<p>%s</p>", expectedGUIDs[i]) {
-			t.Errorf("items[%d].Content = %q", i, item.Content)
+			t.Errorf("result.Items[%d].Content = %q", i, item.Content)
 		}
 	}
 }
@@ -375,7 +391,7 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 	}
 	r.getPostCommentsFn = emptyComments
 
-	items, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -383,8 +399,8 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 		t.Fatalf("详情抓取应并发执行，maxActive=%d", maxActive)
 	}
 	for i, want := range []string{"p1", "p2", "p3"} {
-		if items[i].GUID != want {
-			t.Fatalf("items[%d].GUID = %q, want %q", i, items[i].GUID, want)
+		if result.Items[i].GUID != want {
+			t.Fatalf("result.Items[%d].GUID = %q, want %q", i, result.Items[i].GUID, want)
 		}
 	}
 }
@@ -409,16 +425,16 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 	}
 	r.getPostCommentsFn = emptyComments
 
-	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
 	// p3 失败应跳过，返回 3 个 item（与 Python 行为一致）
-	if len(items) != 3 {
-		t.Fatalf("应返回 3 个 item, 实得 %d", len(items))
+	if len(result.Items) != 3 {
+		t.Fatalf("应返回 3 个 item, 实得 %d", len(result.Items))
 	}
 	// 结果不应包含 p3
-	for _, item := range items {
+	for _, item := range result.Items {
 		if item.GUID == "p3" {
 			t.Error("p3 失败后应跳过，不应出现在结果中")
 		}
@@ -454,15 +470,15 @@ func TestFetchCommentFailureKeepsBody(t *testing.T) {
 		return afdianCommentList{}, fmt.Errorf("comment boom")
 	}
 
-	items, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 5})
+	result, err := r.Fetch(store, []string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("应返回 1 个 item, 实得 %d", len(items))
+	if len(result.Items) != 1 {
+		t.Fatalf("应返回 1 个 item, 实得 %d", len(result.Items))
 	}
-	if items[0].Content != "<p>body</p>" {
-		t.Fatalf("评论失败时应保留正文, got %q", items[0].Content)
+	if result.Items[0].Content != "<p>body</p>" {
+		t.Fatalf("评论失败时应保留正文, got %q", result.Items[0].Content)
 	}
 	saved, found, _ := store.Get("afdian", "p1")
 	if !found || saved != "<p>body</p>" {
@@ -483,13 +499,13 @@ func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 		return "", &route.HTTPError{StatusCode: 403, URL: "test"}
 	}
 
-	items, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 5})
+	result, err := r.Fetch(nil, []string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
 		t.Fatalf("Fetch 不应因详情失败而报错: %v", err)
 	}
 	// 全部失败应返回空列表
-	if len(items) != 0 {
-		t.Fatalf("详情失败应跳过条目, 实得 %d 个 item", len(items))
+	if len(result.Items) != 0 {
+		t.Fatalf("详情失败应跳过条目, 实得 %d 个 item", len(result.Items))
 	}
 }
 

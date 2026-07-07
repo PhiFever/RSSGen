@@ -11,6 +11,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/notifier"
+	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
@@ -133,8 +134,9 @@ func TestTriggerDedup(t *testing.T) {
 	})
 
 	// 设置 pending 模拟已有任务在跑
+	refreshKey := pipeline.CacheKey("zhihu", []string{"user1"}, route.FetchOptions{})
 	ref.pendingMu.Lock()
-	ref.pending["zhihu/user1"] = true
+	ref.pending[refreshKey] = true
 	ref.pendingMu.Unlock()
 
 	// 第二次 Trigger 应被去重（不启动新 goroutine）
@@ -155,8 +157,9 @@ func TestTriggerSkipsDisabledFeed(t *testing.T) {
 	// 被禁用的 feed 不应启动刷新
 	ref.Trigger("zhihu", []string{"user1"}, nil)
 	// 不 panic 即为通过；pending 应被清理
+	refreshKey := pipeline.CacheKey("zhihu", []string{"user1"}, route.FetchOptions{})
 	ref.pendingMu.Lock()
-	isPending := ref.pending["zhihu/user1"]
+	isPending := ref.pending[refreshKey]
 	ref.pendingMu.Unlock()
 	if isPending {
 		t.Error("被禁用的 feed 不应留在 pending 中")
@@ -508,14 +511,16 @@ type mockRoute struct {
 func (m *mockRoute) Name() string        { return m.name }
 func (m *mockRoute) Description() string { return "mock" }
 func (m *mockRoute) FeedIDField() string { return "user_id" }
-func (m *mockRoute) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
-	return &route.FeedInfo{Title: "Mock", Link: "https://example.com"}, nil
-}
-func (m *mockRoute) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+func (m *mockRoute) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
+	info := route.FeedInfo{Title: "Mock", Link: "https://example.com"}
 	if m.fetchFn != nil {
-		return m.fetchFn(articleStore, pathParams, opts)
+		items, err := m.fetchFn(articleStore, pathParams, opts)
+		if err != nil {
+			return route.FeedResult{}, err
+		}
+		return route.FeedResult{Info: info, Items: items}, nil
 	}
-	return []route.FeedItem{{Title: "item1"}}, nil
+	return route.FeedResult{Info: info, Items: []route.FeedItem{{Title: "item1"}}}, nil
 }
 
 // --- refreshOne 测试（迁移自 Python TestRefreshOne） ---
@@ -537,7 +542,7 @@ func TestRefreshOneSuccess(t *testing.T) {
 
 	ref.refreshOne("_test_r1_ok", []string{"user1"}, nil)
 
-	cacheKey := "_test_r1_ok/user1"
+	cacheKey := pipeline.CacheKey("_test_r1_ok", []string{"user1"}, route.FetchOptions{})
 	ref.statsMu.RLock()
 	st, ok := ref.errorStats[cacheKey]
 	ref.statsMu.RUnlock()
@@ -586,7 +591,7 @@ func TestRefreshOneFailure(t *testing.T) {
 
 	ref.refreshOne("_test_r1_fail", []string{"user1"}, nil)
 
-	cacheKey := "_test_r1_fail/user1"
+	cacheKey := pipeline.CacheKey("_test_r1_fail", []string{"user1"}, route.FetchOptions{})
 	ref.statsMu.RLock()
 	st, ok := ref.errorStats[cacheKey]
 	ref.statsMu.RUnlock()

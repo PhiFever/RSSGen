@@ -105,3 +105,20 @@ func TestBuildCacheKey(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildFeedCacheKeyIncludesVariant(t *testing.T) {
+	got := BuildFeedCacheKey("zhihu", []string{"user1"}, FeedVariant{
+		Format:  "rss",
+		Limit:   7,
+		Include: []string{"answer", "pin"},
+	})
+	want := "zhihu/user1?format=rss&limit=7&include=answer,pin"
+	if got != want {
+		t.Fatalf("BuildFeedCacheKey variant = %q, want %q", got, want)
+	}
+
+	base := BuildCacheKey("zhihu", []string{"user1"})
+	if got == base {
+		t.Fatal("变体缓存键不应退化为基础 feed 键")
+	}
+}

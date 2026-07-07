@@ -91,9 +91,24 @@ func TestSetCookies(t *testing.T) {
 		t.Fatalf("New 返回错误: %v", err)
 	}
 
-	s.SetCookies(map[string]string{"a": "1", "b": "2"})
+	cookies := map[string]string{"a": "1", "b": "2"}
+	s.SetCookies(cookies)
+	cookies["a"] = "changed"
 	if s.cookies["a"] != "1" || s.cookies["b"] != "2" {
 		t.Errorf("cookies = %v, 未正确设置", s.cookies)
+	}
+}
+
+func TestCookieHeaderUsesSnapshot(t *testing.T) {
+	cookies := map[string]string{"b": "2", "a": "1"}
+	s, err := New(Config{Cookies: cookies})
+	if err != nil {
+		t.Fatalf("New 返回错误: %v", err)
+	}
+	cookies["a"] = "changed"
+
+	if got := s.cookieHeader(); got != "a=1; b=2" {
+		t.Fatalf("cookieHeader = %q, want stable sorted snapshot", got)
 	}
 }
 

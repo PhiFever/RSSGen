@@ -3,6 +3,8 @@ package route
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +51,12 @@ type FeedInfo struct {
 	Description string
 }
 
+// FeedResult 是一次抓取的完整结果，包含 feed 元信息和条目列表。
+type FeedResult struct {
+	Info  FeedInfo
+	Items []FeedItem
+}
+
 // ArticleStore 是文章持久化存储的接口。
 type ArticleStore interface {
 	Get(routeName, articleID string) (content string, found bool, err error)
@@ -64,17 +72,46 @@ type Route interface {
 	Description() string
 	// FeedIDField 返回 feeds 配置中用于标识 feed 的字段名，默认 "user_id"。
 	FeedIDField() string
-	// FeedInfo 返回 feed 的元信息。
-	FeedInfo(pathParams []string) (*FeedInfo, error)
-	// Fetch 抓取数据源，返回 FeedItem 列表。
-	Fetch(articleStore ArticleStore, pathParams []string, opts FetchOptions) ([]FeedItem, error)
+	// Fetch 抓取数据源，返回 feed 元信息和 FeedItem 列表。
+	Fetch(articleStore ArticleStore, pathParams []string, opts FetchOptions) (FeedResult, error)
 }
 
 // FetchOptions 包含抓取的可选参数。
 type FetchOptions struct {
 	Limit       int
 	Include     []string // 仅包含的 category 列表
+	Format      string   // 输出格式：atom 或 rss
 	ExtraParams map[string]string
+}
+
+// NormalizeFetchOptions 规范化抓取选项，保证缓存键、HTTP 路径和后台刷新语义一致。
+func NormalizeFetchOptions(opts FetchOptions) FetchOptions {
+	if opts.Limit <= 0 {
+		opts.Limit = 20
+	}
+	opts.Format = strings.ToLower(strings.TrimSpace(opts.Format))
+	if opts.Format == "" {
+		opts.Format = "atom"
+	}
+	if opts.Format != "rss" {
+		opts.Format = "atom"
+	}
+
+	if len(opts.Include) > 0 {
+		seen := make(map[string]bool, len(opts.Include))
+		include := make([]string, 0, len(opts.Include))
+		for _, item := range opts.Include {
+			item = strings.TrimSpace(item)
+			if item == "" || seen[item] {
+				continue
+			}
+			seen[item] = true
+			include = append(include, item)
+		}
+		sort.Strings(include)
+		opts.Include = include
+	}
+	return opts
 }
 
 // Factory 根据已解析的路由配置创建 Route 实例。

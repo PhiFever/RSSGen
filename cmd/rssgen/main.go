@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,8 +17,8 @@ import (
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
-	"github.com/PhiFever/RSSGen/internal/feed"
 	"github.com/PhiFever/RSSGen/internal/notifier"
+	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/refresher"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/store"
@@ -110,12 +109,20 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		Services:           notifierServices,
 	})
 
+	pipe := pipeline.New(pipeline.Config{
+		FeedCache:     feedCache,
+		ArticleStore:  articleStore,
+		ScraperConfig: cfg.Scraper,
+		RoutesConfig:  cfg.Routes,
+	})
+
 	var ref *refresher.Refresher
 	if anyRouteEnabled(cfg) {
 		ref = refresher.New(refresher.Config{
 			FeedCache:      feedCache,
 			ArticleStore:   articleStore,
 			Notifier:       notif,
+			Pipeline:       pipe,
 			StartupDelay:   cfg.Refresher.StartupDelay,
 			MaxRetries:     cfg.Refresher.MaxRetries,
 			RetryBaseDelay: cfg.Refresher.RetryBaseDelay,
@@ -127,7 +134,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(notif, feedCache, ref, articleStore, cfg)
+	router := makeRouter(notif, feedCache, ref, articleStore, cfg, pipe)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -174,6 +181,7 @@ func makeRouter(
 	ref *refresher.Refresher,
 	articleStore *store.ArticleStore,
 	cfg *config.Config,
+	pipe *pipeline.Pipeline,
 ) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -201,7 +209,7 @@ func makeRouter(
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandler(notif, feedCache, ref, articleStore, cfg))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(notif, feedCache, pipe))
 
 	// 状态接口
 	r.Get("/status", makeStatusHandler(ref))
@@ -225,9 +233,21 @@ func splitPath(path string) []string {
 func makeFeedHandler(
 	notif *notifier.Notifier,
 	feedCache *cache.TTLCache,
-	ref *refresher.Refresher,
 	articleStore *store.ArticleStore,
 	cfg *config.Config,
+) http.HandlerFunc {
+	return makeFeedHandlerWithPipeline(notif, feedCache, pipeline.New(pipeline.Config{
+		FeedCache:     feedCache,
+		ArticleStore:  articleStore,
+		ScraperConfig: cfg.Scraper,
+		RoutesConfig:  cfg.Routes,
+	}))
+}
+
+func makeFeedHandlerWithPipeline(
+	notif *notifier.Notifier,
+	feedCache *cache.TTLCache,
+	pipe *pipeline.Pipeline,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		routeName := chi.URLParam(r, "route_name")
@@ -235,17 +255,18 @@ func makeFeedHandler(
 		pathParts := splitPath(path)
 
 		registry := route.GetRegistry()
-		factory, ok := registry[routeName]
-		if !ok {
+		if _, ok := registry[routeName]; !ok {
 			http.Error(w, fmt.Sprintf("路由不存在: %s", routeName), http.StatusNotFound)
 			return
 		}
 
-		cacheKey := cache.BuildCacheKey(routeName, pathParts)
+		feedKey := cache.BuildCacheKey(routeName, pathParts)
+		opts := pipeline.OptionsFromQuery(r.URL.Query())
+		cacheKey := pipe.CacheKey(routeName, pathParts, opts)
 
 		// 检查 feed 是否被禁用
-		if notif.IsFeedDisabled(cacheKey) {
-			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", cacheKey), http.StatusBadGateway)
+		if notif.IsFeedDisabled(feedKey) {
+			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", feedKey), http.StatusBadGateway)
 			return
 		}
 
@@ -258,64 +279,15 @@ func makeFeedHandler(
 			return
 		}
 
-		// 触发后台刷新（非阻塞）
-		if ref != nil {
-			queryParams := make(map[string]string)
-			for k, v := range r.URL.Query() {
-				if len(v) > 0 {
-					queryParams[k] = v[0]
-				}
-			}
-			ref.Trigger(routeName, pathParts, queryParams)
-		}
-
-		// 同步抓取
-		routeInst := factory(config.ResolveRoute(cfg.Scraper, cfg.Routes[routeName]))
-
-		// 解析请求参数
-		opts := route.FetchOptions{
-			Limit: 20,
-		}
-		if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-			if limit, err := strconv.Atoi(limitStr); err == nil {
-				opts.Limit = limit
-			}
-		}
-		if includeStr := r.URL.Query().Get("include"); includeStr != "" {
-			opts.Include = strings.Split(includeStr, ",")
-		}
-
-		items, err := routeInst.Fetch(articleStore, pathParts, opts)
+		result, err := pipe.Refresh(routeName, pathParts, opts)
 		if err != nil {
 			slog.Error("路由抓取失败", "route", routeName, "error", err)
 			http.Error(w, fmt.Sprintf("抓取失败: %v", err), http.StatusBadGateway)
 			return
 		}
 
-		info, err := routeInst.FeedInfo(pathParts)
-		if err != nil {
-			slog.Error("获取 feed 信息失败", "route", routeName, "error", err)
-			http.Error(w, fmt.Sprintf("获取 feed 信息失败: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		format := r.URL.Query().Get("format")
-		if format == "" {
-			format = "atom"
-		}
-
-		xml, err := feed.Generate(info, items, format)
-		if err != nil {
-			slog.Error("生成 feed 失败", "route", routeName, "error", err)
-			http.Error(w, fmt.Sprintf("生成 feed 失败: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// 写入缓存
-		feedCache.Set(cacheKey, xml)
-
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
-		if _, err := w.Write([]byte(xml)); err != nil {
+		if _, err := w.Write([]byte(result.XML)); err != nil {
 			slog.Error("写入 feed 响应失败", "route", routeName, "error", err)
 		}
 	}

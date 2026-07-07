@@ -4,6 +4,7 @@ package scraper
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -154,7 +155,7 @@ func New(cfg Config) (*Scraper, error) {
 	}
 
 	s := &Scraper{
-		cookies:      cfg.Cookies,
+		cookies:      cloneCookies(cfg.Cookies),
 		proxy:        cfg.Proxy,
 		rateLimit:    time.Duration(rateLimit * float64(time.Second)),
 		impersonate:  imp,
@@ -208,12 +209,8 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 	}
 
 	// 设置 cookies
-	if len(s.cookies) > 0 {
-		cookieParts := make([]string, 0, len(s.cookies))
-		for name, value := range s.cookies {
-			cookieParts = append(cookieParts, name+"="+value)
-		}
-		req.Header.Set("Cookie", strings.Join(cookieParts, "; "))
+	if cookieHeader := s.cookieHeader(); cookieHeader != "" {
+		req.Header.Set("Cookie", cookieHeader)
 	}
 
 	// 指定 Chrome 头顺序：tls-client 只伪装 TLS，header order 需手动设置
@@ -262,5 +259,36 @@ func (s *Scraper) PostJSON(url string, referer string, jsonBody string, headers 
 func (s *Scraper) SetCookies(cookies map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cookies = cookies
+	s.cookies = cloneCookies(cookies)
+}
+
+func (s *Scraper) cookieHeader() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(s.cookies) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(s.cookies))
+	for name := range s.cookies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, name+"="+s.cookies[name])
+	}
+	return strings.Join(parts, "; ")
+}
+
+func cloneCookies(cookies map[string]string) map[string]string {
+	if len(cookies) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(cookies))
+	for name, value := range cookies {
+		cloned[name] = value
+	}
+	return cloned
 }

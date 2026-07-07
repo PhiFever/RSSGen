@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
@@ -88,8 +89,9 @@ type fetchActivitiesFunc func(userID string, limit int) ([]map[string]interface{
 // Route 是知乎路由实现。
 type Route struct {
 	cfg               config.ResolvedRouteConfig
-	actor             map[string]interface{} // 最近一次抓取的 actor 信息
-	fetchActivitiesFn fetchActivitiesFunc    // 可替换的 fetchActivities（测试用）
+	scraperMu         sync.Mutex
+	scraper           *scraper.Scraper
+	fetchActivitiesFn fetchActivitiesFunc // 可替换的 fetchActivities（测试用）
 }
 
 // New 创建知乎路由实例。
@@ -102,12 +104,25 @@ func (r *Route) Description() string { return "知乎用户动态订阅" }
 func (r *Route) FeedIDField() string { return "user_id" }
 
 func (r *Route) getScraper() (*scraper.Scraper, error) {
-	return scraper.New(scraper.Config{
+	r.scraperMu.Lock()
+	defer r.scraperMu.Unlock()
+
+	if r.scraper != nil {
+		r.scraper.SetCookies(scraper.ParseCookieString(r.cfg.Cookie))
+		return r.scraper, nil
+	}
+
+	sc, err := scraper.New(scraper.Config{
 		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
 		RateLimit:   r.cfg.RateLimit,
 		Proxy:       r.cfg.Proxy,
 		Impersonate: r.cfg.Impersonate,
 	})
+	if err != nil {
+		return nil, err
+	}
+	r.scraper = sc
+	return r.scraper, nil
 }
 
 func (r *Route) getDC0() (string, error) {
@@ -118,37 +133,37 @@ func (r *Route) getDC0() (string, error) {
 	return matches[1], nil
 }
 
-func (r *Route) FeedInfo(pathParams []string) (*route.FeedInfo, error) {
+func (r *Route) feedInfo(pathParams []string, actor map[string]interface{}) (route.FeedInfo, error) {
 	if len(pathParams) == 0 {
-		return nil, fmt.Errorf("需要指定用户 ID，如 /feed/zhihu/{user_id}")
+		return route.FeedInfo{}, fmt.Errorf("需要指定用户 ID，如 /feed/zhihu/{user_id}")
 	}
 	userID := pathParams[0]
 
 	displayName := userID
 
-	if r.actor != nil {
-		if name, ok := r.actor["name"].(string); ok && name != "" {
+	if actor != nil {
+		if name, ok := actor["name"].(string); ok && name != "" {
 			displayName = name
 		}
 	}
 
 	description := fmt.Sprintf("知乎用户 %s 的最新动态", displayName)
-	if r.actor != nil {
-		if headline, ok := r.actor["headline"].(string); ok && headline != "" {
+	if actor != nil {
+		if headline, ok := actor["headline"].(string); ok && headline != "" {
 			description = headline
 		}
 	}
 
-	return &route.FeedInfo{
+	return route.FeedInfo{
 		Title:       fmt.Sprintf("知乎动态 - %s", displayName),
 		Link:        fmt.Sprintf("%s/people/%s", zhihuHostURL, userID),
 		Description: description,
 	}, nil
 }
 
-func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	if len(pathParams) == 0 {
-		return nil, fmt.Errorf("需要指定用户 ID")
+		return route.FeedResult{}, fmt.Errorf("需要指定用户 ID")
 	}
 	userID := pathParams[0]
 	limit := opts.Limit
@@ -173,7 +188,12 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	}
 	activities, err := fetchFn(userID, limit)
 	if err != nil {
-		return nil, fmt.Errorf("获取知乎动态失败: %w", err)
+		return route.FeedResult{}, fmt.Errorf("获取知乎动态失败: %w", err)
+	}
+
+	info, err := r.feedInfo(pathParams, actorFromActivities(activities))
+	if err != nil {
+		return route.FeedResult{}, err
 	}
 
 	var items []route.FeedItem
@@ -196,7 +216,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		items = append(items, item)
 	}
 
-	return items, nil
+	return route.FeedResult{Info: info, Items: items}, nil
 }
 
 // fetchActivities 请求知乎用户动态 API。
@@ -274,14 +294,15 @@ func (r *Route) fetchActivities(userID string, limit int) ([]map[string]interfac
 		activities = activities[:limit]
 	}
 
-	// 提取 actor 信息
-	if len(activities) > 0 {
-		if actor, ok := activities[0]["actor"].(map[string]interface{}); ok {
-			r.actor = actor
-		}
-	}
-
 	return activities, nil
+}
+
+func actorFromActivities(activities []map[string]interface{}) map[string]interface{} {
+	if len(activities) == 0 {
+		return nil
+	}
+	actor, _ := activities[0]["actor"].(map[string]interface{})
+	return actor
 }
 
 // getFeedInclude 从配置中获取指定用户的 include 过滤。
