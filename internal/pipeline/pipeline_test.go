@@ -55,8 +55,11 @@ func TestRefreshGeneratesAndCachesVariant(t *testing.T) {
 		t.Fatalf("format=rss 应生成 RSS XML, got %s", result.XML)
 	}
 	wantKey := "_pipeline_variant/u1?format=rss&limit=7&include=answer,pin"
-	if result.CacheKey != wantKey {
-		t.Fatalf("CacheKey = %q, want %q", result.CacheKey, wantKey)
+	if result.Ref.CacheKey != wantKey {
+		t.Fatalf("CacheKey = %q, want %q", result.Ref.CacheKey, wantKey)
+	}
+	if result.Ref.HealthKey != "_pipeline_variant/u1" || result.Ref.FeedID != "u1" {
+		t.Fatalf("FeedRef = %+v", result.Ref)
 	}
 	if cached, ok := feedCache.Get(wantKey); !ok || cached != result.XML {
 		t.Fatal("Refresh 应按规范化变体键写入缓存")

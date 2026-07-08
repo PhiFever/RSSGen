@@ -267,18 +267,17 @@ func makeFeedHandlerWithPipeline(
 			return
 		}
 
-		feedKey := cache.BuildCacheKey(routeName, pathParts)
 		opts := pipeline.OptionsFromQuery(r.URL.Query())
-		cacheKey := pipe.CacheKey(routeName, pathParts, opts)
+		ref := pipe.FeedRef(routeName, pathParts, opts)
 
 		// 检查 feed 是否被禁用
-		if feedHealth.IsFeedDisabled(feedKey) {
-			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", feedKey), http.StatusBadGateway)
+		if feedHealth.IsFeedDisabled(ref.HealthKey) {
+			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", ref.HealthKey), http.StatusBadGateway)
 			return
 		}
 
 		// 检查缓存
-		if cached, ok := feedCache.Get(cacheKey); ok {
+		if cached, ok := feedCache.Get(ref.CacheKey); ok {
 			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 			if _, err := w.Write([]byte(cached)); err != nil {
 				slog.Error("写入缓存 feed 响应失败", "route", routeName, "error", err)

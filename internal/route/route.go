@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/scraper"
 )
 
 // HTTPError 表示上游 API 返回的非 2xx 状态。
@@ -23,6 +24,63 @@ func (e *HTTPError) Error() string {
 		return fmt.Sprintf("上游返回 HTTP %d: %s", e.StatusCode, e.URL)
 	}
 	return fmt.Sprintf("上游返回 HTTP %d", e.StatusCode)
+}
+
+// NewHTTPError 构造携带状态码的上游 HTTP 错误。
+func NewHTTPError(statusCode int, url string) error {
+	return &HTTPError{StatusCode: statusCode, URL: url}
+}
+
+// BaseRoute 提供所有路由共享的元数据与 scraper 生命周期管理。
+type BaseRoute struct {
+	name        string
+	description string
+	feedIDField string
+
+	scraperMu sync.Mutex
+	scraper   *scraper.Scraper
+}
+
+// NewBaseRoute 创建可嵌入的路由基座。
+func NewBaseRoute(name, description string) BaseRoute {
+	return BaseRoute{
+		name:        name,
+		description: description,
+		feedIDField: "user_id",
+	}
+}
+
+// Name 返回路由名称。
+func (r *BaseRoute) Name() string { return r.name }
+
+// Description 返回路由描述。
+func (r *BaseRoute) Description() string { return r.description }
+
+// FeedIDField 返回 feeds 配置中用于标识 feed 的字段名。
+func (r *BaseRoute) FeedIDField() string { return r.feedIDField }
+
+// Scraper 返回路由复用的 scraper，并在每次获取时刷新 Cookie。
+func (r *BaseRoute) Scraper(cfg config.ResolvedRouteConfig) (*scraper.Scraper, error) {
+	r.scraperMu.Lock()
+	defer r.scraperMu.Unlock()
+
+	cookies := scraper.ParseCookieString(cfg.Cookie)
+	if r.scraper != nil {
+		r.scraper.SetCookies(cookies)
+		return r.scraper, nil
+	}
+
+	sc, err := scraper.New(scraper.Config{
+		Cookies:     cookies,
+		RateLimit:   cfg.RateLimit,
+		Proxy:       cfg.Proxy,
+		Impersonate: cfg.Impersonate,
+	})
+	if err != nil {
+		return nil, err
+	}
+	r.scraper = sc
+	return r.scraper, nil
 }
 
 // FeedItem 表示一个 feed 条目。

@@ -72,10 +72,10 @@ func sm4TTransform(v uint32) uint32 {
 	return sm4LTransform(w)
 }
 
-// SM4EncryptBlock SM4 加密单个 16 字节块。
-func SM4EncryptBlock(plaintext []byte) []byte {
+// sm4EncryptBlock SM4 加密单个 16 字节块。
+func sm4EncryptBlock(plaintext []byte) []byte {
 	if len(plaintext) != 16 {
-		panic("SM4EncryptBlock: 输入必须为 16 字节")
+		panic("sm4EncryptBlock: 输入必须为 16 字节")
 	}
 
 	var X [36]uint32
@@ -100,13 +100,13 @@ func SM4EncryptBlock(plaintext []byte) []byte {
 	return result
 }
 
-// SM4CBCEncrypt SM4 CBC 模式加密。plaintext 必须是 16 字节的倍数。
-func SM4CBCEncrypt(plaintext, iv []byte) []byte {
+// sm4CBCEncrypt SM4 CBC 模式加密。plaintext 必须是 16 字节的倍数。
+func sm4CBCEncrypt(plaintext, iv []byte) []byte {
 	if len(iv) != 16 {
-		panic("SM4CBCEncrypt: IV 必须为 16 字节")
+		panic("sm4CBCEncrypt: IV 必须为 16 字节")
 	}
 	if len(plaintext)%16 != 0 {
-		panic("SM4CBCEncrypt: plaintext 必须是 16 字节的倍数")
+		panic("sm4CBCEncrypt: plaintext 必须是 16 字节的倍数")
 	}
 
 	result := make([]byte, 0, len(plaintext))
@@ -119,7 +119,7 @@ func SM4CBCEncrypt(plaintext, iv []byte) []byte {
 		for j := 0; j < 16; j++ {
 			xored[j] = block[j] ^ prev[j]
 		}
-		encrypted := SM4EncryptBlock(xored)
+		encrypted := sm4EncryptBlock(xored)
 		result = append(result, encrypted...)
 		copy(prev, encrypted)
 	}

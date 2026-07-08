@@ -3,7 +3,6 @@ package refresher
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -78,9 +77,12 @@ var (
 
 // ErrorStatus 记录 feed 的错误状态。
 type ErrorStatus struct {
-	LastSuccess string `json:"last_success,omitempty"`
-	Error       string `json:"error,omitempty"`
-	ItemCount   int    `json:"item_count"`
+	RouteName   string               `json:"-"`
+	FeedID      string               `json:"-"`
+	Variant     pipeline.FeedVariant `json:"variant"`
+	LastSuccess string               `json:"last_success,omitempty"`
+	Error       string               `json:"error,omitempty"`
+	ItemCount   int                  `json:"item_count"`
 }
 
 // New 创建一个新的刷新器实例。
@@ -189,22 +191,21 @@ func (r *Refresher) Stop() {
 
 // Trigger 动态触发：未知 feed 首次访问时调用，非阻塞。
 func (r *Refresher) Trigger(routeName string, pathParams []string, queryParams map[string]string) {
-	feedKey := cache.BuildCacheKey(routeName, pathParams)
 	opts := pipeline.OptionsFromParams(queryParams)
-	refreshKey := r.pipe.CacheKey(routeName, pathParams, opts)
+	ref := r.pipe.FeedRef(routeName, pathParams, opts)
 
 	r.pendingMu.Lock()
-	if r.pending[refreshKey] {
+	if r.pending[ref.CacheKey] {
 		r.pendingMu.Unlock()
 		return
 	}
-	r.pending[refreshKey] = true
+	r.pending[ref.CacheKey] = true
 	r.pendingMu.Unlock()
 
 	// 检查 feed 是否被禁用
-	if r.feedHealth.IsFeedDisabled(feedKey) {
+	if r.feedHealth.IsFeedDisabled(ref.HealthKey) {
 		r.pendingMu.Lock()
-		delete(r.pending, refreshKey)
+		delete(r.pending, ref.CacheKey)
 		r.pendingMu.Unlock()
 		return
 	}
@@ -218,13 +219,12 @@ func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
 	defer r.statsMu.RUnlock()
 
 	grouped := make(map[string]map[string]*ErrorStatus)
-	for cacheKey, status := range r.errorStats {
-		routeName, feedID := splitCacheKey(cacheKey)
-		if grouped[routeName] == nil {
-			grouped[routeName] = make(map[string]*ErrorStatus)
+	for _, status := range r.errorStats {
+		if grouped[status.RouteName] == nil {
+			grouped[status.RouteName] = make(map[string]*ErrorStatus)
 		}
 		statusCopy := *status
-		grouped[routeName][feedID] = &statusCopy
+		grouped[status.RouteName][status.FeedID] = &statusCopy
 	}
 	return grouped
 }
@@ -333,23 +333,22 @@ func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParam
 }
 
 func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string, opts route.FetchOptions) {
-	feedKey := cache.BuildCacheKey(routeName, pathParams)
-	refreshKey := r.pipe.CacheKey(routeName, pathParams, opts)
+	ref := r.pipe.FeedRef(routeName, pathParams, opts)
 
 	// 标记为 pending
 	r.pendingMu.Lock()
-	r.pending[refreshKey] = true
+	r.pending[ref.CacheKey] = true
 	r.pendingMu.Unlock()
 
 	defer func() {
 		r.pendingMu.Lock()
-		delete(r.pending, refreshKey)
+		delete(r.pending, ref.CacheKey)
 		r.pendingMu.Unlock()
 	}()
 
 	// 检查 feed 是否被禁用
-	if r.feedHealth.IsFeedDisabled(feedKey) {
-		slog.Warn("feed 已被禁用，跳过刷新", "key", feedKey)
+	if r.feedHealth.IsFeedDisabled(ref.HealthKey) {
+		slog.Warn("feed 已被禁用，跳过刷新", "key", ref.HealthKey)
 		return
 	}
 
@@ -358,40 +357,46 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 	for attempt := 0; attempt < r.maxRetries; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(r.retryBaseDelay) * time.Second * time.Duration(1<<(attempt-1))
-			slog.Info("重试中", "key", refreshKey, "attempt", attempt+1, "delay", delay)
+			slog.Info("重试中", "key", ref.CacheKey, "attempt", attempt+1, "delay", delay)
 			select {
 			case <-r.ctx.Done():
 				return
 			case <-time.After(delay):
 			}
 		} else {
-			slog.Info("正在刷新", "key", refreshKey)
+			slog.Info("正在刷新", "key", ref.CacheKey)
 		}
 
 		result, err := r.pipe.Refresh(routeName, pathParams, opts)
 		if err != nil {
 			lastErr = err
-			slog.Warn("刷新失败", "key", refreshKey, "attempt", attempt+1, "error", err)
+			slog.Warn("刷新失败", "key", ref.CacheKey, "attempt", attempt+1, "error", err)
 			continue
 		}
 
 		// 更新状态
 		r.statsMu.Lock()
-		r.errorStats[result.CacheKey] = &ErrorStatus{
+		r.errorStats[result.Ref.CacheKey] = &ErrorStatus{
+			RouteName:   result.Ref.RouteName,
+			FeedID:      result.Ref.FeedID,
+			Variant:     result.Ref.Variant,
 			LastSuccess: time.Now().UTC().Format(time.RFC3339),
 			ItemCount:   result.ItemCount,
 		}
 		r.statsMu.Unlock()
 
-		slog.Info("刷新完成", "key", result.CacheKey, "items", result.ItemCount)
+		slog.Info("刷新完成", "key", result.Ref.CacheKey, "items", result.ItemCount)
 		return
 	}
 
 	// 所有重试都失败
-	slog.Error("刷新失败：所有重试均失败", "key", refreshKey, "retries", r.maxRetries)
+	slog.Error("刷新失败：所有重试均失败", "key", ref.CacheKey, "retries", r.maxRetries)
 
 	r.statsMu.Lock()
-	r.errorStats[refreshKey] = &ErrorStatus{
+	r.errorStats[ref.CacheKey] = &ErrorStatus{
+		RouteName: ref.RouteName,
+		FeedID:    ref.FeedID,
+		Variant:   ref.Variant,
 		Error:     fmt.Sprintf("%v", lastErr),
 		ItemCount: 0,
 	}
@@ -399,32 +404,12 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 
 	// 检查是否是业务错误
 	if lastErr != nil {
-		statusCode := extractStatusCode(lastErr)
-		if statusCode > 0 && r.feedHealth.IsBusinessError(statusCode) {
+		statusCode, justDisabled := r.feedHealth.RecordFailure(ref.HealthKey, lastErr)
+		if justDisabled {
 			if r.notifier != nil {
-				r.notifier.Notify(feedKey, statusCode, fmt.Sprintf("%v", lastErr))
+				r.notifier.Notify(ref.HealthKey, statusCode, fmt.Sprintf("%v", lastErr))
 			}
-			r.feedHealth.DisableFeed(feedKey)
-			slog.Warn("feed 已禁用（业务错误）", "key", feedKey, "status", statusCode)
+			slog.Warn("feed 已禁用（业务错误）", "key", ref.HealthKey, "status", statusCode)
 		}
 	}
-}
-
-// splitCacheKey 分割缓存键。
-func splitCacheKey(key string) (routeName, feedID string) {
-	for i, c := range key {
-		if c == '/' {
-			return key[:i], key[i+1:]
-		}
-	}
-	return key, ""
-}
-
-// extractStatusCode 从错误链中提取 HTTP 状态码，无则返回 0。
-func extractStatusCode(err error) int {
-	var he *route.HTTPError
-	if errors.As(err, &he) {
-		return he.StatusCode
-	}
-	return 0
 }

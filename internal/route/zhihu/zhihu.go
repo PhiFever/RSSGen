@@ -8,12 +8,10 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
-	"github.com/PhiFever/RSSGen/internal/scraper"
 	signzhihu "github.com/PhiFever/RSSGen/internal/sign/zhihu"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -161,41 +159,17 @@ type zhihuPinPlaylistItem struct {
 
 // Route 是知乎路由实现。
 type Route struct {
+	route.BaseRoute
 	cfg               config.ResolvedRouteConfig
-	scraperMu         sync.Mutex
-	scraper           *scraper.Scraper
 	fetchActivitiesFn fetchActivitiesFunc // 可替换的 fetchActivities（测试用）
 }
 
 // New 创建知乎路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
-	return &Route{cfg: cfg}
-}
-
-func (r *Route) Name() string        { return "zhihu" }
-func (r *Route) Description() string { return "知乎用户动态订阅" }
-func (r *Route) FeedIDField() string { return "user_id" }
-
-func (r *Route) getScraper() (*scraper.Scraper, error) {
-	r.scraperMu.Lock()
-	defer r.scraperMu.Unlock()
-
-	if r.scraper != nil {
-		r.scraper.SetCookies(scraper.ParseCookieString(r.cfg.Cookie))
-		return r.scraper, nil
+	return &Route{
+		BaseRoute: route.NewBaseRoute("zhihu", "知乎用户动态订阅"),
+		cfg:       cfg,
 	}
-
-	sc, err := scraper.New(scraper.Config{
-		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
-		RateLimit:   r.cfg.RateLimit,
-		Proxy:       r.cfg.Proxy,
-		Impersonate: r.cfg.Impersonate,
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.scraper = sc
-	return r.scraper, nil
 }
 
 func (r *Route) getDC0() (string, error) {
@@ -236,19 +210,8 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	}
 	userID := pathParams[0]
 	limit := opts.Limit
-	if limit <= 0 {
-		limit = 20
-	}
 
-	// 获取 include 过滤
 	include := opts.Include
-	if len(include) == 0 {
-		include = r.getFeedInclude(userID)
-	}
-	if len(include) == 0 {
-		include = r.cfg.DefaultInclude
-	}
-
 	includeSelfInteraction := r.cfg.IncludeSelfInteraction
 
 	fetchFn := r.fetchActivities
@@ -294,7 +257,7 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 		return nil, err
 	}
 
-	sc, err := r.getScraper()
+	sc, err := r.Scraper(r.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
@@ -326,7 +289,7 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 			return activities, err
 		}
 		if resp.StatusCode != 200 {
-			return activities, &route.HTTPError{StatusCode: resp.StatusCode, URL: nextURL}
+			return activities, route.NewHTTPError(resp.StatusCode, nextURL)
 		}
 
 		var data activitiesResponse
@@ -359,16 +322,6 @@ func actorFromActivities(activities []zhihuActivity) *zhihuPerson {
 		return nil
 	}
 	return activities[0].Actor
-}
-
-// getFeedInclude 从配置中获取指定用户的 include 过滤。
-func (r *Route) getFeedInclude(userID string) []string {
-	for _, f := range r.cfg.Feeds {
-		if f.UserID == userID {
-			return f.Include
-		}
-	}
-	return nil
 }
 
 // makeFeedItem 根据 activity 构造 FeedItem。

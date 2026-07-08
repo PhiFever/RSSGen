@@ -1,8 +1,12 @@
 package health
 
 import (
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/PhiFever/RSSGen/internal/route"
 )
 
 func TestIsBusinessError(t *testing.T) {
@@ -54,6 +58,49 @@ func TestDisableFeedIdempotent(t *testing.T) {
 	h.DisableFeed("key")
 	if !h.IsFeedDisabled("key") {
 		t.Error("重复 DisableFeed 后仍应为禁用状态")
+	}
+}
+
+func TestRecordFailureBusinessErrorDisablesFeed(t *testing.T) {
+	h := New(Config{})
+
+	statusCode, justDisabled := h.RecordFailure("zhihu/user1", fmt.Errorf("wrapped: %w", &route.HTTPError{StatusCode: 403}))
+	if statusCode != 403 {
+		t.Fatalf("statusCode = %d, want 403", statusCode)
+	}
+	if !justDisabled {
+		t.Fatal("首次业务错误应返回 justDisabled=true")
+	}
+	if !h.IsFeedDisabled("zhihu/user1") {
+		t.Fatal("业务错误后 feed 应被禁用")
+	}
+
+	statusCode, justDisabled = h.RecordFailure("zhihu/user1", &route.HTTPError{StatusCode: 403})
+	if statusCode != 403 {
+		t.Fatalf("second statusCode = %d, want 403", statusCode)
+	}
+	if justDisabled {
+		t.Fatal("已禁用 feed 的后续失败不应重复返回 justDisabled=true")
+	}
+}
+
+func TestRecordFailureIgnoresTemporaryAndPlainErrors(t *testing.T) {
+	h := New(Config{})
+
+	statusCode, justDisabled := h.RecordFailure("zhihu/user1", &route.HTTPError{StatusCode: 500})
+	if statusCode != 500 {
+		t.Fatalf("statusCode = %d, want 500", statusCode)
+	}
+	if justDisabled || h.IsFeedDisabled("zhihu/user1") {
+		t.Fatal("临时 HTTP 错误不应禁用 feed")
+	}
+
+	statusCode, justDisabled = h.RecordFailure("zhihu/user1", errors.New("boom"))
+	if statusCode != 0 {
+		t.Fatalf("plain statusCode = %d, want 0", statusCode)
+	}
+	if justDisabled || h.IsFeedDisabled("zhihu/user1") {
+		t.Fatal("普通错误不应禁用 feed")
 	}
 }
 

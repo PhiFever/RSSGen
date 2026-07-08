@@ -12,14 +12,14 @@ import (
 // 常量
 // ============================================
 
-// ShuffledB64 是从 JS VM D 数组提取的打乱 base64 字母表。
-const ShuffledB64 = "6fpLRqJO8M/c3jnYxFkUVC4ZIG12SiH=5v0mXDazWBTsuw7QetbKdoPyAl+hN9rgE"
+// shuffledB64 是从 JS VM D 数组提取的打乱 base64 字母表。
+const shuffledB64 = "6fpLRqJO8M/c3jnYxFkUVC4ZIG12SiH=5v0mXDazWBTsuw7QetbKdoPyAl+hN9rgE"
 
-// IVKey 是 14 字节 IV 派生 XOR 密钥。
-var IVKey = []byte{0x13, 0x1A, 0x1F, 0x19, 0x4C, 0x1D, 0x4E, 0x1B, 0x1F, 0x4F, 0x1A, 0x1B, 0x4E, 0x1D}
+// ivKey 是 14 字节 IV 派生 XOR 密钥。
+var ivKey = []byte{0x13, 0x1A, 0x1F, 0x19, 0x4C, 0x1D, 0x4E, 0x1B, 0x1F, 0x4F, 0x1A, 0x1B, 0x4E, 0x1D}
 
-// PostXORConst 是后处理 XOR 常量（12 字节重复 4 次 = 48 字节）。
-var PostXORConst = func() []byte {
+// postXORConst 是后处理 XOR 常量（12 字节重复 4 次 = 48 字节）。
+var postXORConst = func() []byte {
 	c := []byte{232, 0, 0, 2, 128, 192, 0, 8, 14, 0, 0, 0}
 	result := make([]byte, 48)
 	for i := 0; i < 4; i++ {
@@ -30,8 +30,8 @@ var PostXORConst = func() []byte {
 
 // 版本常量
 const (
-	XZSE93Version = "101_3_3.0"
-	XZSE96Prefix  = "2.0_"
+	xzse93Version = "101_3_3.0"
+	xzse96Prefix  = "2.0_"
 )
 
 // ============================================
@@ -44,7 +44,7 @@ func buildB64Lookup() [128]int {
 	for i := range table {
 		table[i] = -1
 	}
-	for i, c := range ShuffledB64 {
+	for i, c := range shuffledB64 {
 		table[c] = i
 	}
 	return table
@@ -52,8 +52,8 @@ func buildB64Lookup() [128]int {
 
 var b64Lookup = buildB64Lookup()
 
-// ShuffledB64Encode 使用打乱字母表的 base64 编码。
-func ShuffledB64Encode(data []byte) string {
+// shuffledB64Encode 使用打乱字母表的 base64 编码。
+func shuffledB64Encode(data []byte) string {
 	var result strings.Builder
 	result.Grow((len(data) + 2) / 3 * 4)
 
@@ -72,16 +72,16 @@ func ShuffledB64Encode(data []byte) string {
 		c3 := ((b2 & 15) << 2) | (b3 >> 6)
 		c4 := b3 & 63
 
-		result.WriteByte(ShuffledB64[c1])
-		result.WriteByte(ShuffledB64[c2])
-		result.WriteByte(ShuffledB64[c3])
-		result.WriteByte(ShuffledB64[c4])
+		result.WriteByte(shuffledB64[c1])
+		result.WriteByte(shuffledB64[c2])
+		result.WriteByte(shuffledB64[c3])
+		result.WriteByte(shuffledB64[c4])
 	}
 	return result.String()
 }
 
-// ShuffledB64Decode 使用打乱字母表的 base64 解码。
-func ShuffledB64Decode(b64Str string) ([]byte, error) {
+// shuffledB64Decode 使用打乱字母表的 base64 解码。
+func shuffledB64Decode(b64Str string) ([]byte, error) {
 	result := make([]byte, 0, len(b64Str)/4*3)
 
 	for i := 0; i < len(b64Str); i += 4 {
@@ -104,16 +104,16 @@ func ShuffledB64Decode(b64Str string) ([]byte, error) {
 // 位变换函数
 // ============================================
 
-// PermuteRandomByte 对随机字节做位变换（来自 JSVMP 还原）。
+// permuteRandomByte 对随机字节做位变换（来自 JSVMP 还原）。
 // 保留高位 (bit 5-6)，低 5 位按固定置换表打乱。
-func PermuteRandomByte(k int) byte {
+func permuteRandomByte(k int) byte {
 	k &= 0x7F
 	s := k & 0x1F
 	return byte((k &^ 0x1F) | (((^s & 0x18) | (s & 0x04) | ((s ^ 2) & 0x03)) & 0x1F))
 }
 
-// Encode3 对 48 字节做位混洗（16 组 x 3 字节）。
-func Encode3(x []byte) []byte {
+// encode3 对 48 字节做位混洗（16 组 x 3 字节）。
+func encode3(x []byte) []byte {
 	if len(x)%3 != 0 {
 		panic(fmt.Sprintf("encode3: 需要 3 字节对齐，收到 %d", len(x)))
 	}
@@ -144,8 +144,8 @@ func pkcs7Pad(data []byte, blockSize int) []byte {
 	return padded
 }
 
-// BuildIVDerivationBlock 构建 IV 派生块（对应 r[0].in）。
-func BuildIVDerivationBlock(inputBytes []byte, randomByte byte) []byte {
+// buildIVDerivationBlock 构建 IV 派生块（对应 r[0].in）。
+func buildIVDerivationBlock(inputBytes []byte, randomByte byte) []byte {
 	n := len(inputBytes)
 	if n > 14 {
 		n = 14
@@ -165,7 +165,7 @@ func BuildIVDerivationBlock(inputBytes []byte, randomByte byte) []byte {
 	block[0] = randomByte
 	block[1] = 0x15
 	for i := 0; i < 14; i++ {
-		block[2+i] = dataArea[i] ^ IVKey[i]
+		block[2+i] = dataArea[i] ^ ivKey[i]
 	}
 
 	return block
@@ -181,17 +181,17 @@ func reverseBytes(b []byte) []byte {
 	return r
 }
 
-// EncryptWithFixedRandom 同 ZhihuEncrypt 但接受外部 randomByte，仅供测试用。
-func EncryptWithFixedRandom(data string, randomByte byte) (string, error) {
+// encryptWithFixedRandom 同 zhihuEncrypt 但接受外部 randomByte，仅供测试用。
+func encryptWithFixedRandom(data string, randomByte byte) (string, error) {
 	inputBytes := []byte(data)
 
-	ivBlock := BuildIVDerivationBlock(inputBytes[:min(len(inputBytes), 14)], randomByte)
-	iv := SM4EncryptBlock(ivBlock)
+	ivBlock := buildIVDerivationBlock(inputBytes[:min(len(inputBytes), 14)], randomByte)
+	iv := sm4EncryptBlock(ivBlock)
 
 	tail := inputBytes[14:]
 	var ct []byte
 	if len(tail) > 0 {
-		ct = SM4CBCEncrypt(pkcs7Pad(tail, 16), iv)
+		ct = sm4CBCEncrypt(pkcs7Pad(tail, 16), iv)
 	}
 
 	// 后处理管线：reverse → encode3 → XOR CONST → shuffled b64
@@ -203,29 +203,29 @@ func EncryptWithFixedRandom(data string, randomByte byte) (string, error) {
 		return "", fmt.Errorf("短输入后处理未实现 (X len = %d)", len(X))
 	}
 
-	shuffled := Encode3(X)
+	shuffled := encode3(X)
 	raw := make([]byte, len(shuffled))
 	for i := range shuffled {
-		raw[i] = shuffled[i] ^ PostXORConst[i]
+		raw[i] = shuffled[i] ^ postXORConst[i]
 	}
-	return ShuffledB64Encode(raw), nil
+	return shuffledB64Encode(raw), nil
 }
 
-// ZhihuEncrypt 知乎加密函数 - 匹配 JS __g._encrypt。
-func ZhihuEncrypt(data string) (string, error) {
+// zhihuEncrypt 知乎加密函数 - 匹配 JS __g._encrypt。
+func zhihuEncrypt(data string) (string, error) {
 	inputBytes := []byte(data)
 
 	// Math.random() * 127 后做位变换
 	k := int(rand.Int31n(127))
-	randomByte := PermuteRandomByte(k)
+	randomByte := permuteRandomByte(k)
 
-	ivBlock := BuildIVDerivationBlock(inputBytes[:min(len(inputBytes), 14)], randomByte)
-	iv := SM4EncryptBlock(ivBlock)
+	ivBlock := buildIVDerivationBlock(inputBytes[:min(len(inputBytes), 14)], randomByte)
+	iv := sm4EncryptBlock(ivBlock)
 
 	tail := inputBytes[14:]
 	var ct []byte
 	if len(tail) > 0 {
-		ct = SM4CBCEncrypt(pkcs7Pad(tail, 16), iv)
+		ct = sm4CBCEncrypt(pkcs7Pad(tail, 16), iv)
 	}
 
 	X := make([]byte, len(ct)+len(iv))
@@ -236,20 +236,20 @@ func ZhihuEncrypt(data string) (string, error) {
 		return "", fmt.Errorf("短输入后处理未实现 (X len = %d)", len(X))
 	}
 
-	shuffled := Encode3(X)
+	shuffled := encode3(X)
 	raw := make([]byte, len(shuffled))
 	for i := range shuffled {
-		raw[i] = shuffled[i] ^ PostXORConst[i]
+		raw[i] = shuffled[i] ^ postXORConst[i]
 	}
-	return ShuffledB64Encode(raw), nil
+	return shuffledB64Encode(raw), nil
 }
 
 // ============================================
 // URL 解析
 // ============================================
 
-// ParseURLPath 提取 URL 路径部分（同 JS 中 e8 函数）。
-func ParseURLPath(url string) string {
+// parseURLPath 提取 URL 路径部分（同 JS 中 e8 函数）。
+func parseURLPath(url string) string {
 	if !strings.HasPrefix(url, "http") {
 		if !strings.HasPrefix(url, "/") {
 			url = "/" + url
@@ -279,9 +279,9 @@ type SignatureResult struct {
 	XZSE96 string `json:"x_zse_96"`
 }
 
-// GenSource 生成签名源字符串。
-func GenSource(url, body, zse93, dc0, xZst81 string) string {
-	path := ParseURLPath(url)
+// genSource 生成签名源字符串。
+func genSource(url, body, zse93, dc0, xZst81 string) string {
+	path := parseURLPath(url)
 
 	parts := []string{zse93, path, dc0}
 
@@ -298,21 +298,21 @@ func GenSource(url, body, zse93, dc0, xZst81 string) string {
 
 // GetSignature 生成知乎签名。
 func GetSignature(url, dc0, body string) (*SignatureResult, error) {
-	zse93 := XZSE93Version
+	zse93 := xzse93Version
 
-	source := GenSource(url, body, zse93, dc0, "")
+	source := genSource(url, body, zse93, dc0, "")
 
 	md5Hex := md5hex(source)
 
-	signature, err := ZhihuEncrypt(md5Hex)
+	signature, err := zhihuEncrypt(md5Hex)
 	if err != nil {
-		return nil, fmt.Errorf("ZhihuEncrypt: %w", err)
+		return nil, fmt.Errorf("zhihuEncrypt: %w", err)
 	}
 
 	return &SignatureResult{
 		Source: source,
 		XZSE93: zse93,
-		XZSE96: XZSE96Prefix + signature,
+		XZSE96: xzse96Prefix + signature,
 	}, nil
 }
 

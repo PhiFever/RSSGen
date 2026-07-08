@@ -20,6 +20,8 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 1. 双键语义收口：pipeline 暴露 FeedRef 【Strong】
 
+状态：已完成（2026-07-08）。
+
 涉及：`cmd/rssgen/main.go`（makeFeedHandlerWithPipeline）、`internal/refresher/refresher.go`（Trigger、refreshOneWithOptions、splitCacheKey、GetStatus）、`internal/pipeline/pipeline.go`、`internal/cache/`
 
 摩擦：「熔断/禁用用基础键 `route/path`、feed XML 用变体键 `route/path?format=…`」这条不变量没有单一归属——handler 与 refresher 各自手拼双键（3 包 5 处），refresher 还用 `splitCacheKey` 维护着 cache 键格式的手写逆函数；`errorStats` 以变体键为 map key，导致 `/status` 里 feed 名渗出 `user1?format=atom&limit=20`。任何一处把变体键误传给 `IsFeedDisabled`，禁用判定就静默错位。
@@ -32,6 +34,8 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 2. 提取路由基座：样板收成一份 【Strong】
 
+状态：已完成（2026-07-08）。
+
 涉及：`internal/route/zhihu/zhihu.go`（getScraper、Fetch 中 limit/include 兜底）、`internal/route/afdian/afdian.go`（getScraper）、`internal/route/route.go`、`internal/pipeline/pipeline.go`（normalizeOptions）
 
 摩擦：`getScraper`（懒加载 + Cookie 刷新 + 复用）在两包逐字重复；`&route.HTTPError{...}` 构造出现 5 次；`limit<=0` 兜底和 zhihu 的 include 兜底重复了 pipeline `NormalizeFetchOptions` 已做过的规范化——zhihu 的 `getFeedInclude`/`DefaultInclude` 兜底分支经 pipeline 进来时近乎死代码，且与 pipeline 用不同的 config 快照推同一集合，存在悄悄发散的风险。加第三条路由要复制 40–60 行样板。
@@ -42,6 +46,8 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 3. sign/zhihu 导出面 14 → 2 【Strong · 零风险】
 
+状态：已完成（2026-07-08）。
+
 涉及：`internal/sign/zhihu/sign.go`、`internal/sign/zhihu/sm4.go`
 
 摩擦：包外唯一消费者是 `zhihu.go` 与 `cmd/zhihu_demo` 调 `GetSignature`；其余 13 个导出符号（ShuffledB64Encode/Decode、SM4 系列、XOR 常量等）把签名算法内部当接口泄漏。测试是同包测试（`package zhihu`），导出并非测试所需。
@@ -51,6 +57,8 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 验收：包导出符号仅剩 2 个；`go build ./...` 通过。
 
 ### 4. health 深化：熔断编排收进 RecordFailure 【Worth exploring】
+
+状态：已完成（2026-07-08）。
 
 涉及：`internal/refresher/refresher.go`（refreshOneWithOptions 的错误分类段）、`internal/health/feed_health.go`、`internal/notifier/notifier.go`
 

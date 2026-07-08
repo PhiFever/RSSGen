@@ -101,9 +101,8 @@ func init() {
 
 // Route 是爱发电路由实现。
 type Route struct {
+	route.BaseRoute
 	cfg               config.ResolvedRouteConfig
-	scraperMu         sync.Mutex
-	scraper           *scraper.Scraper
 	getAuthorIDFn     func(sc *scraper.Scraper, authorSlug string) (string, error)
 	getPostListFn     func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
 	getPostDetailFn   func(sc *scraper.Scraper, postID string) (string, error)
@@ -112,33 +111,10 @@ type Route struct {
 
 // New 创建爱发电路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
-	return &Route{cfg: cfg}
-}
-
-func (r *Route) Name() string        { return "afdian" }
-func (r *Route) Description() string { return "爱发电创作者动态订阅" }
-func (r *Route) FeedIDField() string { return "user_id" }
-
-func (r *Route) getScraper() (*scraper.Scraper, error) {
-	r.scraperMu.Lock()
-	defer r.scraperMu.Unlock()
-
-	if r.scraper != nil {
-		r.scraper.SetCookies(scraper.ParseCookieString(r.cfg.Cookie))
-		return r.scraper, nil
+	return &Route{
+		BaseRoute: route.NewBaseRoute("afdian", "爱发电创作者动态订阅"),
+		cfg:       cfg,
 	}
-
-	sc, err := scraper.New(scraper.Config{
-		Cookies:     scraper.ParseCookieString(r.cfg.Cookie),
-		RateLimit:   r.cfg.RateLimit,
-		Proxy:       r.cfg.Proxy,
-		Impersonate: r.cfg.Impersonate,
-	})
-	if err != nil {
-		return nil, err
-	}
-	r.scraper = sc
-	return r.scraper, nil
 }
 
 func (r *Route) feedInfo(pathParams []string) (route.FeedInfo, error) {
@@ -173,11 +149,8 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 
 	authorSlug := pathParams[0]
 	limit := opts.Limit
-	if limit <= 0 {
-		limit = 20
-	}
 
-	sc, err := r.getScraper()
+	sc, err := r.Scraper(r.cfg)
 	if err != nil {
 		return route.FeedResult{}, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
@@ -310,7 +283,7 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 	}
 
 	if resp.StatusCode != 200 {
-		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
+		return "", route.NewHTTPError(resp.StatusCode, apiURL)
 	}
 
 	data, err := parseAfdianResponse(resp.Body)
@@ -354,7 +327,7 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 			return allPosts, err
 		}
 		if resp.StatusCode != 200 {
-			return allPosts, &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
+			return allPosts, route.NewHTTPError(resp.StatusCode, apiURL)
 		}
 
 		data, err := parseAfdianResponse(resp.Body)
@@ -402,7 +375,7 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", err
 	}
 	if resp.StatusCode != 200 {
-		return "", &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
+		return "", route.NewHTTPError(resp.StatusCode, apiURL)
 	}
 
 	data, err := parseAfdianResponse(resp.Body)
@@ -439,7 +412,7 @@ func (r *Route) getPostComments(sc *scraper.Scraper, postID string) (afdianComme
 		return afdianCommentList{}, err
 	}
 	if resp.StatusCode != 200 {
-		return afdianCommentList{}, &route.HTTPError{StatusCode: resp.StatusCode, URL: apiURL}
+		return afdianCommentList{}, route.NewHTTPError(resp.StatusCode, apiURL)
 	}
 
 	data, err := parseAfdianResponse(resp.Body)

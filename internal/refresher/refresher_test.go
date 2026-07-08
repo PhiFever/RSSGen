@@ -61,52 +61,6 @@ func TestBuildCacheKey(t *testing.T) {
 	}
 }
 
-func TestSplitCacheKey(t *testing.T) {
-	tests := []struct {
-		key            string
-		expectedRoute  string
-		expectedFeedID string
-	}{
-		{"afdian/user1", "afdian", "user1"},
-		{"zhihu/user2", "zhihu", "user2"},
-		{"test/a/b", "test", "a/b"},
-		{"single", "single", ""},
-	}
-
-	for _, tt := range tests {
-		routeName, feedID := splitCacheKey(tt.key)
-		if routeName != tt.expectedRoute {
-			t.Errorf("splitCacheKey(%q): routeName = %q, want %q", tt.key, routeName, tt.expectedRoute)
-		}
-		if feedID != tt.expectedFeedID {
-			t.Errorf("splitCacheKey(%q): feedID = %q, want %q", tt.key, feedID, tt.expectedFeedID)
-		}
-	}
-}
-
-func TestExtractStatusCode(t *testing.T) {
-	tests := []struct {
-		name     string
-		err      error
-		expected int
-	}{
-		{"裸 HTTPError", &route.HTTPError{StatusCode: 403}, 403},
-		// 回归 bug #1：路由抛出的 HTTPError 会被多层 fmt.Errorf 包裹，
-		// 旧的字符串解析在此恒返回 0，导致风控禁用从不触发。
-		{"包裹后的 HTTPError", fmt.Errorf("获取知乎动态失败: %w", &route.HTTPError{StatusCode: 404}), 404},
-		{"普通错误", errors.New("some other error"), 0},
-		{"nil", nil, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if result := extractStatusCode(tt.err); result != tt.expected {
-				t.Errorf("extractStatusCode(%v) = %d, want %d", tt.err, result, tt.expected)
-			}
-		})
-	}
-}
-
 // --- Trigger（迁移自 Python TestTrigger） ---
 
 func TestTriggerCreatesTask(t *testing.T) {
@@ -182,8 +136,19 @@ func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 
 	// 手动写入 errorStats
 	ref.statsMu.Lock()
-	ref.errorStats["zhihu/user1"] = &ErrorStatus{ItemCount: 5, LastSuccess: "2025-01-01T00:00:00Z"}
-	ref.errorStats["afdian/user2"] = &ErrorStatus{Error: "timeout"}
+	ref.errorStats["zhihu/user1"] = &ErrorStatus{
+		RouteName:   "zhihu",
+		FeedID:      "user1",
+		Variant:     pipeline.FeedVariant{Format: "atom", Limit: 20},
+		ItemCount:   5,
+		LastSuccess: "2025-01-01T00:00:00Z",
+	}
+	ref.errorStats["afdian/user2"] = &ErrorStatus{
+		RouteName: "afdian",
+		FeedID:    "user2",
+		Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
+		Error:     "timeout",
+	}
 	ref.statsMu.Unlock()
 
 	status := ref.GetStatus()
@@ -196,6 +161,9 @@ func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 	}
 	if status["zhihu"]["user1"].ItemCount != 5 {
 		t.Errorf("ItemCount = %d, want 5", status["zhihu"]["user1"].ItemCount)
+	}
+	if status["zhihu"]["user1"].Variant.Format != "atom" {
+		t.Errorf("Variant = %+v", status["zhihu"]["user1"].Variant)
 	}
 	if status["afdian"] == nil || status["afdian"]["user2"] == nil {
 		t.Error("应包含 afdian/user2")

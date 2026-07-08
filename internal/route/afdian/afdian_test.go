@@ -36,14 +36,14 @@ func TestNew(t *testing.T) {
 
 func TestGetScraperReusesInstance(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "a=1", RateLimit: 0.001})
-	first, err := r.getScraper()
+	first, err := r.Scraper(r.cfg)
 	if err != nil {
-		t.Fatalf("第一次 getScraper 返回错误: %v", err)
+		t.Fatalf("第一次 Scraper 返回错误: %v", err)
 	}
 	r.cfg.Cookie = "a=2"
-	second, err := r.getScraper()
+	second, err := r.Scraper(r.cfg)
 	if err != nil {
-		t.Fatalf("第二次 getScraper 返回错误: %v", err)
+		t.Fatalf("第二次 Scraper 返回错误: %v", err)
 	}
 	if first != second {
 		t.Fatal("同一路由实例应复用 scraper，以保留限速与连接状态")

@@ -22,11 +22,27 @@ type Config struct {
 	RoutesConfig  map[string]config.RouteConfig
 }
 
+// FeedVariant 是一次 feed 输出请求的规范化变体。
+type FeedVariant struct {
+	Format  string   `json:"format"`
+	Limit   int      `json:"limit"`
+	Include []string `json:"include,omitempty"`
+}
+
+// FeedRef 是同一个 feed 的健康键与 XML 缓存键的单一来源。
+type FeedRef struct {
+	RouteName string      `json:"route_name"`
+	FeedID    string      `json:"feed_id"`
+	HealthKey string      `json:"health_key"`
+	CacheKey  string      `json:"cache_key"`
+	Variant   FeedVariant `json:"variant"`
+}
+
 // RefreshResult 是一次流水线刷新的结果。
 type RefreshResult struct {
 	XML       string
 	ItemCount int
-	CacheKey  string
+	Ref       FeedRef
 }
 
 // Pipeline 完成从路由抓取到 XML 落缓存的全过程。
@@ -94,36 +110,62 @@ func CacheKey(routeName string, pathParams []string, opts route.FetchOptions) st
 
 // CacheKey 返回当前 pipeline 配置下指定 feed 的缓存键。
 func (p *Pipeline) CacheKey(routeName string, pathParams []string, opts route.FetchOptions) string {
-	return CacheKey(routeName, pathParams, p.normalizeOptions(routeName, pathParams, opts))
+	return p.FeedRef(routeName, pathParams, opts).CacheKey
+}
+
+// FeedRef 返回当前 pipeline 配置下指定 feed 的结构化引用。
+func (p *Pipeline) FeedRef(routeName string, pathParams []string, opts route.FetchOptions) FeedRef {
+	return newFeedRef(routeName, pathParams, p.normalizeOptions(routeName, pathParams, opts))
 }
 
 // Refresh 完成一次抓取、生成 XML 并写入缓存。
 func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.FetchOptions) (RefreshResult, error) {
-	opts = p.normalizeOptions(routeName, pathParams, opts)
-	cacheKey := CacheKey(routeName, pathParams, opts)
+	ref := p.FeedRef(routeName, pathParams, opts)
+	opts = route.FetchOptions{
+		Limit:       ref.Variant.Limit,
+		Include:     append([]string(nil), ref.Variant.Include...),
+		Format:      ref.Variant.Format,
+		ExtraParams: opts.ExtraParams,
+	}
 
 	rt, err := p.route(routeName)
 	if err != nil {
-		return RefreshResult{CacheKey: cacheKey}, err
+		return RefreshResult{Ref: ref}, err
 	}
 
 	result, err := rt.Fetch(p.articleStore, pathParams, opts)
 	if err != nil {
-		return RefreshResult{CacheKey: cacheKey}, err
+		return RefreshResult{Ref: ref}, err
 	}
 
 	xml, err := feed.Generate(&result.Info, result.Items, opts.Format)
 	if err != nil {
-		return RefreshResult{CacheKey: cacheKey, ItemCount: len(result.Items)}, err
+		return RefreshResult{Ref: ref, ItemCount: len(result.Items)}, err
 	}
 	if p.feedCache != nil {
-		p.feedCache.Set(cacheKey, xml)
+		p.feedCache.Set(ref.CacheKey, xml)
 	}
 	return RefreshResult{
 		XML:       xml,
 		ItemCount: len(result.Items),
-		CacheKey:  cacheKey,
+		Ref:       ref,
 	}, nil
+}
+
+func newFeedRef(routeName string, pathParams []string, opts route.FetchOptions) FeedRef {
+	opts = route.NormalizeFetchOptions(opts)
+	variant := FeedVariant{
+		Format:  opts.Format,
+		Limit:   opts.Limit,
+		Include: append([]string(nil), opts.Include...),
+	}
+	return FeedRef{
+		RouteName: routeName,
+		FeedID:    strings.Join(pathParams, "/"),
+		HealthKey: cache.BuildCacheKey(routeName, pathParams),
+		CacheKey:  CacheKey(routeName, pathParams, opts),
+		Variant:   variant,
+	}
 }
 
 func (p *Pipeline) normalizeOptions(routeName string, pathParams []string, opts route.FetchOptions) route.FetchOptions {

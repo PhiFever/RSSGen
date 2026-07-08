@@ -22,7 +22,7 @@ func TestSM4EncryptBlock(t *testing.T) {
 	for i, v := range vectors {
 		input := byteArrayFromInts(v.Input)
 		expected := byteArrayFromInts(v.Output)
-		result := SM4EncryptBlock(input)
+		result := sm4EncryptBlock(input)
 
 		for j := 0; j < 16; j++ {
 			if result[j] != expected[j] {
@@ -45,7 +45,7 @@ func TestEncryptWithFixedRandom(t *testing.T) {
 
 	for i, s := range samples {
 		randomByte := byte(s.RCalls[0].Input[0])
-		result, err := EncryptWithFixedRandom(s.Input, randomByte)
+		result, err := encryptWithFixedRandom(s.Input, randomByte)
 		if err != nil {
 			t.Errorf("加密向量 %d (input=%s): 错误 %v", i, s.Input[:16], err)
 			continue
@@ -71,11 +71,11 @@ func TestGetSignature(t *testing.T) {
 		t.Fatalf("GetSignature 错误: %v", err)
 	}
 
-	if sig.XZSE93 != XZSE93Version {
-		t.Errorf("XZSE93: 期望 %s, 实际 %s", XZSE93Version, sig.XZSE93)
+	if sig.XZSE93 != xzse93Version {
+		t.Errorf("XZSE93: 期望 %s, 实际 %s", xzse93Version, sig.XZSE93)
 	}
-	if !strings.HasPrefix(sig.XZSE96, XZSE96Prefix) {
-		t.Errorf("XZSE96 应以 %s 开头, 实际: %s", XZSE96Prefix, sig.XZSE96)
+	if !strings.HasPrefix(sig.XZSE96, xzse96Prefix) {
+		t.Errorf("XZSE96 应以 %s 开头, 实际: %s", xzse96Prefix, sig.XZSE96)
 	}
 	if len(sig.XZSE96) != 68 {
 		t.Errorf("XZSE96 长度应为 68, 实际: %d", len(sig.XZSE96))
@@ -117,16 +117,16 @@ func TestGetSignature(t *testing.T) {
 
 func TestShuffledB64Decode(t *testing.T) {
 	raw := []byte{0x01, 0x02, 0x03, 0xfe, 0xfd, 0xfc}
-	encoded := ShuffledB64Encode(raw)
-	decoded, err := ShuffledB64Decode(encoded)
+	encoded := shuffledB64Encode(raw)
+	decoded, err := shuffledB64Decode(encoded)
 	if err != nil {
-		t.Fatalf("ShuffledB64Decode 返回错误: %v", err)
+		t.Fatalf("shuffledB64Decode 返回错误: %v", err)
 	}
 	if string(decoded) != string(raw) {
 		t.Fatalf("decoded = %v, want %v", decoded, raw)
 	}
 
-	if _, err := ShuffledB64Decode("!!!!"); err == nil {
+	if _, err := shuffledB64Decode("!!!!"); err == nil {
 		t.Fatal("无效字符应返回错误")
 	}
 }
@@ -141,8 +141,8 @@ func TestParseURLPathVariants(t *testing.T) {
 		"https://www.zhihu.com/people/alice/posts/": "/people/alice/posts/",
 	}
 	for in, want := range tests {
-		if got := ParseURLPath(in); got != want {
-			t.Fatalf("ParseURLPath(%q) = %q, want %q", in, got, want)
+		if got := parseURLPath(in); got != want {
+			t.Fatalf("parseURLPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

@@ -45,14 +45,14 @@ func TestRouteMetadataAndScraper(t *testing.T) {
 	if r.Description() == "" || r.FeedIDField() != "user_id" {
 		t.Fatalf("metadata 不符合预期")
 	}
-	first, err := r.getScraper()
+	first, err := r.Scraper(r.cfg)
 	if err != nil {
-		t.Fatalf("getScraper 返回错误: %v", err)
+		t.Fatalf("Scraper 返回错误: %v", err)
 	}
 	r.cfg.Cookie = "d_c0=updated;"
-	second, err := r.getScraper()
+	second, err := r.Scraper(r.cfg)
 	if err != nil {
-		t.Fatalf("第二次 getScraper 返回错误: %v", err)
+		t.Fatalf("第二次 Scraper 返回错误: %v", err)
 	}
 	if first != second {
 		t.Fatal("同一路由实例应复用 scraper，以保留限速与连接状态")
@@ -1030,11 +1030,10 @@ func TestFetchFiltersByInclude(t *testing.T) {
 	}
 	r := New(config.ResolvedRouteConfig{
 		Cookie: "d_c0=test",
-		Feeds:  []config.FeedConfig{{UserID: "test_user", Include: []string{"answer"}}},
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1188,11 +1187,10 @@ func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
 	}
 	r := New(config.ResolvedRouteConfig{
 		Cookie: "d_c0=test",
-		Feeds:  []config.FeedConfig{{UserID: "u", Include: []string{"answer"}}},
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1474,11 +1472,10 @@ func TestFetchIncludeCollectedAnswer(t *testing.T) {
 	}
 	r := New(config.ResolvedRouteConfig{
 		Cookie: "d_c0=test",
-		Feeds:  []config.FeedConfig{{UserID: "u", Include: []string{"collected_answer"}}},
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"collected_answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
