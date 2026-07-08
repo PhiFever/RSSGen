@@ -76,7 +76,7 @@ var selfInteractableVerbs = map[string]bool{
 }
 
 func init() {
-	route.Register("zhihu", func(cfg config.ResolvedRouteConfig) route.Route {
+	route.Register("zhihu", "知乎用户动态订阅", func(cfg config.ResolvedRouteConfig) route.Route {
 		return New(cfg)
 	})
 }
@@ -167,7 +167,7 @@ type Route struct {
 // New 创建知乎路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
 	return &Route{
-		BaseRoute: route.NewBaseRoute("zhihu", "知乎用户动态订阅"),
+		BaseRoute: route.NewBaseRoute("zhihu"),
 		cfg:       cfg,
 	}
 }

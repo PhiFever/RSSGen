@@ -21,9 +21,8 @@ type Config struct {
 
 // ServerConfig 是 HTTP 服务器配置。
 type ServerConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	CacheTTL int    `yaml:"cache_ttl"`
+	Host string `yaml:"host"`
+	Port int    `yaml:"port"`
 }
 
 // StorageConfig 是持久化存储配置。

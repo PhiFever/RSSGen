@@ -240,21 +240,6 @@ func (s *Scraper) Get(url string, referer string, headers map[string]string) (*R
 	return s.doRequest("GET", url, referer, nil, headers)
 }
 
-// Post 发送 POST 请求。headers 可以为 nil。
-func (s *Scraper) Post(url string, referer string, body io.Reader, headers map[string]string) (*Response, error) {
-	return s.doRequest("POST", url, referer, body, headers)
-}
-
-// PostJSON 发送 JSON POST 请求。
-func (s *Scraper) PostJSON(url string, referer string, jsonBody string, headers map[string]string) (*Response, error) {
-	h := make(map[string]string)
-	h["Content-Type"] = "application/json"
-	for k, v := range headers {
-		h[k] = v
-	}
-	return s.doRequest("POST", url, referer, strings.NewReader(jsonBody), h)
-}
-
 // SetCookies 更新 cookie（运行时动态设置）。
 func (s *Scraper) SetCookies(cookies map[string]string) {
 	s.mu.Lock()

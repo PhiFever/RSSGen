@@ -194,12 +194,7 @@ func makeRouter(
 
 	// 首页：列出所有路由
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		registry := route.GetRegistry()
-		result := make(map[string]string)
-		for name, factory := range registry {
-			routeInst := factory(config.ResolvedRouteConfig{})
-			result[name] = routeInst.Description()
-		}
+		result := route.GetDescriptions()
 		w.Header().Set("Content-Type", "application/json")
 		routesJSON, err := json.Marshal(result)
 		if err != nil {
@@ -231,21 +226,6 @@ func splitPath(path string) []string {
 		}
 	}
 	return result
-}
-
-// makeFeedHandler 创建 feed HTTP handler，便于测试。
-func makeFeedHandler(
-	feedHealth *health.FeedHealth,
-	feedCache *cache.TTLCache,
-	articleStore *store.ArticleStore,
-	cfg *config.Config,
-) http.HandlerFunc {
-	return makeFeedHandlerWithPipeline(feedHealth, feedCache, pipeline.New(pipeline.Config{
-		FeedCache:     feedCache,
-		ArticleStore:  articleStore,
-		ScraperConfig: cfg.Scraper,
-		RoutesConfig:  cfg.Routes,
-	}))
 }
 
 func makeFeedHandlerWithPipeline(

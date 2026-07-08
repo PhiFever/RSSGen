@@ -44,18 +44,3 @@ func (c *TTLCache) Set(key, value string) {
 		expiresAt: time.Now().Add(c.ttl),
 	})
 }
-
-// Delete 删除缓存条目。
-func (c *TTLCache) Delete(key string) {
-	c.m.Delete(key)
-}
-
-// Len 返回当前缓存条目数（包括已过期但未清理的）。
-func (c *TTLCache) Len() int {
-	count := 0
-	c.m.Range(func(_, _ any) bool {
-		count++
-		return true
-	})
-	return count
-}

@@ -94,7 +94,7 @@ func parseAfdianResponse(body []byte) (json.RawMessage, error) {
 }
 
 func init() {
-	route.Register("afdian", func(cfg config.ResolvedRouteConfig) route.Route {
+	route.Register("afdian", "爱发电创作者动态订阅", func(cfg config.ResolvedRouteConfig) route.Route {
 		return New(cfg)
 	})
 }
@@ -112,7 +112,7 @@ type Route struct {
 // New 创建爱发电路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
 	return &Route{
-		BaseRoute: route.NewBaseRoute("afdian", "爱发电创作者动态订阅"),
+		BaseRoute: route.NewBaseRoute("afdian"),
 		cfg:       cfg,
 	}
 }

@@ -1,11 +1,8 @@
 package scraper
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -169,59 +166,6 @@ func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 	}
 	if resp.Text() != "hello" {
 		t.Fatalf("Text() = %q", resp.Text())
-	}
-}
-
-func TestPostAndPostJSON(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		switch r.URL.Path {
-		case "/post":
-			if r.Method != http.MethodPost || string(body) != "raw-body" {
-				t.Fatalf("raw POST = %s %q", r.Method, string(body))
-			}
-			if _, err := w.Write([]byte("posted")); err != nil {
-				t.Fatalf("写入响应失败: %v", err)
-			}
-		case "/json":
-			if r.Header.Get("Content-Type") != "application/json" {
-				t.Fatalf("Content-Type = %q", r.Header.Get("Content-Type"))
-			}
-			var payload map[string]string
-			if err := json.Unmarshal(body, &payload); err != nil {
-				t.Fatalf("JSON body 无效: %v", err)
-			}
-			if payload["k"] != "v" || r.Header.Get("X-Mode") != "json" {
-				t.Fatalf("JSON 请求未保留 body/header")
-			}
-			if _, err := w.Write([]byte("json")); err != nil {
-				t.Fatalf("写入响应失败: %v", err)
-			}
-		default:
-			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-	}))
-	defer server.Close()
-
-	s, err := New(Config{RateLimit: 0.001})
-	if err != nil {
-		t.Fatalf("New 返回错误: %v", err)
-	}
-
-	resp, err := s.Post(server.URL+"/post", "", strings.NewReader("raw-body"), nil)
-	if err != nil {
-		t.Fatalf("Post 返回错误: %v", err)
-	}
-	if resp.Text() != "posted" {
-		t.Fatalf("Post response = %q", resp.Text())
-	}
-
-	resp, err = s.PostJSON(server.URL+"/json", "", `{"k":"v"}`, map[string]string{"X-Mode": "json"})
-	if err != nil {
-		t.Fatalf("PostJSON 返回错误: %v", err)
-	}
-	if resp.Text() != "json" {
-		t.Fatalf("PostJSON response = %q", resp.Text())
 	}
 }
 

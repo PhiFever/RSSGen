@@ -2,6 +2,7 @@ package zhihu
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +151,53 @@ func TestParseURLPathVariants(t *testing.T) {
 // ============================================
 // 辅助函数
 // ============================================
+
+func shuffledB64Decode(b64Str string) ([]byte, error) {
+	result := make([]byte, 0, len(b64Str)/4*3)
+
+	for i := 0; i < len(b64Str); i += 4 {
+		c0 := b64Lookup[b64Str[i]]
+		c1 := b64Lookup[b64Str[i+1]]
+		c2 := b64Lookup[b64Str[i+2]]
+		c3 := b64Lookup[b64Str[i+3]]
+		if c0 < 0 || c1 < 0 || c2 < 0 || c3 < 0 {
+			return nil, fmt.Errorf("shuffledB64Decode: 无效字符 at position %d", i)
+		}
+		b1 := byte(c0<<2) | byte(c1>>4)
+		b2 := byte((c1&15)<<4) | byte(c2>>2)
+		b3 := byte((c2&3)<<6) | byte(c3)
+		result = append(result, b1, b2, b3)
+	}
+	return result, nil
+}
+
+func encryptWithFixedRandom(data string, randomByte byte) (string, error) {
+	inputBytes := []byte(data)
+
+	ivBlock := buildIVDerivationBlock(inputBytes[:min(len(inputBytes), 14)], randomByte)
+	iv := sm4EncryptBlock(ivBlock)
+
+	tail := inputBytes[14:]
+	var ct []byte
+	if len(tail) > 0 {
+		ct = sm4CBCEncrypt(pkcs7Pad(tail, 16), iv)
+	}
+
+	x := make([]byte, len(ct)+len(iv))
+	copy(x, reverseBytes(ct))
+	copy(x[len(ct):], reverseBytes(iv))
+
+	if len(x)%3 != 0 {
+		return "", fmt.Errorf("短输入后处理未实现 (X len = %d)", len(x))
+	}
+
+	shuffled := encode3(x)
+	raw := make([]byte, len(shuffled))
+	for i := range shuffled {
+		raw[i] = shuffled[i] ^ postXORConst[i]
+	}
+	return shuffledB64Encode(raw), nil
+}
 
 type sm4BlockVector struct {
 	Input  []int `json:"input"`

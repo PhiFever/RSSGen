@@ -15,9 +15,7 @@ type pipelineTestRoute struct {
 	lastOpts   route.FetchOptions
 }
 
-func (r *pipelineTestRoute) Name() string        { return "_pipeline_test" }
-func (r *pipelineTestRoute) Description() string { return "pipeline test route" }
-func (r *pipelineTestRoute) FeedIDField() string { return "user_id" }
+func (r *pipelineTestRoute) Name() string { return "_pipeline_test" }
 func (r *pipelineTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount++
 	r.lastOpts = opts
@@ -29,10 +27,9 @@ func (r *pipelineTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.F
 
 func TestRefreshGeneratesAndCachesVariant(t *testing.T) {
 	rt := &pipelineTestRoute{}
-	route.Register("_pipeline_variant", func(config.ResolvedRouteConfig) route.Route {
+	route.Register("_pipeline_variant", "_pipeline_variant", func(config.ResolvedRouteConfig) route.Route {
 		return rt
 	})
-	defer route.Unregister("_pipeline_variant")
 
 	feedCache := cache.New(time.Minute)
 	p := New(Config{
@@ -75,11 +72,10 @@ func TestRefreshGeneratesAndCachesVariant(t *testing.T) {
 func TestRefreshReusesRouteInstance(t *testing.T) {
 	factoryCalls := 0
 	rt := &pipelineTestRoute{}
-	route.Register("_pipeline_reuse", func(config.ResolvedRouteConfig) route.Route {
+	route.Register("_pipeline_reuse", "_pipeline_reuse", func(config.ResolvedRouteConfig) route.Route {
 		factoryCalls++
 		return rt
 	})
-	defer route.Unregister("_pipeline_reuse")
 
 	p := New(Config{
 		FeedCache:    cache.New(time.Minute),
@@ -114,13 +110,13 @@ func TestCacheKeyUsesConfiguredIncludeWhenRequestOmitsIt(t *testing.T) {
 		},
 	})
 
-	got := p.CacheKey("_pipeline_include", []string{"u1"}, route.FetchOptions{})
+	got := p.FeedRef("_pipeline_include", []string{"u1"}, route.FetchOptions{}).CacheKey
 	want := "_pipeline_include/u1?format=atom&limit=20&include=article"
 	if got != want {
 		t.Fatalf("CacheKey with feed include = %q, want %q", got, want)
 	}
 
-	got = p.CacheKey("_pipeline_include", []string{"u2"}, route.FetchOptions{})
+	got = p.FeedRef("_pipeline_include", []string{"u2"}, route.FetchOptions{}).CacheKey
 	want = "_pipeline_include/u2?format=atom&limit=20&include=answer,pin"
 	if got != want {
 		t.Fatalf("CacheKey with default include = %q, want %q", got, want)

@@ -33,31 +33,21 @@ func NewHTTPError(statusCode int, url string) error {
 
 // BaseRoute 提供所有路由共享的元数据与 scraper 生命周期管理。
 type BaseRoute struct {
-	name        string
-	description string
-	feedIDField string
+	name string
 
 	scraperMu sync.Mutex
 	scraper   *scraper.Scraper
 }
 
 // NewBaseRoute 创建可嵌入的路由基座。
-func NewBaseRoute(name, description string) BaseRoute {
+func NewBaseRoute(name string) BaseRoute {
 	return BaseRoute{
-		name:        name,
-		description: description,
-		feedIDField: "user_id",
+		name: name,
 	}
 }
 
 // Name 返回路由名称。
 func (r *BaseRoute) Name() string { return r.name }
-
-// Description 返回路由描述。
-func (r *BaseRoute) Description() string { return r.description }
-
-// FeedIDField 返回 feeds 配置中用于标识 feed 的字段名。
-func (r *BaseRoute) FeedIDField() string { return r.feedIDField }
 
 // Scraper 返回路由复用的 scraper，并在每次获取时刷新 Cookie。
 func (r *BaseRoute) Scraper(cfg config.ResolvedRouteConfig) (*scraper.Scraper, error) {
@@ -126,10 +116,6 @@ type ArticleStore interface {
 type Route interface {
 	// Name 返回路由名称，决定 URL 前缀 /feed/{name}/...
 	Name() string
-	// Description 返回路由描述。
-	Description() string
-	// FeedIDField 返回 feeds 配置中用于标识 feed 的字段名，默认 "user_id"。
-	FeedIDField() string
 	// Fetch 抓取数据源，返回 feed 元信息和 FeedItem 列表。
 	Fetch(articleStore ArticleStore, pathParams []string, opts FetchOptions) (FeedResult, error)
 }
@@ -175,24 +161,22 @@ func NormalizeFetchOptions(opts FetchOptions) FetchOptions {
 // Factory 根据已解析的路由配置创建 Route 实例。
 type Factory func(config.ResolvedRouteConfig) Route
 
+type registryEntry struct {
+	description string
+	factory     Factory
+}
+
 // registry 存储已注册的路由工厂。
 var (
-	registry   = map[string]Factory{}
+	registry   = map[string]registryEntry{}
 	registryMu sync.RWMutex
 )
 
-// Register 注册一个路由工厂函数。name 为路由名，factory 接收已解析配置返回 Route 实例。
-func Register(name string, factory Factory) {
+// Register 注册一个路由工厂函数。name 为路由名，description 用于首页元数据。
+func Register(name, description string, factory Factory) {
 	registryMu.Lock()
 	defer registryMu.Unlock()
-	registry[name] = factory
-}
-
-// Unregister 移除一个路由工厂，主要用于测试隔离和动态注册清理。
-func Unregister(name string) {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	delete(registry, name)
+	registry[name] = registryEntry{description: description, factory: factory}
 }
 
 // GetRegistry 返回已注册路由工厂的快照。
@@ -201,8 +185,20 @@ func GetRegistry() map[string]Factory {
 	defer registryMu.RUnlock()
 
 	snapshot := make(map[string]Factory, len(registry))
-	for name, factory := range registry {
-		snapshot[name] = factory
+	for name, entry := range registry {
+		snapshot[name] = entry.factory
+	}
+	return snapshot
+}
+
+// GetDescriptions 返回已注册路由描述的快照。
+func GetDescriptions() map[string]string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	snapshot := make(map[string]string, len(registry))
+	for name, entry := range registry {
+		snapshot[name] = entry.description
 	}
 	return snapshot
 }

@@ -9,9 +9,7 @@ import (
 
 type testRoute struct{}
 
-func (testRoute) Name() string        { return "_test_route" }
-func (testRoute) Description() string { return "test route" }
-func (testRoute) FeedIDField() string { return "user_id" }
+func (testRoute) Name() string { return "_test_route" }
 func (testRoute) Fetch(ArticleStore, []string, FetchOptions) (FeedResult, error) {
 	return FeedResult{
 		Info:  FeedInfo{Title: "test", Link: "https://example.com"},
@@ -31,27 +29,29 @@ func TestHTTPErrorString(t *testing.T) {
 	}
 }
 
-func TestRegistrySnapshotAndUnregister(t *testing.T) {
-	Register("_test_route", func(config.ResolvedRouteConfig) Route { return testRoute{} })
-	defer Unregister("_test_route")
+func TestRegistrySnapshots(t *testing.T) {
+	Register("_test_route", "test route", func(config.ResolvedRouteConfig) Route { return testRoute{} })
 
 	registry := GetRegistry()
 	factory, ok := registry["_test_route"]
 	if !ok {
 		t.Fatal("注册表快照应包含测试路由")
 	}
-	if factory(config.ResolvedRouteConfig{}).Description() != "test route" {
+	if factory(config.ResolvedRouteConfig{}).Name() != "_test_route" {
 		t.Fatal("注册表工厂应创建测试路由")
+	}
+	descriptions := GetDescriptions()
+	if descriptions["_test_route"] != "test route" {
+		t.Fatalf("Description = %q", descriptions["_test_route"])
 	}
 
 	delete(registry, "_test_route")
 	if _, ok := GetRegistry()["_test_route"]; !ok {
 		t.Fatal("修改快照不应影响全局注册表")
 	}
-
-	Unregister("_test_route")
-	if _, ok := GetRegistry()["_test_route"]; ok {
-		t.Fatal("Unregister 后全局注册表不应包含测试路由")
+	delete(descriptions, "_test_route")
+	if _, ok := GetDescriptions()["_test_route"]; !ok {
+		t.Fatal("修改描述快照不应影响全局注册表")
 	}
 }
 

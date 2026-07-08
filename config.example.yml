@@ -4,7 +4,6 @@
 server:
   host: "0.0.0.0"
   port: 8000
-  cache_ttl: 1800  # 默认缓存时间（秒）
 
 # 持久化存储（文章正文持久化到 SQLite，避免重启重抓）
 storage:
@@ -13,7 +12,7 @@ storage:
 # 全局缓存 TTL
 cache:
   feed_ttl: 21600       # Feed 级缓存 TTL，默认 6 小时（秒）
-  article_ttl: 43200    # 文章级缓存 TTL，默认 12 小时（秒）
+  article_ttl: 43200    # 文章保留策略预留 TTL，当前暂未消费
 
 # 全局反爬配置
 scraper:

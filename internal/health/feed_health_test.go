@@ -38,11 +38,11 @@ func TestIsBusinessErrorCustomCodes(t *testing.T) {
 	}
 }
 
-func TestDisableFeedIsolatesSameRoute(t *testing.T) {
+func TestRecordFailureIsolatesSameRoute(t *testing.T) {
 	h := New(Config{})
-	h.DisableFeed("zhihu/user1")
+	h.RecordFailure("zhihu/user1", &route.HTTPError{StatusCode: 403})
 	if !h.IsFeedDisabled("zhihu/user1") {
-		t.Error("DisableFeed 后 IsFeedDisabled 应返回 true")
+		t.Error("RecordFailure 后 IsFeedDisabled 应返回 true")
 	}
 	if h.IsFeedDisabled("zhihu/user2") {
 		t.Error("禁用 user1 不应影响 user2")
@@ -52,12 +52,12 @@ func TestDisableFeedIsolatesSameRoute(t *testing.T) {
 	}
 }
 
-func TestDisableFeedIdempotent(t *testing.T) {
+func TestRecordFailureIdempotent(t *testing.T) {
 	h := New(Config{})
-	h.DisableFeed("key")
-	h.DisableFeed("key")
+	h.RecordFailure("key", &route.HTTPError{StatusCode: 403})
+	h.RecordFailure("key", &route.HTTPError{StatusCode: 403})
 	if !h.IsFeedDisabled("key") {
-		t.Error("重复 DisableFeed 后仍应为禁用状态")
+		t.Error("重复 RecordFailure 后仍应为禁用状态")
 	}
 }
 
@@ -104,7 +104,7 @@ func TestRecordFailureIgnoresTemporaryAndPlainErrors(t *testing.T) {
 	}
 }
 
-func TestConcurrentDisableAndCheck(t *testing.T) {
+func TestConcurrentRecordFailureAndCheck(t *testing.T) {
 	h := New(Config{})
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -112,7 +112,7 @@ func TestConcurrentDisableAndCheck(t *testing.T) {
 		key := "feed"
 		go func() {
 			defer wg.Done()
-			h.DisableFeed(key)
+			h.RecordFailure(key, &route.HTTPError{StatusCode: 403})
 		}()
 		go func() {
 			defer wg.Done()

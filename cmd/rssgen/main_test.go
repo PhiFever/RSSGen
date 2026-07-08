@@ -88,10 +88,9 @@ func TestRouteRegistration(t *testing.T) {
 }
 
 func TestIndexEndpoint(t *testing.T) {
-	route.Register("_main_index", func(config.ResolvedRouteConfig) route.Route {
+	route.Register("_main_index", "main test route", func(config.ResolvedRouteConfig) route.Route {
 		return &mainTestRoute{name: "_main_index"}
 	})
-	defer route.Unregister("_main_index")
 
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{}}
 	feedCache := cache.New(10 * time.Second)
@@ -267,14 +266,32 @@ func setupTestRouter(feedHealth *health.FeedHealth, feedCache *cache.TTLCache) *
 		Scraper: config.ScraperConfig{},
 		Routes:  map[string]config.RouteConfig{},
 	}
-	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, nil, cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, nil, cfg))
 	return r
+}
+
+func makeTestFeedHandler(
+	feedHealth *health.FeedHealth,
+	feedCache *cache.TTLCache,
+	articleStore route.ArticleStore,
+	cfg *config.Config,
+) http.HandlerFunc {
+	return makeFeedHandlerWithPipeline(feedHealth, feedCache, pipeline.New(pipeline.Config{
+		FeedCache:     feedCache,
+		ArticleStore:  articleStore,
+		ScraperConfig: cfg.Scraper,
+		RoutesConfig:  cfg.Routes,
+	}))
+}
+
+func disableTestFeed(feedHealth *health.FeedHealth, feedKey string) {
+	feedHealth.RecordFailure(feedKey, route.NewHTTPError(http.StatusForbidden, ""))
 }
 
 func TestDisabledFeedReturns502(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	feedCache := cache.New(10 * time.Second)
-	feedHealth.DisableFeed("afdian/author1")
+	disableTestFeed(feedHealth, "afdian/author1")
 
 	router := setupTestRouter(feedHealth, feedCache)
 
@@ -290,7 +307,7 @@ func TestDisabledFeedReturns502(t *testing.T) {
 func TestSiblingFeedNotBlocked(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	feedCache := cache.New(10 * time.Second)
-	feedHealth.DisableFeed("afdian/author1")
+	disableTestFeed(feedHealth, "afdian/author1")
 
 	// 预填充缓存，避免走真实 fetch
 	feedCache.Set(pipeline.CacheKey("afdian", []string{"author2"}, route.FetchOptions{}), "<feed/>")
@@ -353,9 +370,7 @@ type mainTestRoute struct {
 	fetchCount  atomic.Int32
 }
 
-func (r *mainTestRoute) Name() string        { return r.name }
-func (r *mainTestRoute) Description() string { return "main test route" }
-func (r *mainTestRoute) FeedIDField() string { return "user_id" }
+func (r *mainTestRoute) Name() string { return r.name }
 func (r *mainTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount.Add(1)
 	r.capturedOpt = opts
@@ -378,14 +393,13 @@ func (r *mainTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.Fetch
 
 func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 	testRoute := &mainTestRoute{name: "_main_success"}
-	route.Register("_main_success", func(config.ResolvedRouteConfig) route.Route { return testRoute })
-	defer route.Unregister("_main_success")
+	route.Register("_main_success", "_main_success", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
 	feedHealth := health.New(health.Config{})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_success": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_success/u1?limit=7&include=a,b&format=rss", nil)
 	w := httptest.NewRecorder()
@@ -412,8 +426,7 @@ func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 
 func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
 	testRoute := &mainTestRoute{name: "_main_variant"}
-	route.Register("_main_variant", func(config.ResolvedRouteConfig) route.Route { return testRoute })
-	defer route.Unregister("_main_variant")
+	route.Register("_main_variant", "_main_variant", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
 	feedHealth := health.New(health.Config{})
@@ -422,7 +435,7 @@ func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
 
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_variant": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_variant/u1?format=atom", nil)
 	w := httptest.NewRecorder()
@@ -441,14 +454,13 @@ func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
 
 func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
 	testRoute := &mainTestRoute{name: "_main_no_trigger"}
-	route.Register("_main_no_trigger", func(config.ResolvedRouteConfig) route.Route { return testRoute })
-	defer route.Unregister("_main_no_trigger")
+	route.Register("_main_no_trigger", "_main_no_trigger", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
 	feedHealth := health.New(health.Config{})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_no_trigger": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_no_trigger/u1", nil)
 	w := httptest.NewRecorder()
@@ -466,12 +478,11 @@ func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
 func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 	t.Run("fetch error", func(t *testing.T) {
 		testRoute := &mainTestRoute{name: "_main_fetch_err", fetchErr: errors.New("boom")}
-		route.Register("_main_fetch_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
-		defer route.Unregister("_main_fetch_err")
+		route.Register("_main_fetch_err", "_main_fetch_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_fetch_err/u1", nil)
 		w := httptest.NewRecorder()
@@ -483,12 +494,11 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 
 	t.Run("result info error", func(t *testing.T) {
 		testRoute := &mainTestRoute{name: "_main_info_err", infoErr: errors.New("bad info")}
-		route.Register("_main_info_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
-		defer route.Unregister("_main_info_err")
+		route.Register("_main_info_err", "_main_info_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_info_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_info_err/u1", nil)
 		w := httptest.NewRecorder()

@@ -62,33 +62,6 @@ func TestOverwrite(t *testing.T) {
 	}
 }
 
-func TestDelete(t *testing.T) {
-	c := New(1 * time.Second)
-
-	c.Set("key1", "value1")
-	c.Delete("key1")
-
-	_, ok := c.Get("key1")
-	if ok {
-		t.Fatal("expected key1 to be deleted")
-	}
-}
-
-func TestLen(t *testing.T) {
-	c := New(1 * time.Second)
-
-	if c.Len() != 0 {
-		t.Fatalf("expected 0, got %d", c.Len())
-	}
-
-	c.Set("a", "1")
-	c.Set("b", "2")
-
-	if c.Len() != 2 {
-		t.Fatalf("expected 2, got %d", c.Len())
-	}
-}
-
 func TestBuildCacheKey(t *testing.T) {
 	tests := []struct {
 		route string

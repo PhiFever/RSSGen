@@ -83,15 +83,6 @@ func OptionsFromQuery(values url.Values) route.FetchOptions {
 	return route.NormalizeFetchOptions(opts)
 }
 
-// OptionsFromParams 从字符串参数解析抓取选项，供调度器和测试入口复用。
-func OptionsFromParams(params map[string]string) route.FetchOptions {
-	values := make(url.Values, len(params))
-	for k, v := range params {
-		values.Set(k, v)
-	}
-	return OptionsFromQuery(values)
-}
-
 // OptionsFromFeedConfig 从配置中的 feed 条目构建抓取选项。
 func OptionsFromFeedConfig(fc config.FeedConfig) route.FetchOptions {
 	opts := route.FetchOptions{Limit: fc.Limit, Include: fc.Include}
@@ -106,11 +97,6 @@ func CacheKey(routeName string, pathParams []string, opts route.FetchOptions) st
 		Limit:   opts.Limit,
 		Include: opts.Include,
 	})
-}
-
-// CacheKey 返回当前 pipeline 配置下指定 feed 的缓存键。
-func (p *Pipeline) CacheKey(routeName string, pathParams []string, opts route.FetchOptions) string {
-	return p.FeedRef(routeName, pathParams, opts).CacheKey
 }
 
 // FeedRef 返回当前 pipeline 配置下指定 feed 的结构化引用。

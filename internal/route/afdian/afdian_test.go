@@ -26,11 +26,8 @@ func TestNew(t *testing.T) {
 	if r.Name() != "afdian" {
 		t.Errorf("Name() = %q, want %q", r.Name(), "afdian")
 	}
-	if r.Description() != "爱发电创作者动态订阅" {
-		t.Errorf("Description() = %q, want %q", r.Description(), "爱发电创作者动态订阅")
-	}
-	if r.FeedIDField() != "user_id" {
-		t.Errorf("FeedIDField() = %q, want %q", r.FeedIDField(), "user_id")
+	if route.GetDescriptions()["afdian"] != "爱发电创作者动态订阅" {
+		t.Errorf("注册表 description = %q", route.GetDescriptions()["afdian"])
 	}
 }
 

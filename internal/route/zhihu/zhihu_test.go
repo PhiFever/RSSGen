@@ -42,8 +42,8 @@ func TestRouteMetadataAndScraper(t *testing.T) {
 	if r.Name() != "zhihu" {
 		t.Fatalf("Name() = %q", r.Name())
 	}
-	if r.Description() == "" || r.FeedIDField() != "user_id" {
-		t.Fatalf("metadata 不符合预期")
+	if route.GetDescriptions()["zhihu"] != "知乎用户动态订阅" {
+		t.Fatalf("注册表 description = %q", route.GetDescriptions()["zhihu"])
 	}
 	first, err := r.Scraper(r.cfg)
 	if err != nil {

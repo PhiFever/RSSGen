@@ -189,30 +189,6 @@ func (r *Refresher) Stop() {
 	slog.Info("BackgroundRefresher 已停止")
 }
 
-// Trigger 动态触发：未知 feed 首次访问时调用，非阻塞。
-func (r *Refresher) Trigger(routeName string, pathParams []string, queryParams map[string]string) {
-	opts := pipeline.OptionsFromParams(queryParams)
-	ref := r.pipe.FeedRef(routeName, pathParams, opts)
-
-	r.pendingMu.Lock()
-	if r.pending[ref.CacheKey] {
-		r.pendingMu.Unlock()
-		return
-	}
-	r.pending[ref.CacheKey] = true
-	r.pendingMu.Unlock()
-
-	// 检查 feed 是否被禁用
-	if r.feedHealth.IsFeedDisabled(ref.HealthKey) {
-		r.pendingMu.Lock()
-		delete(r.pending, ref.CacheKey)
-		r.pendingMu.Unlock()
-		return
-	}
-
-	go r.refreshOneWithOptions(routeName, pathParams, opts)
-}
-
 // GetStatus 返回按路由分组的状态。
 func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
 	r.statsMu.RLock()
@@ -325,11 +301,6 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, fee
 	case <-time.After(delay):
 		return true
 	}
-}
-
-// refreshOne 刷新单个 feed。
-func (r *Refresher) refreshOne(routeName string, pathParams []string, extraParams map[string]string) {
-	r.refreshOneWithOptions(routeName, pathParams, pipeline.OptionsFromParams(extraParams))
 }
 
 func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string, opts route.FetchOptions) {

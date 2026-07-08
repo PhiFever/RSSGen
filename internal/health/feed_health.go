@@ -67,13 +67,6 @@ func (h *FeedHealth) IsFeedDisabled(feedKey string) bool {
 	return h.disabledFeeds[feedKey]
 }
 
-// DisableFeed 禁用单个 feed，重启后恢复。
-func (h *FeedHealth) DisableFeed(feedKey string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.disabledFeeds[feedKey] = true
-}
-
 func extractStatusCode(err error) int {
 	var he *route.HTTPError
 	if errors.As(err, &he) {
