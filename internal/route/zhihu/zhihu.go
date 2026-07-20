@@ -95,7 +95,7 @@ type zhihuPaging struct {
 }
 
 type zhihuActivity struct {
-	ID          string          `json:"id"`
+	ID          zhihuID         `json:"id"`
 	Type        string          `json:"type"`
 	Target      *zhihuTarget    `json:"target"`
 	Verb        string          `json:"verb"`
@@ -106,7 +106,7 @@ type zhihuActivity struct {
 }
 
 type zhihuTarget struct {
-	ID           string          `json:"id"`
+	ID           zhihuID         `json:"id"`
 	Type         string          `json:"type"`
 	Title        string          `json:"title"`
 	Content      json.RawMessage `json:"content"`
@@ -121,15 +121,39 @@ type zhihuTarget struct {
 }
 
 type zhihuQuestion struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Detail string `json:"detail"`
+	ID     zhihuID `json:"id"`
+	Title  string  `json:"title"`
+	Detail string  `json:"detail"`
 }
 
 type zhihuPerson struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Headline string `json:"headline"`
+	ID       zhihuID `json:"id"`
+	Name     string  `json:"name"`
+	Headline string  `json:"headline"`
+}
+
+type zhihuID string
+
+func (id *zhihuID) UnmarshalJSON(data []byte) error {
+	text := strings.TrimSpace(string(data))
+	if text == "null" {
+		*id = ""
+		return nil
+	}
+
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*id = zhihuID(s)
+		return nil
+	}
+
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err == nil {
+		*id = zhihuID(n.String())
+		return nil
+	}
+
+	return fmt.Errorf("知乎 id 字段类型不支持: %s", text)
 }
 
 type zhihuPinBlock struct {
@@ -331,7 +355,7 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 		target = &zhihuTarget{}
 	}
 
-	targetID := target.ID
+	targetID := string(target.ID)
 	targetType := target.Type
 	if targetType == "" {
 		targetType = "unknown"
@@ -344,7 +368,7 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 	case "answer":
 		if target.Question != nil {
 			title = target.Question.Title
-			questionID := target.Question.ID
+			questionID := string(target.Question.ID)
 			link = fmt.Sprintf("%s/question/%s/answer/%s", zhihuHostURL, questionID, targetID)
 		}
 	case "article":

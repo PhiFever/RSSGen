@@ -37,6 +37,41 @@ func writeZhihuBody(t *testing.T, w http.ResponseWriter, body string) {
 	}
 }
 
+func TestActivitiesResponseAcceptsNumericIDs(t *testing.T) {
+	body := []byte(`{
+		"data": [{
+			"id": 1001,
+			"verb": "MEMBER_ANSWER_QUESTION",
+			"action_text": "回答了问题",
+			"actor": {"id": 2002, "name": "作者"},
+			"target": {
+				"id": 123,
+				"type": "answer",
+				"content": "<p>回答内容</p>",
+				"author": {"id": 2002, "name": "作者"},
+				"question": {"id": 456, "title": "问题标题"}
+			}
+		}],
+		"paging": {"is_end": true}
+	}`)
+
+	var data activitiesResponse
+	if err := json.Unmarshal(body, &data); err != nil {
+		t.Fatalf("Unmarshal activitiesResponse: %v", err)
+	}
+	if got := data.Data[0].Target.ID; got != "123" {
+		t.Fatalf("target.id = %q, want 123", got)
+	}
+
+	item := newTestRoute().makeFeedItem(data.Data[0])
+	if item.Link != "https://www.zhihu.com/question/456/answer/123" {
+		t.Fatalf("Link = %q", item.Link)
+	}
+	if item.GUID != "123" {
+		t.Fatalf("GUID = %q", item.GUID)
+	}
+}
+
 func TestRouteMetadataAndScraper(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test;", RateLimit: 0.001})
 	if r.Name() != "zhihu" {
