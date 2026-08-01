@@ -2,8 +2,11 @@
 package scraper
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -130,28 +133,9 @@ func New(cfg Config) (*Scraper, error) {
 		rateLimit = 1.0
 	}
 
-	profile, ok := impersonateProfile[imp]
-	if !ok {
-		profile = profiles.Chrome_131
-	}
-
-	// 创建 TLS 客户端
-	logger := httpclient.NewNoopLogger()
-	client, err := httpclient.NewHttpClient(
-		logger,
-		httpclient.WithTimeoutSeconds(30),
-		httpclient.WithClientProfile(profile),
-		httpclient.WithNotFollowRedirects(),
-	)
+	client, err := newHTTPClient(imp, cfg.Proxy)
 	if err != nil {
-		return nil, fmt.Errorf("创建 TLS 客户端失败: %w", err)
-	}
-
-	// 设置代理
-	if cfg.Proxy != "" {
-		if err := client.SetProxy(cfg.Proxy); err != nil {
-			return nil, fmt.Errorf("设置代理失败: %w", err)
-		}
+		return nil, err
 	}
 
 	s := &Scraper{
@@ -164,6 +148,29 @@ func New(cfg Config) (*Scraper, error) {
 	}
 
 	return s, nil
+}
+
+func newHTTPClient(impersonate, proxy string) (httpclient.HttpClient, error) {
+	profile, ok := impersonateProfile[impersonate]
+	if !ok {
+		profile = profiles.Chrome_131
+	}
+
+	client, err := httpclient.NewHttpClient(
+		httpclient.NewNoopLogger(),
+		httpclient.WithTimeoutSeconds(30),
+		httpclient.WithClientProfile(profile),
+		httpclient.WithNotFollowRedirects(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("创建 TLS 客户端失败: %w", err)
+	}
+	if proxy != "" {
+		if err := client.SetProxy(proxy); err != nil {
+			return nil, fmt.Errorf("设置代理失败: %w", err)
+		}
+	}
+	return client, nil
 }
 
 // rateLimitWait 等待直到满足最小请求间隔。
@@ -181,8 +188,6 @@ func (s *Scraper) rateLimitWait() {
 
 // doRequest 是内部请求方法，统一处理限速、header 合并。
 func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, extraHeaders map[string]string) (*Response, error) {
-	s.rateLimitWait()
-
 	// 合并 headers：Chrome 默认头打底 → 实例 ExtraHeaders → referer → 单次请求头
 	headers := make(map[string]string, len(chromeDefaultHeaders)+len(s.extraHeaders)+len(extraHeaders)+1)
 	for k, v := range chromeDefaultHeaders {
@@ -198,41 +203,91 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 		headers[k] = v
 	}
 
-	// 构建 fhttp 请求
-	req, err := http.NewRequest(method, url, body)
+	for attempt := 0; attempt < 2; attempt++ {
+		s.rateLimitWait()
+
+		req, err := http.NewRequest(method, url, body)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if cookieHeader := s.cookieHeader(); cookieHeader != "" {
+			req.Header.Set("Cookie", cookieHeader)
+		}
+		req.Header[http.HeaderOrderKey] = chromeHeaderOrder
+
+		resp, err := s.currentClient().Do(req)
+		if err != nil {
+			category := recoverableTransportError(err)
+			if attempt == 0 && category != "" {
+				slog.Warn("HTTP 客户端传输异常，重建后重试",
+					"host", req.URL.Hostname(),
+					"category", category,
+					"error", transportErrorDetail(err),
+				)
+				if rebuildErr := s.replaceClient(); rebuildErr != nil {
+					return nil, fmt.Errorf("%s 请求失败 %s: %w; 重建 HTTP 客户端失败: %v", method, url, err, rebuildErr)
+				}
+				continue
+			}
+			return nil, fmt.Errorf("%s 请求失败 %s: %w", method, url, err)
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("读取响应失败: %w", err)
+		}
+
+		return &Response{
+			StatusCode: resp.StatusCode,
+			Header:     resp.Header,
+			Body:       bodyBytes,
+		}, nil
+	}
+
+	panic("unreachable")
+}
+
+func (s *Scraper) currentClient() httpclient.HttpClient {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
+}
+
+func (s *Scraper) replaceClient() error {
+	client, err := newHTTPClient(s.impersonate, s.proxy)
 	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
+		return err
 	}
 
-	for k, v := range headers {
-		req.Header.Set(k, v)
+	s.mu.Lock()
+	oldClient := s.client
+	s.client = client
+	s.mu.Unlock()
+	oldClient.CloseIdleConnections()
+	return nil
+}
+
+func recoverableTransportError(err error) string {
+	switch message := err.Error(); {
+	case strings.Contains(message, "HTTP/1.x transport connection broken: malformed HTTP response"):
+		return "protocol_mismatch"
+	case strings.Contains(message, "connection reset by peer"):
+		return "connection_reset"
+	default:
+		return ""
 	}
+}
 
-	// 设置 cookies
-	if cookieHeader := s.cookieHeader(); cookieHeader != "" {
-		req.Header.Set("Cookie", cookieHeader)
+func transportErrorDetail(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
 	}
-
-	// 指定 Chrome 头顺序：tls-client 只伪装 TLS，header order 需手动设置
-	req.Header[http.HeaderOrderKey] = chromeHeaderOrder
-
-	// 使用 tls-client 发送请求
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("%s 请求失败 %s: %w", method, url, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Header:     resp.Header,
-		Body:       bodyBytes,
-	}, nil
+	return err
 }
 
 // Get 发送 GET 请求。headers 可以为 nil。
