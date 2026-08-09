@@ -302,10 +302,10 @@ func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config
 	}
 
 	slog.Info("开始刷新", "route", routeName, "label", label, "count", len(targets))
+	if !r.sleepRefreshJitter(phase, routeName, rc) {
+		return
+	}
 	for _, target := range targets {
-		if !r.sleepRefreshJitter(phase, routeName, target.ref.FeedID, rc) {
-			return
-		}
 		r.refreshOneWithOptionsSource(target.ref.RouteName, target.ref.PathParts, fetchOptionsFromVariant(target.ref.Variant), target.source)
 	}
 	slog.Info("刷新完成", "route", routeName, "label", label)
@@ -347,7 +347,7 @@ func fetchOptionsFromVariant(variant pipeline.FeedVariant) route.FetchOptions {
 	}
 }
 
-func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, feedID string, rc config.RouteConfig) bool {
+func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, rc config.RouteConfig) bool {
 	if !phase.scheduled || rc.RefreshJitter <= 0 {
 		return true
 	}
@@ -362,7 +362,7 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, fee
 		return true
 	}
 
-	slog.Info("定时刷新随机延迟", "route", routeName, "feed", feedID, "delay", delay)
+	slog.Info("定时刷新随机延迟", "route", routeName, "delay", delay)
 	if r.sleepFn != nil {
 		return r.sleepFn(delay)
 	}

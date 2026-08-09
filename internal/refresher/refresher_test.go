@@ -283,13 +283,12 @@ func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
 	}
 }
 
-func TestRefreshFeedsAppliesJitterBeforeEachScheduledFeed(t *testing.T) {
+func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
 	route.Register("_test_refresh_jitter", "_test_refresh_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{name: "_test_refresh_jitter"}
 	})
 
 	var jitterMax []time.Duration
-	jitterValues := []time.Duration{3 * time.Second, 7500 * time.Millisecond}
 	var slept []time.Duration
 
 	ref := New(Config{
@@ -300,9 +299,7 @@ func TestRefreshFeedsAppliesJitterBeforeEachScheduledFeed(t *testing.T) {
 	})
 	ref.jitterDurationFn = func(max time.Duration) time.Duration {
 		jitterMax = append(jitterMax, max)
-		next := jitterValues[0]
-		jitterValues = jitterValues[1:]
-		return next
+		return 3 * time.Second
 	}
 	ref.sleepFn = func(delay time.Duration) bool {
 		slept = append(slept, delay)
@@ -317,11 +314,11 @@ func TestRefreshFeedsAppliesJitterBeforeEachScheduledFeed(t *testing.T) {
 		},
 	})
 
-	wantMax := []time.Duration{30 * time.Second, 30 * time.Second}
+	wantMax := []time.Duration{30 * time.Second}
 	if fmt.Sprint(jitterMax) != fmt.Sprint(wantMax) {
 		t.Fatalf("jitter max = %v, want %v", jitterMax, wantMax)
 	}
-	wantSlept := []time.Duration{3 * time.Second, 7500 * time.Millisecond}
+	wantSlept := []time.Duration{3 * time.Second}
 	if fmt.Sprint(slept) != fmt.Sprint(wantSlept) {
 		t.Fatalf("sleep delays = %v, want %v", slept, wantSlept)
 	}
