@@ -86,6 +86,29 @@ routes: {}
 	}
 }
 
+func TestLoadParsesDynamicFeedLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := []byte(`
+refresher:
+  dynamic_feed_limit: 0
+routes: {}
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("写入临时配置失败: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load 返回错误: %v", err)
+	}
+	if cfg.Refresher.DynamicFeedLimit == nil {
+		t.Fatal("DynamicFeedLimit 应能区分显式 0 与未配置")
+	}
+	if *cfg.Refresher.DynamicFeedLimit != 0 {
+		t.Fatalf("DynamicFeedLimit = %d, want 0", *cfg.Refresher.DynamicFeedLimit)
+	}
+}
+
 func TestLoadParsesRouteRefreshJitter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	data := []byte(`

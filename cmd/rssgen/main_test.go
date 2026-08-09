@@ -101,6 +101,7 @@ func TestIndexEndpoint(t *testing.T) {
 		nil,
 		cfg,
 		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
+		nil,
 	)
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
@@ -281,7 +282,7 @@ func makeTestFeedHandler(
 		ArticleStore:  articleStore,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
-	}))
+	}), nil)
 }
 
 func disableTestFeed(feedHealth *health.FeedHealth, feedKey string) {
@@ -345,6 +346,66 @@ func TestFeedCacheHitReturnsXML(t *testing.T) {
 	}
 }
 
+func TestFeedHandlerObservesValidCacheHit(t *testing.T) {
+	feedHealth := health.New(health.Config{})
+	feedCache := cache.New(10 * time.Second)
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"afdian": {Enabled: true}}}
+	feedCache.Set(pipeline.CacheKey("afdian", []string{"user1"}, route.FetchOptions{}), `<?xml version="1.0"?><feed/>`)
+	observer := &recordingFeedObserver{}
+	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer))
+
+	req := httptest.NewRequest("GET", "/feed/afdian/user1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d", w.Code)
+	}
+	if len(observer.refs) != 1 {
+		t.Fatalf("Observe 调用数 = %d, want 1", len(observer.refs))
+	}
+	wantKey := pipeline.CacheKey("afdian", []string{"user1"}, route.FetchOptions{})
+	if observer.refs[0].CacheKey != wantKey {
+		t.Fatalf("观察到的 CacheKey = %q, want %q", observer.refs[0].CacheKey, wantKey)
+	}
+}
+
+func TestFeedHandlerDoesNotObserveUnknownRouteDisabledRouteOrDisabledFeed(t *testing.T) {
+	feedHealth := health.New(health.Config{})
+	feedCache := cache.New(10 * time.Second)
+	observer := &recordingFeedObserver{}
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"afdian": {Enabled: false}}}
+	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer))
+
+	req := httptest.NewRequest("GET", "/feed/nonexistent/user1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if len(observer.refs) != 0 {
+		t.Fatalf("未知 route 不应 Observe, got %d", len(observer.refs))
+	}
+
+	feedCache.Set(pipeline.CacheKey("afdian", []string{"user1"}, route.FetchOptions{}), "<feed/>")
+	req = httptest.NewRequest("GET", "/feed/afdian/user1", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if len(observer.refs) != 0 {
+		t.Fatalf("禁用 route 不应 Observe, got %d", len(observer.refs))
+	}
+
+	cfg.Routes["afdian"] = config.RouteConfig{Enabled: true}
+	disableTestFeed(feedHealth, "afdian/user1")
+	req = httptest.NewRequest("GET", "/feed/afdian/user1", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if len(observer.refs) != 0 {
+		t.Fatalf("禁用 feed 不应 Observe, got %d", len(observer.refs))
+	}
+}
+
 func TestFeedUnknownRouteReturns404(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	feedCache := cache.New(10 * time.Second)
@@ -368,6 +429,14 @@ type mainTestRoute struct {
 	items       []route.FeedItem
 	capturedOpt route.FetchOptions
 	fetchCount  atomic.Int32
+}
+
+type recordingFeedObserver struct {
+	refs []pipeline.FeedRef
+}
+
+func (o *recordingFeedObserver) Observe(ref pipeline.FeedRef) {
+	o.refs = append(o.refs, ref)
 }
 
 func (r *mainTestRoute) Name() string { return r.name }

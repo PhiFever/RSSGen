@@ -63,6 +63,15 @@ routes:
 
 **注意：** 如果宿主机配置了 HTTP 代理（`HTTP_PROXY`/`HTTPS_PROXY`），Docker 容器可能会继承代理设置，导致 Miniflux 无法通过 Docker 内部域名访问 RSSGen（返回 502）。`docker-compose.yml` 中已通过 `NO_PROXY` 环境变量排除内部服务，如有自定义服务名请一并添加。
 
+## 后台刷新
+
+RSSGen 会把本进程中真实访问过的 feed 动态加入后台刷新列表，避免只依赖 `config.yml` 手动维护预热列表。动态列表仅保存在内存中，重启后会重新学习；每个路由默认最多记录 200 个动态 feed，超过后按最久未访问淘汰。
+
+```yaml
+refresher:
+  dynamic_feed_limit: 200 # 每个路由的动态 feed 上限；0 = 禁用动态学习
+```
+
 **查询参数：**
 
 | 参数 | 说明 | 示例 |

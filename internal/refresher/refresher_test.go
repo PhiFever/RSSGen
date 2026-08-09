@@ -123,6 +123,35 @@ func TestGetStatusEmpty(t *testing.T) {
 	}
 }
 
+func TestGetStatusIncludesObservedDynamicFeeds(t *testing.T) {
+	dynamicRef := pipeline.FeedRef{
+		RouteName: "zhihu",
+		FeedID:    "u1",
+		PathParts: []string{"u1"},
+		CacheKey:  pipeline.CacheKey("zhihu", []string{"u1"}, route.FetchOptions{}),
+		HealthKey: "zhihu/u1",
+		Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
+	}
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
+		RoutesConfig: map[string]config.RouteConfig{"zhihu": {Enabled: true, RefreshInterval: 60}},
+	})
+
+	status := ref.GetStatus()
+	got := status["zhihu"]["u1"]
+	if got == nil {
+		t.Fatal("status 应包含已观察到的动态 feed")
+	}
+	if got.Source != statusSourceDynamic {
+		t.Fatalf("Source = %q, want dynamic", got.Source)
+	}
+	if got.CacheKey != dynamicRef.CacheKey {
+		t.Fatalf("CacheKey = %q, want %q", got.CacheKey, dynamicRef.CacheKey)
+	}
+}
+
 // --- Start / Stop 生命周期（迁移自 Python TestStartStop） ---
 
 func TestStartCreatesPerRouteTasks(t *testing.T) {
@@ -322,6 +351,117 @@ func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
 
 	if sleepCount != 0 {
 		t.Fatalf("预热不应应用 refresh_jitter，实际 sleep %d 次", sleepCount)
+	}
+}
+
+type staticFeedCatalog struct {
+	refs []pipeline.FeedRef
+}
+
+func (c *staticFeedCatalog) List(routeName string) []pipeline.FeedRef {
+	var out []pipeline.FeedRef
+	for _, ref := range c.refs {
+		if ref.RouteName == routeName {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
+	var capturedPath []string
+	route.Register("_test_refresh_dynamic_only", "_test_refresh_dynamic_only", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_refresh_dynamic_only",
+			fetchFn: func(_ route.ArticleStore, pathParams []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+				capturedPath = append([]string(nil), pathParams...)
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+
+	dynamicRef := pipeline.FeedRef{
+		RouteName: "_test_refresh_dynamic_only",
+		FeedID:    "u1",
+		PathParts: []string{"u1"},
+		CacheKey:  pipeline.CacheKey("_test_refresh_dynamic_only", []string{"u1"}, route.FetchOptions{}),
+		HealthKey: "_test_refresh_dynamic_only/u1",
+		Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
+	}
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	ref.refreshFeeds(refreshPhase{label: "测试"}, "_test_refresh_dynamic_only", config.RouteConfig{})
+
+	if fmt.Sprint(capturedPath) != "[u1]" {
+		t.Fatalf("captured path = %v, want [u1]", capturedPath)
+	}
+	status := ref.GetStatus()
+	got := status["_test_refresh_dynamic_only"]["u1"]
+	if got == nil || got.Source != statusSourceDynamic {
+		t.Fatalf("status = %+v, want dynamic source", got)
+	}
+}
+
+func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
+	var captured []string
+	route.Register("_test_refresh_dynamic_merge", "_test_refresh_dynamic_merge", func(cfg config.ResolvedRouteConfig) route.Route {
+		return &mockRoute{
+			name: "_test_refresh_dynamic_merge",
+			fetchFn: func(_ route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+				captured = append(captured, fmt.Sprintf("%s:%d:%v", pathParams[0], opts.Limit, opts.Include))
+				return []route.FeedItem{{Title: "t"}}, nil
+			},
+		}
+	})
+
+	staticOpts := route.FetchOptions{Limit: 10}
+	dynamicOpts := route.FetchOptions{Limit: 30, Include: []string{"pin"}}
+	dynamicRefs := []pipeline.FeedRef{
+		{
+			RouteName: "_test_refresh_dynamic_merge",
+			FeedID:    "u1",
+			PathParts: []string{"u1"},
+			CacheKey:  pipeline.CacheKey("_test_refresh_dynamic_merge", []string{"u1"}, staticOpts),
+			HealthKey: "_test_refresh_dynamic_merge/u1",
+			Variant:   pipeline.FeedVariant{Format: "atom", Limit: 10},
+		},
+		{
+			RouteName: "_test_refresh_dynamic_merge",
+			FeedID:    "u2",
+			PathParts: []string{"u2"},
+			CacheKey:  pipeline.CacheKey("_test_refresh_dynamic_merge", []string{"u2"}, dynamicOpts),
+			HealthKey: "_test_refresh_dynamic_merge/u2",
+			Variant:   pipeline.FeedVariant{Format: "atom", Limit: 30, Include: []string{"pin"}},
+		},
+	}
+	ref := New(Config{
+		FeedCache:    cache.New(10 * time.Second),
+		Notifier:     notifier.New(notifier.Config{}),
+		FeedCatalog:  &staticFeedCatalog{refs: dynamicRefs},
+		MaxRetries:   1,
+		RoutesConfig: map[string]config.RouteConfig{},
+	})
+
+	ref.refreshFeeds(refreshPhase{label: "测试"}, "_test_refresh_dynamic_merge", config.RouteConfig{
+		Feeds: []config.FeedConfig{{UserID: "u1", Limit: 10}},
+	})
+
+	want := "[u1:10:[] u2:30:[pin]]"
+	if fmt.Sprint(captured) != want {
+		t.Fatalf("captured = %v, want %s", captured, want)
+	}
+	status := ref.GetStatus()
+	if status["_test_refresh_dynamic_merge"]["u1"].Source != statusSourceConfig {
+		t.Fatalf("u1 source = %q, want config", status["_test_refresh_dynamic_merge"]["u1"].Source)
+	}
+	if status["_test_refresh_dynamic_merge"]["u2"].Source != statusSourceDynamic {
+		t.Fatalf("u2 source = %q, want dynamic", status["_test_refresh_dynamic_merge"]["u2"].Source)
 	}
 }
 

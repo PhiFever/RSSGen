@@ -18,6 +18,16 @@ import (
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
+const (
+	statusSourceConfig  = "config"
+	statusSourceDynamic = "dynamic"
+)
+
+// FeedCatalog supplies dynamically observed feed variants to the refresher.
+type FeedCatalog interface {
+	List(routeName string) []pipeline.FeedRef
+}
+
 // ArticleStore 是文章存储接口。
 type ArticleStore interface {
 	Get(routeName, articleID string) (content string, found bool, err error)
@@ -32,6 +42,7 @@ type Config struct {
 	Notifier       *notifier.Notifier
 	FeedHealth     *health.FeedHealth
 	Pipeline       *pipeline.Pipeline
+	FeedCatalog    FeedCatalog
 	StartupDelay   int
 	MaxRetries     int
 	RetryBaseDelay int
@@ -46,6 +57,7 @@ type Refresher struct {
 	notifier       *notifier.Notifier
 	feedHealth     *health.FeedHealth
 	pipe           *pipeline.Pipeline
+	feedCatalog    FeedCatalog
 	startupDelay   int
 	maxRetries     int
 	retryBaseDelay int
@@ -79,10 +91,17 @@ var (
 type ErrorStatus struct {
 	RouteName   string               `json:"-"`
 	FeedID      string               `json:"-"`
+	CacheKey    string               `json:"cache_key,omitempty"`
 	Variant     pipeline.FeedVariant `json:"variant"`
 	LastSuccess string               `json:"last_success,omitempty"`
 	Error       string               `json:"error,omitempty"`
 	ItemCount   int                  `json:"item_count"`
+	Source      string               `json:"source,omitempty"`
+}
+
+type refreshTarget struct {
+	ref    pipeline.FeedRef
+	source string
 }
 
 // New 创建一个新的刷新器实例。
@@ -120,6 +139,7 @@ func New(cfg Config) *Refresher {
 		notifier:       cfg.Notifier,
 		feedHealth:     feedHealth,
 		pipe:           pipe,
+		feedCatalog:    cfg.FeedCatalog,
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
 		retryBaseDelay: retryBaseDelay,
@@ -192,8 +212,6 @@ func (r *Refresher) Stop() {
 // GetStatus 返回按路由分组的状态。
 func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
 	r.statsMu.RLock()
-	defer r.statsMu.RUnlock()
-
 	grouped := make(map[string]map[string]*ErrorStatus)
 	for _, status := range r.errorStats {
 		if grouped[status.RouteName] == nil {
@@ -201,6 +219,27 @@ func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
 		}
 		statusCopy := *status
 		grouped[status.RouteName][status.FeedID] = &statusCopy
+	}
+	r.statsMu.RUnlock()
+
+	if r.feedCatalog != nil {
+		for routeName := range r.routesConfig {
+			for _, ref := range r.feedCatalog.List(routeName) {
+				if grouped[ref.RouteName] == nil {
+					grouped[ref.RouteName] = make(map[string]*ErrorStatus)
+				}
+				if grouped[ref.RouteName][ref.FeedID] != nil {
+					continue
+				}
+				grouped[ref.RouteName][ref.FeedID] = &ErrorStatus{
+					RouteName: ref.RouteName,
+					FeedID:    ref.FeedID,
+					CacheKey:  ref.CacheKey,
+					Variant:   ref.Variant,
+					Source:    statusSourceDynamic,
+				}
+			}
+		}
 	}
 	return grouped
 }
@@ -253,27 +292,59 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 	}
 }
 
-// refreshFeeds 刷新路由下的所有 feed。
+// refreshFeeds 刷新路由下的所有静态和动态 feed。
 func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config.RouteConfig) {
 	label := phase.label
-	if len(rc.Feeds) == 0 {
+	targets := r.refreshTargets(routeName, rc)
+	if len(targets) == 0 {
 		slog.Info("未配置 feed 列表，跳过", "route", routeName, "label", label)
 		return
 	}
 
-	slog.Info("开始刷新", "route", routeName, "label", label, "count", len(rc.Feeds))
+	slog.Info("开始刷新", "route", routeName, "label", label, "count", len(targets))
+	for _, target := range targets {
+		if !r.sleepRefreshJitter(phase, routeName, target.ref.FeedID, rc) {
+			return
+		}
+		r.refreshOneWithOptionsSource(target.ref.RouteName, target.ref.PathParts, fetchOptionsFromVariant(target.ref.Variant), target.source)
+	}
+	slog.Info("刷新完成", "route", routeName, "label", label)
+}
+
+func (r *Refresher) refreshTargets(routeName string, rc config.RouteConfig) []refreshTarget {
+	targets := make([]refreshTarget, 0, len(rc.Feeds))
+	seen := make(map[string]bool, len(rc.Feeds))
+
 	for _, fc := range rc.Feeds {
 		if fc.UserID == "" {
 			slog.Warn("feed 配置缺少 user_id，跳过", "route", routeName)
 			continue
 		}
-		if !r.sleepRefreshJitter(phase, routeName, fc.UserID, rc) {
-			return
-		}
-		pathParams := []string{fc.UserID}
-		r.refreshOneWithOptions(routeName, pathParams, pipeline.OptionsFromFeedConfig(fc))
+		pathParts := []string{fc.UserID}
+		ref := r.pipe.FeedRef(routeName, pathParts, pipeline.OptionsFromFeedConfig(fc))
+		targets = append(targets, refreshTarget{ref: ref, source: statusSourceConfig})
+		seen[ref.CacheKey] = true
 	}
-	slog.Info("刷新完成", "route", routeName, "label", label)
+
+	if r.feedCatalog == nil {
+		return targets
+	}
+	for _, ref := range r.feedCatalog.List(routeName) {
+		if seen[ref.CacheKey] {
+			continue
+		}
+		targets = append(targets, refreshTarget{ref: ref, source: statusSourceDynamic})
+		seen[ref.CacheKey] = true
+	}
+	return targets
+}
+
+func fetchOptionsFromVariant(variant pipeline.FeedVariant) route.FetchOptions {
+	return route.FetchOptions{
+		Format:  variant.Format,
+		Limit:   variant.Limit,
+		Include: append([]string(nil), variant.Include...),
+	}
 }
 
 func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, feedID string, rc config.RouteConfig) bool {
@@ -304,6 +375,10 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, fee
 }
 
 func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string, opts route.FetchOptions) {
+	r.refreshOneWithOptionsSource(routeName, pathParams, opts, statusSourceConfig)
+}
+
+func (r *Refresher) refreshOneWithOptionsSource(routeName string, pathParams []string, opts route.FetchOptions, source string) {
 	ref := r.pipe.FeedRef(routeName, pathParams, opts)
 
 	// 标记为 pending
@@ -350,9 +425,11 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 		r.errorStats[result.Ref.CacheKey] = &ErrorStatus{
 			RouteName:   result.Ref.RouteName,
 			FeedID:      result.Ref.FeedID,
+			CacheKey:    result.Ref.CacheKey,
 			Variant:     result.Ref.Variant,
 			LastSuccess: time.Now().UTC().Format(time.RFC3339),
 			ItemCount:   result.ItemCount,
+			Source:      source,
 		}
 		r.statsMu.Unlock()
 
@@ -367,9 +444,11 @@ func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string,
 	r.errorStats[ref.CacheKey] = &ErrorStatus{
 		RouteName: ref.RouteName,
 		FeedID:    ref.FeedID,
+		CacheKey:  ref.CacheKey,
 		Variant:   ref.Variant,
 		Error:     fmt.Sprintf("%v", lastErr),
 		ItemCount: 0,
+		Source:    source,
 	}
 	r.statsMu.Unlock()
 

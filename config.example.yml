@@ -26,6 +26,7 @@ refresher:
   max_retries: 3        # 最大重试次数
   retry_base_delay: 5   # 重试基础延迟（秒），指数退避
   preinit_url: "https://cn.bing.com/"  # HTTP 客户端预初始化 URL，null/空字符串则跳过
+  dynamic_feed_limit: 200 # 每个路由自动记录并后台刷新的动态 feed 上限；0 = 禁用
 
 # 通知配置（当获取上游数据失败时发送通知）
 notifier:

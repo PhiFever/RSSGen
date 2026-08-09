@@ -33,6 +33,7 @@ type FeedVariant struct {
 type FeedRef struct {
 	RouteName string      `json:"route_name"`
 	FeedID    string      `json:"feed_id"`
+	PathParts []string    `json:"-"`
 	HealthKey string      `json:"health_key"`
 	CacheKey  string      `json:"cache_key"`
 	Variant   FeedVariant `json:"variant"`
@@ -104,6 +105,17 @@ func (p *Pipeline) FeedRef(routeName string, pathParams []string, opts route.Fet
 	return newFeedRef(routeName, pathParams, p.normalizeOptions(routeName, pathParams, opts))
 }
 
+// RouteAllowsDynamicObservation reports whether HTTP requests for routeName
+// should be added to the dynamic feed catalog. Missing route config is treated
+// as enabled to preserve the existing zero-config test and local route behavior.
+func (p *Pipeline) RouteAllowsDynamicObservation(routeName string) bool {
+	if p == nil {
+		return false
+	}
+	rc, ok := p.routesConfig[routeName]
+	return !ok || rc.Enabled
+}
+
 // Refresh 完成一次抓取、生成 XML 并写入缓存。
 func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.FetchOptions) (RefreshResult, error) {
 	ref := p.FeedRef(routeName, pathParams, opts)
@@ -148,6 +160,7 @@ func newFeedRef(routeName string, pathParams []string, opts route.FetchOptions) 
 	return FeedRef{
 		RouteName: routeName,
 		FeedID:    strings.Join(pathParams, "/"),
+		PathParts: append([]string(nil), pathParams...),
 		HealthKey: cache.BuildCacheKey(routeName, pathParams),
 		CacheKey:  CacheKey(routeName, pathParams, opts),
 		Variant:   variant,

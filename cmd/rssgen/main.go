@@ -17,6 +17,7 @@ import (
 
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/feedcatalog"
 	"github.com/PhiFever/RSSGen/internal/health"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
@@ -87,6 +88,10 @@ type runtimeApp struct {
 	articleStore *store.ArticleStore
 }
 
+type feedObserver interface {
+	Observe(ref pipeline.FeedRef)
+}
+
 func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
 
@@ -118,6 +123,11 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
 	})
+	dynamicFeedLimit := config.DefaultDynamicFeedLimit
+	if cfg.Refresher.DynamicFeedLimit != nil {
+		dynamicFeedLimit = *cfg.Refresher.DynamicFeedLimit
+	}
+	feedCatalog := feedcatalog.New(dynamicFeedLimit)
 
 	var ref *refresher.Refresher
 	if anyRouteEnabled(cfg) {
@@ -127,6 +137,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 			Notifier:       notif,
 			FeedHealth:     feedHealth,
 			Pipeline:       pipe,
+			FeedCatalog:    feedCatalog,
 			StartupDelay:   cfg.Refresher.StartupDelay,
 			MaxRetries:     cfg.Refresher.MaxRetries,
 			RetryBaseDelay: cfg.Refresher.RetryBaseDelay,
@@ -138,7 +149,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe)
+	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe, feedCatalog)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -186,6 +197,7 @@ func makeRouter(
 	articleStore *store.ArticleStore,
 	cfg *config.Config,
 	pipe *pipeline.Pipeline,
+	feedCatalog feedObserver,
 ) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -208,7 +220,7 @@ func makeRouter(
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, feedCatalog))
 
 	// 状态接口
 	r.Get("/status", makeStatusHandler(ref))
@@ -232,6 +244,7 @@ func makeFeedHandlerWithPipeline(
 	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	pipe *pipeline.Pipeline,
+	feedCatalog feedObserver,
 ) http.HandlerFunc {
 	if feedHealth == nil {
 		feedHealth = health.New(health.Config{})
@@ -254,6 +267,9 @@ func makeFeedHandlerWithPipeline(
 		if feedHealth.IsFeedDisabled(ref.HealthKey) {
 			http.Error(w, fmt.Sprintf("订阅源 %s 已禁用（业务错误），重启后恢复", ref.HealthKey), http.StatusBadGateway)
 			return
+		}
+		if feedCatalog != nil && pipe.RouteAllowsDynamicObservation(routeName) {
+			feedCatalog.Observe(ref)
 		}
 
 		// 检查缓存

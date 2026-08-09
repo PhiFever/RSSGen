@@ -8,6 +8,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const DefaultDynamicFeedLimit = 200
+
 // Config 是 RSSGen 的顶层配置结构。
 type Config struct {
 	Server    ServerConfig           `yaml:"server"`
@@ -45,10 +47,11 @@ type ScraperConfig struct {
 
 // RefresherConfig 是后台刷新器配置。
 type RefresherConfig struct {
-	StartupDelay   int    `yaml:"startup_delay"`
-	MaxRetries     int    `yaml:"max_retries"`
-	RetryBaseDelay int    `yaml:"retry_base_delay"`
-	PreinitURL     string `yaml:"preinit_url"`
+	StartupDelay     int    `yaml:"startup_delay"`
+	MaxRetries       int    `yaml:"max_retries"`
+	RetryBaseDelay   int    `yaml:"retry_base_delay"`
+	PreinitURL       string `yaml:"preinit_url"`
+	DynamicFeedLimit *int   `yaml:"dynamic_feed_limit"`
 }
 
 // NotifierConfig 是通知配置。
