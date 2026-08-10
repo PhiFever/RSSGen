@@ -93,6 +93,9 @@ func TestFeishuSenderSendWithSign(t *testing.T) {
 	if req.Sign == "" {
 		t.Error("有 secret 时应包含签名")
 	}
+	if req.Timestamp == "" {
+		t.Error("有 secret 时应包含 timestamp")
+	}
 	if req.Content.Text != "带签名消息" {
 		t.Errorf("content.text = %q", req.Content.Text)
 	}

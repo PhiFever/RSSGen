@@ -102,6 +102,7 @@ func TestIndexEndpoint(t *testing.T) {
 		cfg,
 		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
 		nil,
+		nil,
 	)
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
@@ -282,7 +283,7 @@ func makeTestFeedHandler(
 		ArticleStore:  articleStore,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
-	}), nil)
+	}), nil, nil)
 }
 
 func disableTestFeed(feedHealth *health.FeedHealth, feedKey string) {
@@ -354,7 +355,7 @@ func TestFeedHandlerObservesValidCacheHit(t *testing.T) {
 	observer := &recordingFeedObserver{}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer, nil))
 
 	req := httptest.NewRequest("GET", "/feed/afdian/user1", nil)
 	w := httptest.NewRecorder()
@@ -379,7 +380,7 @@ func TestFeedHandlerDoesNotObserveUnknownRouteDisabledRouteOrDisabledFeed(t *tes
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"afdian": {Enabled: false}}}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer, nil))
 
 	req := httptest.NewRequest("GET", "/feed/nonexistent/user1", nil)
 	w := httptest.NewRecorder()
@@ -576,6 +577,48 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 			t.Fatalf("Fetch 错误应返回 502，got %d", w.Code)
 		}
 	})
+}
+
+func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
+	testRoute := &mainTestRoute{name: "_main_fetch_biz_err", fetchErr: route.NewHTTPError(http.StatusForbidden, "https://upstream.example/api")}
+	route.Register("_main_fetch_biz_err", "_main_fetch_biz_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
+
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received <- struct{}{}
+		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
+			t.Fatalf("写入响应失败: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	feedCache := cache.New(10 * time.Second)
+	feedHealth := health.New(health.Config{})
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_biz_err": {Enabled: true}}}
+	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
+	notif := notifier.New(notifier.Config{
+		Enabled:  true,
+		Services: []notifier.ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
+	})
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, nil, notif))
+
+	req := httptest.NewRequest("GET", "/feed/_main_fetch_biz_err/u1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("业务错误应返回 502，got %d", w.Code)
+	}
+	if !feedHealth.IsFeedDisabled("_main_fetch_biz_err/u1") {
+		t.Fatal("同步业务错误后 feed 应被禁用")
+	}
+
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("同步业务错误应触发通知")
+	}
 }
 
 func TestStatusHandlerDisabled(t *testing.T) {

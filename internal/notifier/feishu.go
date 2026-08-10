@@ -32,9 +32,10 @@ func newFeishuSender(webhookURL, secret string) *feishuSender {
 
 // feishuRequest 飞书 Webhook 请求体。
 type feishuRequest struct {
-	MsgType string     `json:"msg_type"`
-	Content feishuText `json:"content"`
-	Sign    string     `json:"sign,omitempty"`
+	Timestamp string     `json:"timestamp,omitempty"`
+	Sign      string     `json:"sign,omitempty"`
+	MsgType   string     `json:"msg_type"`
+	Content   feishuText `json:"content"`
 }
 
 type feishuText struct {
@@ -55,6 +56,7 @@ func (f *feishuSender) Send(message string) error {
 		if err != nil {
 			return fmt.Errorf("计算飞书签名失败: %w", err)
 		}
+		req.Timestamp = timestamp
 		req.Sign = sign
 	}
 

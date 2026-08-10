@@ -92,6 +92,10 @@ type feedObserver interface {
 	Observe(ref pipeline.FeedRef)
 }
 
+type feedNotifier interface {
+	Notify(feedKey string, statusCode int, errorMessage string)
+}
+
 func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
 
@@ -149,7 +153,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe, feedCatalog)
+	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe, feedCatalog, notif)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -198,6 +202,7 @@ func makeRouter(
 	cfg *config.Config,
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
+	feedNotifier feedNotifier,
 ) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -220,7 +225,7 @@ func makeRouter(
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, feedCatalog))
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, feedCatalog, feedNotifier))
 
 	// 状态接口
 	r.Get("/status", makeStatusHandler(ref))
@@ -245,6 +250,7 @@ func makeFeedHandlerWithPipeline(
 	feedCache *cache.TTLCache,
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
+	feedNotifier feedNotifier,
 ) http.HandlerFunc {
 	if feedHealth == nil {
 		feedHealth = health.New(health.Config{})
@@ -283,6 +289,13 @@ func makeFeedHandlerWithPipeline(
 
 		result, err := pipe.Refresh(routeName, pathParts, opts)
 		if err != nil {
+			statusCode, justDisabled := feedHealth.RecordFailure(ref.HealthKey, err)
+			if justDisabled {
+				if feedNotifier != nil {
+					feedNotifier.Notify(ref.HealthKey, statusCode, fmt.Sprintf("%v", err))
+				}
+				slog.Warn("feed 已禁用（业务错误）", "key", ref.HealthKey, "status", statusCode)
+			}
 			slog.Error("路由抓取失败", "route", routeName, "error", err)
 			http.Error(w, fmt.Sprintf("抓取失败: %v", err), http.StatusBadGateway)
 			return
