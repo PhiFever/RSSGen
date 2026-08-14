@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -180,7 +182,7 @@ func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		if ref == nil {
 			if _, err := w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`)); err != nil {
-				slog.Error("写入状态响应失败", "error", err)
+				logResponseWriteError("写入状态响应失败", err)
 			}
 			return
 		}
@@ -189,7 +191,7 @@ func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
 			"feeds":   ref.GetStatus(),
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			slog.Error("编码状态响应失败", "error", err)
+			logResponseWriteError("编码状态响应失败", err)
 		}
 	}
 }
@@ -220,7 +222,7 @@ func makeRouter(
 			return
 		}
 		if _, err := fmt.Fprintf(w, `{"name":"RSSGen","routes":%s}`, routesJSON); err != nil {
-			slog.Error("写入首页响应失败", "error", err)
+			logResponseWriteError("写入首页响应失败", err)
 		}
 	})
 
@@ -282,7 +284,7 @@ func makeFeedHandlerWithPipeline(
 		if cached, ok := feedCache.Get(ref.CacheKey); ok {
 			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 			if _, err := w.Write([]byte(cached)); err != nil {
-				slog.Error("写入缓存 feed 响应失败", "route", routeName, "error", err)
+				logResponseWriteError("写入缓存 feed 响应失败", err, "route", routeName)
 			}
 			return
 		}
@@ -303,7 +305,33 @@ func makeFeedHandlerWithPipeline(
 
 		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		if _, err := w.Write([]byte(result.XML)); err != nil {
-			slog.Error("写入 feed 响应失败", "route", routeName, "error", err)
+			logResponseWriteError("写入 feed 响应失败", err, "route", routeName)
 		}
 	}
+}
+
+func logResponseWriteError(message string, err error, attrs ...any) {
+	attrs = append(attrs, "error", err)
+	if isClientDisconnectError(err) {
+		slog.Warn(message+"（客户端已断开）", attrs...)
+		return
+	}
+	slog.Error(message, attrs...)
+}
+
+func isClientDisconnectError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "client disconnected") ||
+		strings.Contains(msg, "use of closed network connection")
 }

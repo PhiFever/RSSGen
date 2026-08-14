@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -436,6 +441,24 @@ type recordingFeedObserver struct {
 	refs []pipeline.FeedRef
 }
 
+type writeErrorResponseWriter struct {
+	header http.Header
+	err    error
+}
+
+func (w *writeErrorResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = http.Header{}
+	}
+	return w.header
+}
+
+func (w *writeErrorResponseWriter) Write([]byte) (int, error) {
+	return 0, w.err
+}
+
+func (w *writeErrorResponseWriter) WriteHeader(int) {}
+
 func (o *recordingFeedObserver) Observe(ref pipeline.FeedRef) {
 	o.refs = append(o.refs, ref)
 }
@@ -618,6 +641,35 @@ func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
 	case <-received:
 	case <-time.After(time.Second):
 		t.Fatal("同步业务错误应触发通知")
+	}
+}
+
+func TestFeedHandlerClientDisconnectWriteErrorNotLoggedAsError(t *testing.T) {
+	testRoute := &mainTestRoute{name: "_main_write_broken_pipe"}
+	route.Register("_main_write_broken_pipe", "_main_write_broken_pipe", func(config.ResolvedRouteConfig) route.Route { return testRoute })
+
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	feedCache := cache.New(10 * time.Second)
+	feedHealth := health.New(health.Config{})
+	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_write_broken_pipe": {Enabled: true}}}
+	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
+	r := chi.NewRouter()
+	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, nil, nil))
+
+	req := httptest.NewRequest("GET", "/feed/_main_write_broken_pipe/u1", nil)
+	w := &writeErrorResponseWriter{err: &net.OpError{Op: "write", Err: syscall.EPIPE}}
+	r.ServeHTTP(w, req)
+
+	logOutput := logs.String()
+	if strings.Contains(logOutput, "level=ERROR") {
+		t.Fatalf("客户端断开不应输出 ERROR 日志: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "level=WARN") || !strings.Contains(logOutput, "客户端已断开") {
+		t.Fatalf("客户端断开应输出 WARN 诊断日志, 实得: %s", logOutput)
 	}
 }
 
