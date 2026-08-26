@@ -19,7 +19,7 @@ docker compose up -d
 本地开发：
 
 ```bash
-go run ./cmd/rssgen
+go run .
 ```
 
 ## 支持的路由
@@ -73,23 +73,23 @@ cp .env.example .env
 # 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE
 
 # 1. 查询可回填的 Afdian feed ID
-go run ./cmd/rssgen afdian-backfill \
+go run . afdian-backfill \
   --miniflux-url http://localhost:8080 \
   --list-feeds
 
 # 2. 完整扫描并预览缺失数量，不请求正文、评论或写入 Miniflux
-go run ./cmd/rssgen afdian-backfill \
+go run . afdian-backfill \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
   --dry-run
 
 # 3. 按新到旧补齐全部缺失历史
-go run ./cmd/rssgen afdian-backfill \
+go run . afdian-backfill \
   --miniflux-url http://localhost:8080 \
   --feed-id 42
 ```
 
-`.env` 是可选的；也可以继续直接设置进程环境变量，且进程环境变量优先于 `.env` 中的同名值。回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
+`.env` 是可选的；也可以继续直接设置进程环境变量，且进程环境变量优先于 `.env` 中的同名值。回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。运行期间会持续输出阶段切换、Afdian 分页扫描累计数、对账结果和逐篇导入进度。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
 
 ## 后台刷新
 

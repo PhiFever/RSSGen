@@ -292,12 +292,25 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 
 // getPostList 按 publish_sn 分页获取作者动态；limit <= 0 时遍历到自然结束。
 func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error) {
+	return r.getPostListWithProgress(sc, userID, authorSlug, limit, nil)
+}
+
+type postListProgressFunc func(page, pageItems, totalItems int)
+
+func (r *Route) getPostListWithProgress(
+	sc *scraper.Scraper,
+	userID, authorSlug string,
+	limit int,
+	progress postListProgressFunc,
+) ([]afdianPost, error) {
 	referer := fmt.Sprintf("%s/a/%s", hostURL, authorSlug)
 	var allPosts []afdianPost
 	publishSN := int64(0)
 	seenCursors := map[int64]struct{}{0: {}}
+	page := 0
 
 	for limit <= 0 || len(allPosts) < limit {
+		page++
 		apiURL := fmt.Sprintf(
 			"%s/api/post/get-list?user_id=%s&type=old&publish_sn=%d&per_page=10&group_id=&all=1&is_public=&plan_id=&title=&name=",
 			hostURL, userID, publishSN,
@@ -316,6 +329,9 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 			return allPosts, err
 		}
 		if len(data) == 0 {
+			if progress != nil {
+				progress(page, 0, len(allPosts))
+			}
 			break
 		}
 
@@ -324,11 +340,18 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 			slog.Warn("解析帖子列表失败，原始响应", "error", err, "data", string(data))
 			return allPosts, fmt.Errorf("解析帖子列表失败: %w", err)
 		}
-		if len(postList.List) == 0 {
+		pageItems := len(postList.List)
+		if pageItems == 0 {
+			if progress != nil {
+				progress(page, 0, len(allPosts))
+			}
 			break
 		}
 
 		allPosts = append(allPosts, postList.List...)
+		if progress != nil {
+			progress(page, pageItems, len(allPosts))
+		}
 
 		// 获取最后一条的 publish_sn 用于翻页
 		lastPost := postList.List[len(postList.List)-1]
@@ -379,7 +402,11 @@ func NewBackfillSource(cookie string, requestInterval time.Duration) (*BackfillS
 }
 
 // Discover 按新到旧遍历 Afdian 列表直到自然结束，不设置数量上限。
-func (s *BackfillSource) Discover(ctx context.Context, authorSlug string) ([]backfill.Candidate, error) {
+func (s *BackfillSource) Discover(
+	ctx context.Context,
+	authorSlug string,
+	progress backfill.ProgressFunc,
+) ([]backfill.Candidate, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -387,7 +414,12 @@ func (s *BackfillSource) Discover(ctx context.Context, authorSlug string) ([]bac
 	if err != nil {
 		return nil, err
 	}
-	posts, err := s.route.getPostList(s.scraper, userID, authorSlug, 0)
+	posts, err := s.route.getPostListWithProgress(s.scraper, userID, authorSlug, 0, func(page, pageItems, totalItems int) {
+		if progress != nil {
+			progress("Afdian 历史扫描进度",
+				"source_id", authorSlug, "page", page, "page_items", pageItems, "scanned", totalItems)
+		}
+	})
 	if err != nil {
 		return nil, err
 	}

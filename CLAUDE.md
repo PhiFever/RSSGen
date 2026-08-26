@@ -24,7 +24,7 @@ go build ./...                                        # 编译
 go test ./...                                         # 全部测试
 go test ./internal/route/zhihu/ -run TestName -v      # 单个测试
 go vet ./...                                          # 静态检查
-go run ./cmd/rssgen                                   # 本地运行（需当前目录有 config.yml）
+go run .                                              # 本地运行（需当前目录有 config.yml）
 docker compose up -d                                  # 部署（含 Miniflux + PostgreSQL）
 ```
 
@@ -36,7 +36,7 @@ docker compose up -d                                  # 部署（含 Miniflux + 
 
 ```
 Miniflux 定时拉取 → GET /feed/{route_name}/{params}
-  → cmd/rssgen/main.go 的 makeFeedHandler
+  → 根目录 main.go 的 makeFeedHandler
   → 解析 format/limit/include 并查 FeedCache（命中直接返回 XML）
   → 未命中：调用 pipeline.Refresh
       Route.Fetch → feed.Generate → 写缓存 → 返回
@@ -66,7 +66,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 
 1. 建包 `internal/route/{name}/`，实现 `route.Route` 接口（`Name`/`Fetch`），`Fetch` 返回 `route.FeedResult`
 2. 在包的 `init()` 中 `route.Register("{name}", "路由描述", factory)`，factory 接收 `config.ResolvedRouteConfig` 强类型配置
-3. 在 `cmd/rssgen/main.go` 匿名 import 该包
+3. 在根目录 `main.go` 匿名 import 该包
 4. 上游返回非 2xx 时返回 `*route.HTTPError`，否则熔断/通知机制不生效
 5. 测试注入用函数字段模式：路由结构体上放可替换的抓取函数字段（参考 afdian 的 `getPostListFn`、zhihu 的 `fetchActivitiesFn`），测试中替换为假实现
 

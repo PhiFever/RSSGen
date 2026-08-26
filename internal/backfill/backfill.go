@@ -72,7 +72,7 @@ const (
 // Source 是历史内容源的内部接缝。
 type Source interface {
 	FeedIdentity(feedURL string) (string, error)
-	Discover(ctx context.Context, sourceID string) ([]Candidate, error)
+	Discover(ctx context.Context, sourceID string, progress ProgressFunc) ([]Candidate, error)
 	Detail(ctx context.Context, candidate Candidate) (string, error)
 	Comments(ctx context.Context, candidate Candidate) (string, error)
 }
@@ -112,10 +112,14 @@ type Result struct {
 // WaitFunc 让测试可以确定性地替换重试等待。
 type WaitFunc func(context.Context, time.Duration) error
 
+// ProgressFunc 接收面向前台任务的结构化进度消息；nil 表示静默运行。
+type ProgressFunc func(message string, attrs ...any)
+
 // Dependencies 提供两个外部适配器与重试策略。
 type Dependencies struct {
 	Source         Source
 	Destination    Destination
+	Progress       ProgressFunc
 	MaxAttempts    int
 	RetryBaseDelay time.Duration
 	Wait           WaitFunc
@@ -143,6 +147,7 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 				result.Feeds = append(result.Feeds, feed)
 			}
 		}
+		reportProgress(deps.Progress, "Miniflux feed 列表读取完成", "total", len(feeds), "eligible", len(result.Feeds))
 		return result, nil
 	case ActionDryRun, ActionExecute:
 		if req.FeedID <= 0 {
@@ -167,29 +172,41 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		return result, fmt.Errorf("feed %d 与当前数据源不匹配: %w", req.FeedID, err)
 	}
 	result.SourceID = sourceID
+	reportProgress(deps.Progress, "目标 feed 已解析",
+		"feed_id", feed.ID, "feed_title", feed.Title, "source_id", sourceID)
 
+	reportProgress(deps.Progress, "开始读取 Miniflux 现有条目", "feed_id", req.FeedID)
 	entries, err := retryValue(ctx, policy, func(ctx context.Context) ([]Entry, error) {
 		return deps.Destination.Entries(ctx, req.FeedID)
 	})
 	if err != nil {
 		return result, fmt.Errorf("读取 feed %d 的现有条目: %w", req.FeedID, err)
 	}
+	reportProgress(deps.Progress, "Miniflux 现有条目读取完成", "feed_id", req.FeedID, "entries", len(entries))
+	reportProgress(deps.Progress, "开始扫描数据源完整历史", "source_id", sourceID)
 	candidates, err := retryValue(ctx, policy, func(ctx context.Context) ([]Candidate, error) {
-		return deps.Source.Discover(ctx, sourceID)
+		return deps.Source.Discover(ctx, sourceID, deps.Progress)
 	})
 	if err != nil {
 		return result, fmt.Errorf("发现数据源完整历史: %w", err)
 	}
+	reportProgress(deps.Progress, "数据源完整历史扫描完成", "source_id", sourceID, "candidates", len(candidates))
 
 	missing, err := reconcile(candidates, entries, &result)
 	if err != nil {
 		return result, err
 	}
+	reportProgress(deps.Progress, "历史对账完成",
+		"scanned", result.Scanned, "existing", result.Existing, "missing", result.Missing,
+		"duplicates", result.DuplicateCandidates)
 	if req.Action == ActionDryRun {
 		return result, nil
 	}
 
-	for _, candidate := range missing {
+	for index, candidate := range missing {
+		current := index + 1
+		reportProgress(deps.Progress, "开始处理缺失条目",
+			"current", current, "total", len(missing), "post_id", candidate.ID, "title", candidate.Title)
 		content, err := retryValue(ctx, policy, func(ctx context.Context) (string, error) {
 			return deps.Source.Detail(ctx, candidate)
 		})
@@ -226,17 +243,30 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		if err != nil {
 			return result, fmt.Errorf("导入文章 %s: %w", candidate.ID, err)
 		}
+		var outcomeName string
 		switch outcome {
 		case ImportCreated:
 			result.Imported++
+			outcomeName = "created"
 		case ImportExisting:
 			result.DuplicateImports++
+			outcomeName = "existing"
 		default:
 			return result, fmt.Errorf("导入文章 %s: 未知导入结果 %d", candidate.ID, outcome)
 		}
+		reportProgress(deps.Progress, "缺失条目处理完成",
+			"current", current, "total", len(missing), "post_id", candidate.ID, "outcome", outcomeName,
+			"imported", result.Imported, "duplicate_imports", result.DuplicateImports,
+			"comment_failures", result.CommentFailures)
 	}
 
 	return result, nil
+}
+
+func reportProgress(progress ProgressFunc, message string, attrs ...any) {
+	if progress != nil {
+		progress(message, attrs...)
+	}
 }
 
 func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candidate, error) {

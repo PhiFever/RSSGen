@@ -18,7 +18,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w" \
     -o /rssgen \
-    ./cmd/rssgen
+    .
 
 # 最终 scratch 镜像
 FROM scratch

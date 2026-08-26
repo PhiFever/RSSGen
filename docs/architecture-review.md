@@ -22,7 +22,7 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 状态：已完成（2026-07-08）。
 
-涉及：`cmd/rssgen/main.go`（makeFeedHandlerWithPipeline）、`internal/refresher/refresher.go`（Trigger、refreshOneWithOptions、splitCacheKey、GetStatus）、`internal/pipeline/pipeline.go`、`internal/cache/`
+涉及：根目录 `main.go`（makeFeedHandlerWithPipeline）、`internal/refresher/refresher.go`（Trigger、refreshOneWithOptions、splitCacheKey、GetStatus）、`internal/pipeline/pipeline.go`、`internal/cache/`
 
 摩擦：「熔断/禁用用基础键 `route/path`、feed XML 用变体键 `route/path?format=…`」这条不变量没有单一归属——handler 与 refresher 各自手拼双键（3 包 5 处），refresher 还用 `splitCacheKey` 维护着 cache 键格式的手写逆函数；`errorStats` 以变体键为 map key，导致 `/status` 里 feed 名渗出 `user1?format=atom&limit=20`。任何一处把变体键误传给 `IsFeedDisabled`，禁用判定就静默错位。
 
@@ -74,7 +74,7 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 状态：已完成（2026-07-08；持久化相关预留在 2026-08-26 的 Afdian 历史回填阶段移除）。`deadcode ./...` 已无输出。
 
-涉及：`internal/refresher/refresher.go`（Trigger、refreshOne）、`internal/pipeline/pipeline.go`（OptionsFromParams）、`internal/route/route.go`（FeedIDField、Unregister）、`internal/cache/`（Delete、Len）、`internal/scraper/`（Post、PostJSON）、`internal/config/config.go`（Server.CacheTTL）、`cmd/rssgen/main.go`（makeRouter 首页 handler、makeFeedHandler）
+涉及：`internal/refresher/refresher.go`（Trigger、refreshOne）、`internal/pipeline/pipeline.go`（OptionsFromParams）、`internal/route/route.go`（FeedIDField、Unregister）、`internal/cache/`（Delete、Len）、`internal/scraper/`（Post、PostJSON）、`internal/config/config.go`（Server.CacheTTL）、根目录 `main.go`（makeRouter 首页 handler、makeFeedHandler）
 
 摩擦：
 

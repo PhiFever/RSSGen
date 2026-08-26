@@ -140,6 +140,11 @@ func TestParseAfdianBackfillArgsRejectsUnsafeOrMissingInputs(t *testing.T) {
 }
 
 func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/feeds" || r.Header.Get("X-Auth-Token") != "token" {
 			t.Fatalf("request = %s token=%q", r.URL.Path, r.Header.Get("X-Auth-Token"))
@@ -163,6 +168,9 @@ func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "42") || !strings.Contains(output.String(), "Alice") || strings.Contains(output.String(), "Bob") {
 		t.Fatalf("output = %q", output.String())
+	}
+	if !strings.Contains(logs.String(), "Miniflux feed 列表读取完成") || !strings.Contains(logs.String(), "eligible=1") {
+		t.Fatalf("progress logs = %q", logs.String())
 	}
 }
 

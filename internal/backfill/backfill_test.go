@@ -18,16 +18,20 @@ type fakeSource struct {
 	detailCalls   []string
 	commentCalls  []string
 	discoverCalls int
+	reportPage    bool
 }
 
 func (s *fakeSource) FeedIdentity(feedURL string) (string, error) {
 	return FeedIdentityFromURL(feedURL, "afdian")
 }
 
-func (s *fakeSource) Discover(context.Context, string) ([]Candidate, error) {
+func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) ([]Candidate, error) {
 	s.discoverCalls++
 	if err := popError(&s.discoverErrs); err != nil {
 		return nil, err
+	}
+	if s.reportPage {
+		reportProgress(progress, "数据源分页扫描进度", "page", 1, "page_items", len(s.candidates), "scanned", len(s.candidates))
 	}
 	return append([]Candidate(nil), s.candidates...), nil
 }
@@ -201,6 +205,58 @@ func TestRunExecuteImportsNewestFirstAndContinuesAfterCommentFailure(t *testing.
 	}
 }
 
+func TestRunReportsPhaseDiscoveryAndImportProgress(t *testing.T) {
+	source := &fakeSource{
+		candidates: []Candidate{{
+			ID: "post-1", Title: "Paid", URL: "https://afdian.com/p/post-1", PublishedAt: time.Unix(100, 0),
+		}},
+		detailErrs:  map[string][]error{},
+		commentErrs: map[string][]error{},
+		reportPage:  true,
+	}
+	destination := &fakeDestination{
+		feed:       Feed{ID: 42, Title: "Alice", FeedURL: "http://rssgen/feed/afdian/alice"},
+		importErrs: map[string][]error{},
+	}
+	type progressRecord struct {
+		message string
+		attrs   []any
+	}
+	var records []progressRecord
+
+	_, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 42}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+		Progress: func(message string, attrs ...any) {
+			records = append(records, progressRecord{message: message, attrs: append([]any(nil), attrs...)})
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run execute: %v", err)
+	}
+	wantMessages := []string{
+		"目标 feed 已解析",
+		"开始读取 Miniflux 现有条目",
+		"Miniflux 现有条目读取完成",
+		"开始扫描数据源完整历史",
+		"数据源分页扫描进度",
+		"数据源完整历史扫描完成",
+		"历史对账完成",
+		"开始处理缺失条目",
+		"缺失条目处理完成",
+	}
+	var gotMessages []string
+	for _, record := range records {
+		gotMessages = append(gotMessages, record.message)
+	}
+	if !reflect.DeepEqual(gotMessages, wantMessages) {
+		t.Fatalf("progress messages = %v, want %v", gotMessages, wantMessages)
+	}
+	completed := attrsMap(records[len(records)-1].attrs)
+	if completed["current"] != 1 || completed["total"] != 1 || completed["post_id"] != "post-1" || completed["outcome"] != "created" {
+		t.Fatalf("completed attrs = %+v", completed)
+	}
+}
+
 func TestRunRetriesDiscoveryBeforeStartingDetails(t *testing.T) {
 	source := &fakeSource{discoverErrs: []error{errors.New("bad"), errors.New("bad"), errors.New("bad")}}
 	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
@@ -320,4 +376,15 @@ func TestFeedIdentityFromURL(t *testing.T) {
 func hashID(id string) string {
 	sum := sha256.Sum256([]byte(id))
 	return hex.EncodeToString(sum[:])
+}
+
+func attrsMap(attrs []any) map[string]any {
+	result := make(map[string]any, len(attrs)/2)
+	for i := 0; i+1 < len(attrs); i += 2 {
+		key, ok := attrs[i].(string)
+		if ok {
+			result[key] = attrs[i+1]
+		}
+	}
+	return result
 }

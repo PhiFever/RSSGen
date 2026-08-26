@@ -598,10 +598,18 @@ func TestBackfillSourceUsesSharedParsingAndRendering(t *testing.T) {
 	defer server.Close()
 	withTestHost(t, server.URL)
 	source := &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: newTestScraper(t)}
+	var progress []string
 
-	candidates, err := source.Discover(context.Background(), "alice")
+	candidates, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
+		progress = append(progress, message+" "+fmt.Sprint(attrs))
+	})
 	if err != nil || len(candidates) != 1 {
 		t.Fatalf("Discover = %+v, %v", candidates, err)
+	}
+	if len(progress) != 2 ||
+		!strings.Contains(progress[0], "page 1 page_items 1 scanned 1") ||
+		!strings.Contains(progress[1], "page 2 page_items 0 scanned 1") {
+		t.Fatalf("progress = %v", progress)
 	}
 	candidate := candidates[0]
 	if candidate.ID != "p1" || candidate.Author != "Alice" || candidate.URL != server.URL+"/p/p1" || candidate.PublishedAt.Unix() != 123 {

@@ -329,7 +329,7 @@ func runAfdianBackfill(ctx context.Context, args []string, getenv func(string) s
 	if err != nil {
 		return err
 	}
-	deps := backfill.Dependencies{Source: source, Destination: destination}
+	deps := backfill.Dependencies{Source: source, Destination: destination, Progress: slog.Info}
 	slog.Info("开始 Afdian 历史回填", "action", cfg.action, "feed_id", cfg.feedID)
 	result, runErr := backfill.Run(ctx, backfill.Request{Action: cfg.action, FeedID: cfg.feedID}, deps)
 	if runErr == nil || result.Feed.ID != 0 || result.Scanned != 0 || result.Imported != 0 {
