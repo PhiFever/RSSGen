@@ -27,6 +27,13 @@ func TestClientFeedsFeedAndPaginatedEntries(t *testing.T) {
 		case "/v1/feeds/42":
 			writeJSON(t, w, map[string]any{"id": 42, "title": "Alice", "feed_url": "http://rssgen/feed/afdian/alice"})
 		case "/v1/feeds/42/entries":
+			for _, status := range r.URL.Query()["status"] {
+				if status == "removed" {
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error_message":"invalid entry status, valid status values are: \"read\" and \"unread\""}`))
+					return
+				}
+			}
 			assertEntryStatuses(t, r.URL.Query())
 			offset := r.URL.Query().Get("offset")
 			if offset == "0" {
@@ -150,7 +157,7 @@ func TestNewValidatesBaseURLAndToken(t *testing.T) {
 
 func assertEntryStatuses(t *testing.T, values url.Values) {
 	t.Helper()
-	want := []string{"read", "unread", "removed"}
+	want := []string{"read", "unread"}
 	if got := values["status"]; fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("status = %v, want %v", got, want)
 	}

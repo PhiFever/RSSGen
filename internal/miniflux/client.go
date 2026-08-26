@@ -99,7 +99,6 @@ func (c *Client) Entries(ctx context.Context, feedID int64) ([]backfill.Entry, e
 		query := url.Values{}
 		query.Add("status", "read")
 		query.Add("status", "unread")
-		query.Add("status", "removed")
 		query.Set("offset", strconv.Itoa(offset))
 		query.Set("limit", strconv.Itoa(c.pageSize))
 		query.Set("order", "id")
