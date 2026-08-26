@@ -24,7 +24,7 @@ go build ./...                                        # 编译
 go test ./...                                         # 全部测试
 go test ./internal/route/zhihu/ -run TestName -v      # 单个测试
 go vet ./...                                          # 静态检查
-go run .                                              # 本地运行（需当前目录有 config.yml）
+go run . server                                       # 本地运行（需当前目录有 config.yml）
 docker compose up -d                                  # 部署（含 Miniflux + PostgreSQL）
 ```
 

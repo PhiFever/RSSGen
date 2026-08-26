@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
+	"github.com/urfave/cli/v3"
 
 	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
@@ -38,67 +38,180 @@ import (
 )
 
 func main() {
-	// 配置结构化日志
+	os.Exit(runCLI(os.Args))
+}
+
+type commandDependencies struct {
+	runServer         func(context.Context) error
+	runAfdianBackfill func(context.Context, afdianBackfillCLIConfig, io.Writer) error
+	loadBackfillEnv   func(string) error
+	getenv            func(string) string
+}
+
+func runCLI(args []string) int {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
-	if len(os.Args) > 1 {
-		if os.Args[1] != "afdian-backfill" {
-			slog.Error("未知命令", "command", os.Args[1])
-			os.Exit(2)
-		}
-		if err := loadBackfillEnv(".env"); err != nil {
-			slog.Error("加载 backfill 环境变量失败", "error", err)
-			os.Exit(1)
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-		defer stop()
-		if err := runAfdianBackfill(ctx, os.Args[2:], os.Getenv, os.Stdout); err != nil {
-			slog.Error("Afdian 历史回填失败", "error", err)
-			os.Exit(1)
-		}
-		return
-	}
 
-	// 加载配置
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	cmd := newCommand(commandDependencies{
+		runServer:         runServer,
+		runAfdianBackfill: runAfdianBackfill,
+		loadBackfillEnv:   loadBackfillEnv,
+		getenv:            os.Getenv,
+	})
+	if err := cmd.Run(ctx, args); err != nil {
+		slog.Error("命令执行失败", "error", err)
+		return commandExitCode(err)
+	}
+	return 0
+}
+
+func commandExitCode(err error) int {
+	var exitCoder cli.ExitCoder
+	if errors.As(err, &exitCoder) {
+		return exitCoder.ExitCode()
+	}
+	return 1
+}
+
+func newCommand(deps commandDependencies) *cli.Command {
+	return &cli.Command{
+		Name:    "rssgen",
+		Usage:   "将网站内容转换为 RSS/Atom，并提供历史回填工具",
+		Suggest: true,
+		Commands: []*cli.Command{
+			{
+				Name:  "server",
+				Usage: "启动 RSS/Atom HTTP server",
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					if err := rejectPositionalArgs(cmd); err != nil {
+						return err
+					}
+					return deps.runServer(ctx)
+				},
+			},
+			newAfdianBackfillCommand(deps),
+		},
+		// cli.Exit 默认会直接调用 os.Exit；交给 main 统一记录错误并决定退出码。
+		ExitErrHandler: func(context.Context, *cli.Command, error) {},
+	}
+}
+
+func newAfdianBackfillCommand(deps commandDependencies) *cli.Command {
+	return &cli.Command{
+		Name:  "afdian-backfill",
+		Usage: "将 Afdian 完整历史回填到已有 Miniflux feed",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:     "miniflux-url",
+				Usage:    "Miniflux instance root URL",
+				Required: true,
+			},
+			&cli.Int64Flag{
+				Name:  "feed-id",
+				Usage: "existing Miniflux feed ID",
+			},
+			&cli.BoolFlag{
+				Name:  "list-feeds",
+				Usage: "list eligible Afdian feeds",
+			},
+			&cli.BoolFlag{
+				Name:  "dry-run",
+				Usage: "discover and reconcile without importing",
+			},
+			&cli.DurationFlag{
+				Name:  "request-interval",
+				Usage: "minimum interval between Afdian requests",
+				Value: time.Second,
+				Validator: func(value time.Duration) error {
+					if value < time.Second {
+						return fmt.Errorf("--request-interval 不能小于 1s")
+					}
+					return nil
+				},
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := rejectPositionalArgs(cmd); err != nil {
+				return err
+			}
+			if err := deps.loadBackfillEnv(".env"); err != nil {
+				return fmt.Errorf("加载 backfill 环境变量: %w", err)
+			}
+			cfg, err := afdianBackfillConfigFromCommand(cmd, deps.getenv)
+			if err != nil {
+				return err
+			}
+			return deps.runAfdianBackfill(ctx, cfg, cmd.Root().Writer)
+		},
+	}
+}
+
+func rejectPositionalArgs(cmd *cli.Command) error {
+	if cmd.NArg() == 0 {
+		return nil
+	}
+	return fmt.Errorf("不接受位置参数: %s", strings.Join(cmd.Args().Slice(), " "))
+}
+
+func runServer(ctx context.Context) error {
 	cfg, err := config.Load("config.yml")
 	if err != nil {
-		slog.Error("加载配置失败", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("加载配置: %w", err)
 	}
 
 	app, err := buildRuntime(cfg)
 	if err != nil {
-		slog.Error("初始化运行时失败", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("初始化运行时: %w", err)
 	}
+	return serveRuntime(ctx, app)
+}
 
-	// 优雅关停
-	done := make(chan os.Signal, 1)
-	signal.Notify(done, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		slog.Info("RSSGen 启动", "addr", app.server.Addr)
-		if err := app.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP 服务异常", "error", err)
-			os.Exit(1)
+func serveRuntime(ctx context.Context, app *runtimeApp) error {
+	refresherStopped := false
+	stopRefresher := func() {
+		if !refresherStopped && app.refresher != nil {
+			app.refresher.Stop()
+			refresherStopped = true
 		}
+	}
+	defer stopRefresher()
+
+	listener, err := net.Listen("tcp", app.server.Addr)
+	if err != nil {
+		return fmt.Errorf("监听 %s: %w", app.server.Addr, err)
+	}
+	slog.Info("RSSGen 启动", "addr", listener.Addr().String())
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- app.server.Serve(listener)
 	}()
 
-	<-done
-	slog.Info("收到关停信号，正在关闭服务...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if app.refresher != nil {
-		app.refresher.Stop()
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("HTTP 服务异常: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		slog.Info("收到关停信号，正在关闭服务...")
 	}
-	if err := app.server.Shutdown(ctx); err != nil {
-		slog.Error("服务关闭异常", "error", err)
+
+	stopRefresher()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("关闭 HTTP 服务: %w", err)
+	}
+	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("HTTP 服务异常: %w", err)
 	}
 	slog.Info("RSSGen 已停止")
+	return nil
 }
 
 // loadBackfillEnv 加载可选的 dotenv 文件，进程环境变量保持更高优先级。
@@ -262,34 +375,25 @@ type afdianBackfillCLIConfig struct {
 	afdianCookie    string
 }
 
-func parseAfdianBackfillArgs(args []string, getenv func(string) string) (afdianBackfillCLIConfig, error) {
-	fs := flag.NewFlagSet("afdian-backfill", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	var cfg afdianBackfillCLIConfig
-	var listFeeds bool
-	var dryRun bool
-	fs.StringVar(&cfg.minifluxURL, "miniflux-url", "", "Miniflux instance root URL")
-	fs.Int64Var(&cfg.feedID, "feed-id", 0, "existing Miniflux feed ID")
-	fs.BoolVar(&listFeeds, "list-feeds", false, "list eligible Afdian feeds")
-	fs.BoolVar(&dryRun, "dry-run", false, "discover and reconcile without importing")
-	fs.DurationVar(&cfg.requestInterval, "request-interval", time.Second, "minimum interval between Afdian requests")
-	if err := fs.Parse(args); err != nil {
-		return cfg, err
+func afdianBackfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (afdianBackfillCLIConfig, error) {
+	cfg := afdianBackfillCLIConfig{
+		minifluxURL:     strings.TrimSpace(cmd.String("miniflux-url")),
+		feedID:          cmd.Int64("feed-id"),
+		requestInterval: cmd.Duration("request-interval"),
 	}
-	if fs.NArg() != 0 {
-		return cfg, fmt.Errorf("不接受位置参数: %s", strings.Join(fs.Args(), " "))
-	}
-	if strings.TrimSpace(cfg.minifluxURL) == "" {
+	if cfg.minifluxURL == "" {
 		return cfg, fmt.Errorf("必须显式传入 --miniflux-url")
 	}
 	if cfg.requestInterval < time.Second {
 		return cfg, fmt.Errorf("--request-interval 不能小于 1s")
 	}
+	listFeeds := cmd.Bool("list-feeds")
+	dryRun := cmd.Bool("dry-run")
 	if listFeeds && dryRun {
 		return cfg, fmt.Errorf("--list-feeds 与 --dry-run 不能同时使用")
 	}
 	if listFeeds {
-		if cfg.feedID != 0 {
+		if cmd.IsSet("feed-id") {
 			return cfg, fmt.Errorf("--list-feeds 不接受 --feed-id")
 		}
 		cfg.action = backfill.ActionList
@@ -316,11 +420,7 @@ func parseAfdianBackfillArgs(args []string, getenv func(string) string) (afdianB
 	return cfg, nil
 }
 
-func runAfdianBackfill(ctx context.Context, args []string, getenv func(string) string, output io.Writer) error {
-	cfg, err := parseAfdianBackfillArgs(args, getenv)
-	if err != nil {
-		return err
-	}
+func runAfdianBackfill(ctx context.Context, cfg afdianBackfillCLIConfig, output io.Writer) error {
 	destination, err := miniflux.New(cfg.minifluxURL, cfg.minifluxToken)
 	if err != nil {
 		return err

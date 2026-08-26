@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/urfave/cli/v3"
 
 	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
@@ -76,7 +78,187 @@ func TestLoadBackfillEnvRejectsMalformedFile(t *testing.T) {
 	}
 }
 
-func TestParseAfdianBackfillArgs(t *testing.T) {
+func TestCommandWithoutSubcommandShowsHelp(t *testing.T) {
+	var output bytes.Buffer
+	serverCalled := false
+	backfillCalled := false
+	cmd := newCommand(commandDependencies{
+		runServer: func(context.Context) error {
+			serverCalled = true
+			return nil
+		},
+		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+			backfillCalled = true
+			return nil
+		},
+		loadBackfillEnv: func(string) error {
+			t.Fatal("根帮助不应加载 backfill .env")
+			return nil
+		},
+		getenv: func(string) string {
+			t.Fatal("根帮助不应读取环境变量")
+			return ""
+		},
+	})
+	cmd.Writer = &output
+	cmd.ErrWriter = &output
+
+	if err := cmd.Run(context.Background(), []string{"rssgen"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if serverCalled || backfillCalled {
+		t.Fatalf("无子命令不应运行业务 action: server=%v backfill=%v", serverCalled, backfillCalled)
+	}
+	if got := output.String(); !strings.Contains(got, "COMMANDS:") || !strings.Contains(got, "server") || !strings.Contains(got, "afdian-backfill") {
+		t.Fatalf("根帮助输出不完整: %q", got)
+	}
+}
+
+func TestAfdianBackfillHelpHasNoSideEffects(t *testing.T) {
+	var output bytes.Buffer
+	cmd := newCommand(commandDependencies{
+		runServer: func(context.Context) error {
+			t.Fatal("backfill help 不应启动 server")
+			return nil
+		},
+		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+			t.Fatal("backfill help 不应运行 backfill")
+			return nil
+		},
+		loadBackfillEnv: func(string) error {
+			t.Fatal("backfill help 不应加载 .env")
+			return nil
+		},
+		getenv: func(string) string {
+			t.Fatal("backfill help 不应读取环境变量")
+			return ""
+		},
+	})
+	cmd.Writer = &output
+	cmd.ErrWriter = &output
+
+	if err := cmd.Run(context.Background(), []string{"rssgen", "afdian-backfill", "--help"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := output.String(); !strings.Contains(got, "--miniflux-url") || !strings.Contains(got, "--dry-run") {
+		t.Fatalf("backfill 帮助输出不完整: %q", got)
+	}
+}
+
+func TestCommandDispatchesExplicitServer(t *testing.T) {
+	serverCalled := false
+	cmd := newCommand(commandDependencies{
+		runServer: func(context.Context) error {
+			serverCalled = true
+			return nil
+		},
+		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+			t.Fatal("server 命令不应运行 backfill")
+			return nil
+		},
+		loadBackfillEnv: func(string) error {
+			t.Fatal("server 命令不应加载 backfill .env")
+			return nil
+		},
+		getenv: func(string) string { return "" },
+	})
+
+	if err := cmd.Run(context.Background(), []string{"rssgen", "server"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !serverCalled {
+		t.Fatal("server action 未运行")
+	}
+}
+
+func TestCommandRejectsUnknownCommandAndPositionalArguments(t *testing.T) {
+	newTestCommand := func() *cli.Command {
+		return newCommand(commandDependencies{
+			runServer:         func(context.Context) error { return nil },
+			runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error { return nil },
+			loadBackfillEnv:   func(string) error { return nil },
+			getenv:            func(string) string { return "present" },
+		})
+	}
+
+	if err := newTestCommand().Run(context.Background(), []string{"rssgen", "serve"}); err == nil || commandExitCode(err) != 3 {
+		t.Fatalf("未知命令 err=%v exit=%d, want exit 3", err, commandExitCode(err))
+	}
+	if err := newTestCommand().Run(context.Background(), []string{"rssgen", "server", "extra"}); err == nil || !strings.Contains(err.Error(), "不接受位置参数") {
+		t.Fatalf("server 位置参数 err=%v", err)
+	}
+}
+
+func TestServeRuntimeStopsOnContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- serveRuntime(ctx, &runtimeApp{server: &http.Server{
+			Addr:    "127.0.0.1:0",
+			Handler: http.NewServeMux(),
+		}})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveRuntime: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serveRuntime 未在 context 取消后停止")
+	}
+}
+
+func TestServeRuntimeReturnsListenError(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = listener.Close() }()
+
+	err = serveRuntime(context.Background(), &runtimeApp{server: &http.Server{
+		Addr:    listener.Addr().String(),
+		Handler: http.NewServeMux(),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "监听") {
+		t.Fatalf("serveRuntime err=%v", err)
+	}
+}
+
+func runBackfillCommandForTest(
+	t *testing.T,
+	args []string,
+	getenv func(string) string,
+) (afdianBackfillCLIConfig, error) {
+	t.Helper()
+	var got afdianBackfillCLIConfig
+	cmd := newCommand(commandDependencies{
+		runServer: func(context.Context) error {
+			t.Fatal("backfill 命令不应启动 server")
+			return nil
+		},
+		runAfdianBackfill: func(_ context.Context, cfg afdianBackfillCLIConfig, _ io.Writer) error {
+			got = cfg
+			return nil
+		},
+		loadBackfillEnv: func(filename string) error {
+			if filename != ".env" {
+				t.Fatalf("dotenv filename = %q", filename)
+			}
+			return nil
+		},
+		getenv: getenv,
+	})
+	var output bytes.Buffer
+	cmd.Writer = &output
+	cmd.ErrWriter = &output
+	argv := append([]string{"rssgen", "afdian-backfill"}, args...)
+	err := cmd.Run(context.Background(), argv)
+	return got, err
+}
+
+func TestAfdianBackfillCommandBuildsConfig(t *testing.T) {
 	getenv := func(key string) string {
 		return map[string]string{
 			"MINIFLUX_API_TOKEN": "token",
@@ -85,7 +267,7 @@ func TestParseAfdianBackfillArgs(t *testing.T) {
 	}
 
 	t.Run("list only needs Miniflux token", func(t *testing.T) {
-		cfg, err := parseAfdianBackfillArgs([]string{"--miniflux-url", "https://miniflux.example", "--list-feeds"}, func(key string) string {
+		cfg, err := runBackfillCommandForTest(t, []string{"--miniflux-url", "https://miniflux.example", "--list-feeds"}, func(key string) string {
 			if key == "MINIFLUX_API_TOKEN" {
 				return "token"
 			}
@@ -97,14 +279,14 @@ func TestParseAfdianBackfillArgs(t *testing.T) {
 	})
 
 	t.Run("execute defaults to one second", func(t *testing.T) {
-		cfg, err := parseAfdianBackfillArgs([]string{"--miniflux-url", "https://miniflux.example", "--feed-id", "42"}, getenv)
+		cfg, err := runBackfillCommandForTest(t, []string{"--miniflux-url", "https://miniflux.example", "--feed-id", "42"}, getenv)
 		if err != nil || cfg.action != backfill.ActionExecute || cfg.feedID != 42 || cfg.requestInterval != time.Second {
 			t.Fatalf("cfg=%+v err=%v", cfg, err)
 		}
 	})
 
 	t.Run("dry run and slower interval", func(t *testing.T) {
-		cfg, err := parseAfdianBackfillArgs([]string{
+		cfg, err := runBackfillCommandForTest(t, []string{
 			"--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--dry-run", "--request-interval", "2s",
 		}, getenv)
 		if err != nil || cfg.action != backfill.ActionDryRun || cfg.requestInterval != 2*time.Second {
@@ -113,7 +295,7 @@ func TestParseAfdianBackfillArgs(t *testing.T) {
 	})
 }
 
-func TestParseAfdianBackfillArgsRejectsUnsafeOrMissingInputs(t *testing.T) {
+func TestAfdianBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
 	validEnv := func(key string) string { return "present" }
 	tests := [][]string{
 		{"--miniflux-url", "https://miniflux.example", "--feed-id", "1", "--request-interval", "999ms"},
@@ -122,11 +304,11 @@ func TestParseAfdianBackfillArgsRejectsUnsafeOrMissingInputs(t *testing.T) {
 		{"--miniflux-url", "https://miniflux.example"},
 	}
 	for _, args := range tests {
-		if _, err := parseAfdianBackfillArgs(args, validEnv); err == nil {
+		if _, err := runBackfillCommandForTest(t, args, validEnv); err == nil {
 			t.Fatalf("args %v should fail", args)
 		}
 	}
-	if _, err := parseAfdianBackfillArgs(
+	if _, err := runBackfillCommandForTest(t,
 		[]string{"--miniflux-url", "https://miniflux.example", "--feed-id", "1"},
 		func(key string) string {
 			if key == "MINIFLUX_API_TOKEN" {
@@ -157,11 +339,11 @@ func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
 	defer server.Close()
 
 	var output bytes.Buffer
-	err := runAfdianBackfill(context.Background(), []string{"--miniflux-url", server.URL, "--list-feeds"}, func(key string) string {
-		if key == "MINIFLUX_API_TOKEN" {
-			return "token"
-		}
-		return ""
+	err := runAfdianBackfill(context.Background(), afdianBackfillCLIConfig{
+		action:          backfill.ActionList,
+		minifluxURL:     server.URL,
+		requestInterval: time.Second,
+		minifluxToken:   "token",
 	}, &output)
 	if err != nil {
 		t.Fatalf("runAfdianBackfill: %v", err)

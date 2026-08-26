@@ -9,6 +9,7 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/tidwall/gjson v1.19.0
+	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/net v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 )

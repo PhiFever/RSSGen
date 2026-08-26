@@ -19,8 +19,10 @@ docker compose up -d
 本地开发：
 
 ```bash
-go run .
+go run . server
 ```
+
+直接运行 `go run .` 会显示可用子命令和帮助信息。
 
 ## 支持的路由
 
@@ -65,7 +67,7 @@ routes:
 
 ### Afdian 历史回填
 
-无参数启动仍运行 RSS server，并默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`，但会自动尝试加载当前工作目录下的 `.env`。
+使用 `server` 子命令启动 RSS server，feed 默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`，但会自动尝试加载当前工作目录下的 `.env`。
 
 ```bash
 # 创建本地凭证文件（.env 已被 Git 忽略）

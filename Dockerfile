@@ -33,7 +33,7 @@ COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 COPY --from=builder /rssgen /rssgen
 
 # 与 docker-compose 挂载点对齐：配置挂到 /app/config.yml。
-# server 模式以相对路径读取 config.yml，故工作目录必须是 /app。
+# server 子命令以相对路径读取 config.yml，故工作目录必须是 /app。
 # 不烤入示例配置：未挂载配置时应直接报错退出，而非静默加载占位符。
 WORKDIR /app
 

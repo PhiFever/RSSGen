@@ -21,7 +21,7 @@ RSSGen 当前由 Miniflux 定时拉取 RSS/Atom feed。Afdian 路由默认只返
 
 RSSGen 保留两种且仅有两种产品运行方式：
 
-1. 无参数启动时维持现有 server 行为，继续提供 RSS/Atom，并由 Miniflux 拉取最新内容。默认 feed 条目数仍为 20，HTTP 调用方仍可用现有查询参数临时覆盖。
+1. 显式运行 `server` 子命令时启动 HTTP server，继续提供 RSS/Atom，并由 Miniflux 拉取最新内容；无子命令时只显示 CLI 帮助。默认 feed 条目数仍为 20，HTTP 调用方仍可用现有查询参数临时覆盖。
 2. 显式运行 Afdian backfill 前台命令时，RSSGen 不启动 server，也不读取 server 的路由配置。该命令连接 Miniflux，列出或验证目标 feed，从 feed 的 `feed_url` 推导 Afdian author slug，查询 feed 中全部已有条目，再把 Afdian 全历史中缺少的文章按新到旧导入 Miniflux。
 
 回填没有首次水位、时间截点或历史数量上限。Miniflux feed 为空时，全部可发现历史都是待回填候选。feed 已有条目时，回填仍扫描完整上游历史，以便补齐任意中间缺口，而不只是补“当前最旧条目之前”的连续区间。只有缺失候选才会触发详情和评论请求。
@@ -83,7 +83,7 @@ RSSGen 保留两种且仅有两种产品运行方式：
 
 - This is an interim hybrid architecture, not the final Miniflux-only architecture. Normal operation remains Miniflux-pulls-RSSGen; only explicit historical backfill pushes entries to Miniflux.
 
-- The binary has two product modes. With no backfill arguments it follows the current server startup path and loads the existing server configuration. With the explicit Afdian backfill command it parses backfill arguments before server configuration loading, does not start the HTTP server or refresher, and exits when the foreground task completes.
+- The binary has two explicit product modes. The `server` subcommand loads the existing server configuration and starts the HTTP runtime; invoking the root command without a subcommand only prints help. The `afdian-backfill` subcommand parses backfill arguments before server configuration loading, does not start the HTTP server or refresher, and exits when the foreground task completes.
 
 - No generic one-shot latest-sync command and no active collector daemon are introduced. The only push mode in this phase is historical reconciliation.
 
@@ -171,7 +171,7 @@ RSSGen 保留两种且仅有两种产品运行方式：
 
 - Feed-listing tests prove that only valid Afdian feed URLs are shown and that ID, title, and feed URL are present. Feed-validation tests cover wrong routes, malformed URLs, missing slug segments, extra path segments, and URL-escaped slugs.
 
-- CLI tests cover argument dispatch before server configuration loading, mutually exclusive list/execute inputs, required environment variables, positive feed IDs, a minimum one-second request interval, exit codes, and the unchanged no-argument server path.
+- CLI tests cover root help without side effects, explicit `server` dispatch, backfill dispatch before server configuration loading, mutually exclusive list/execute inputs, required environment variables, positive feed IDs, a minimum one-second request interval, and exit codes.
 
 - Miniflux HTTP adapter tests use an HTTP test server to assert `/v1` paths, `X-Auth-Token`, feed lookup/listing, entry pagination parameters, request bodies, `200` versus `201`, timeout/error mapping, and token redaction.
 
