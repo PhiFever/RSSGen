@@ -70,6 +70,9 @@ type Config struct {
 	RateLimit    float64 // 最小请求间隔（秒）
 	Impersonate  string  // TLS 指纹配置名，如 "chrome_131"
 	ExtraHeaders map[string]string
+	// TransportAttempts 控制传输层立即自愈的尝试次数。零值保留常规的两次尝试；
+	// 历史回填设为一次，由外层对账模块统一执行最多三次重试。
+	TransportAttempts int
 }
 
 // Response 封装 HTTP 响应，提供便捷方法。
@@ -86,11 +89,12 @@ func (r *Response) Text() string {
 
 // Scraper 是基于 tls-client 的反爬 HTTP 客户端。
 type Scraper struct {
-	cookies      map[string]string
-	proxy        string
-	rateLimit    time.Duration
-	impersonate  string
-	extraHeaders map[string]string
+	cookies           map[string]string
+	proxy             string
+	rateLimit         time.Duration
+	impersonate       string
+	extraHeaders      map[string]string
+	transportAttempts int
 
 	mu              sync.Mutex
 	lastRequestTime time.Time
@@ -139,12 +143,16 @@ func New(cfg Config) (*Scraper, error) {
 	}
 
 	s := &Scraper{
-		cookies:      cloneCookies(cfg.Cookies),
-		proxy:        cfg.Proxy,
-		rateLimit:    time.Duration(rateLimit * float64(time.Second)),
-		impersonate:  imp,
-		extraHeaders: cfg.ExtraHeaders,
-		client:       client,
+		cookies:           cloneCookies(cfg.Cookies),
+		proxy:             cfg.Proxy,
+		rateLimit:         time.Duration(rateLimit * float64(time.Second)),
+		impersonate:       imp,
+		extraHeaders:      cfg.ExtraHeaders,
+		client:            client,
+		transportAttempts: cfg.TransportAttempts,
+	}
+	if s.transportAttempts <= 0 {
+		s.transportAttempts = 2
 	}
 
 	return s, nil
@@ -203,7 +211,7 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 		headers[k] = v
 	}
 
-	for attempt := 0; attempt < 2; attempt++ {
+	for attempt := 0; attempt < s.transportAttempts; attempt++ {
 		s.rateLimitWait()
 
 		req, err := http.NewRequest(method, url, body)
@@ -221,8 +229,8 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 		resp, err := s.currentClient().Do(req)
 		if err != nil {
 			category := recoverableTransportError(err)
-			if attempt == 0 && category != "" {
-				slog.Warn("HTTP 客户端传输异常，重建后重试",
+			if category != "" {
+				slog.Warn("HTTP 客户端传输异常，已重建客户端",
 					"host", req.URL.Hostname(),
 					"category", category,
 					"error", transportErrorDetail(err),
@@ -230,7 +238,9 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 				if rebuildErr := s.replaceClient(); rebuildErr != nil {
 					return nil, fmt.Errorf("%s 请求失败 %s: %w; 重建 HTTP 客户端失败: %v", method, url, err, rebuildErr)
 				}
-				continue
+				if attempt+1 < s.transportAttempts {
+					continue
+				}
 			}
 			return nil, fmt.Errorf("%s 请求失败 %s: %w", method, url, err)
 		}

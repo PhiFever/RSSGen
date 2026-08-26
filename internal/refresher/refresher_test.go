@@ -22,7 +22,6 @@ func TestNew(t *testing.T) {
 
 	cfg := Config{
 		FeedCache:      feedCache,
-		ArticleStore:   nil,
 		Notifier:       notif,
 		StartupDelay:   1,
 		MaxRetries:     2,
@@ -239,7 +238,7 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 	route.Register("_test_refresh_feeds_skip", "_test_refresh_feeds_skip", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_refresh_feeds_skip",
-			fetchFn: func(route.ArticleStore, []string, route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func([]string, route.FetchOptions) ([]route.FeedItem, error) {
 				t.Fatal("空 feeds 或缺 user_id 时不应调用 Fetch")
 				return nil, nil
 			},
@@ -275,7 +274,7 @@ func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
 	}
 
 	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_no_jitter", config.RouteConfig{
-		Feeds: []config.FeedConfig{{UserID: "u1", Limit: 10}},
+		Feeds: []config.FeedConfig{{UserID: "u1"}},
 	})
 
 	if sleepCount != 0 {
@@ -309,8 +308,8 @@ func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
 	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_jitter", config.RouteConfig{
 		RefreshJitter: 30,
 		Feeds: []config.FeedConfig{
-			{UserID: "u1", Limit: 10},
-			{UserID: "u2", Limit: 20},
+			{UserID: "u1"},
+			{UserID: "u2"},
 		},
 	})
 
@@ -343,7 +342,7 @@ func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
 
 	ref.refreshFeeds(refreshPhasePreheat, "_test_preheat_no_jitter", config.RouteConfig{
 		RefreshJitter: 30,
-		Feeds:         []config.FeedConfig{{UserID: "u1", Limit: 10}},
+		Feeds:         []config.FeedConfig{{UserID: "u1"}},
 	})
 
 	if sleepCount != 0 {
@@ -370,7 +369,7 @@ func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
 	route.Register("_test_refresh_dynamic_only", "_test_refresh_dynamic_only", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_refresh_dynamic_only",
-			fetchFn: func(_ route.ArticleStore, pathParams []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(pathParams []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				capturedPath = append([]string(nil), pathParams...)
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
@@ -410,14 +409,14 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 	route.Register("_test_refresh_dynamic_merge", "_test_refresh_dynamic_merge", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_refresh_dynamic_merge",
-			fetchFn: func(_ route.ArticleStore, pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				captured = append(captured, fmt.Sprintf("%s:%d:%v", pathParams[0], opts.Limit, opts.Include))
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
 		}
 	})
 
-	staticOpts := route.FetchOptions{Limit: 10}
+	staticOpts := route.FetchOptions{}
 	dynamicOpts := route.FetchOptions{Limit: 30, Include: []string{"pin"}}
 	dynamicRefs := []pipeline.FeedRef{
 		{
@@ -426,7 +425,7 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 			PathParts: []string{"u1"},
 			CacheKey:  pipeline.CacheKey("_test_refresh_dynamic_merge", []string{"u1"}, staticOpts),
 			HealthKey: "_test_refresh_dynamic_merge/u1",
-			Variant:   pipeline.FeedVariant{Format: "atom", Limit: 10},
+			Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
 		},
 		{
 			RouteName: "_test_refresh_dynamic_merge",
@@ -446,10 +445,10 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 	})
 
 	ref.refreshFeeds(refreshPhase{label: "测试"}, "_test_refresh_dynamic_merge", config.RouteConfig{
-		Feeds: []config.FeedConfig{{UserID: "u1", Limit: 10}},
+		Feeds: []config.FeedConfig{{UserID: "u1"}},
 	})
 
-	want := "[u1:10:[] u2:30:[pin]]"
+	want := "[u1:20:[] u2:30:[pin]]"
 	if fmt.Sprint(captured) != want {
 		t.Fatalf("captured = %v, want %s", captured, want)
 	}
@@ -543,14 +542,14 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 
 type mockRoute struct {
 	name    string
-	fetchFn func(route.ArticleStore, []string, route.FetchOptions) ([]route.FeedItem, error)
+	fetchFn func([]string, route.FetchOptions) ([]route.FeedItem, error)
 }
 
 func (m *mockRoute) Name() string { return m.name }
-func (m *mockRoute) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
+func (m *mockRoute) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	info := route.FeedInfo{Title: "Mock", Link: "https://example.com"}
 	if m.fetchFn != nil {
-		items, err := m.fetchFn(articleStore, pathParams, opts)
+		items, err := m.fetchFn(pathParams, opts)
 		if err != nil {
 			return route.FeedResult{}, err
 		}
@@ -607,7 +606,7 @@ func TestRefreshOneFailure(t *testing.T) {
 	route.Register("_test_r1_fail", "_test_r1_fail", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_fail",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, errors.New("boom")
 			},
 		}
@@ -647,7 +646,7 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 	route.Register("_test_r1_biz", "_test_r1_biz", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_biz",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 403})
 			},
 		}
@@ -681,7 +680,7 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	route.Register("_test_r1_temp", "_test_r1_temp", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_temp",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 500})
 			},
 		}
@@ -712,7 +711,7 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	route.Register("_test_r1_skip", "_test_r1_skip", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_skip",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				fetchCalled = true
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
@@ -740,82 +739,21 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	}
 }
 
-// --- Preheat 已有数据跳过 / 无数据执行（迁移自 Python TestPreheatDecision） ---
-
-// mockArticleStore 用于测试的最小 ArticleStore 实现。
-type mockArticleStore struct {
-	data map[string]bool // routeName -> hasArticles
-}
-
-func (m *mockArticleStore) Get(routeName, articleID string) (string, bool, error) {
-	return "", false, nil
-}
-func (m *mockArticleStore) Save(routeName, articleID, content string) error { return nil }
-func (m *mockArticleStore) HasArticles(routeName string) (bool, error) {
-	if m.data == nil {
-		return false, nil
-	}
-	return m.data[routeName], nil
-}
-
-func TestPreheatSkippedWhenAlreadyHasData(t *testing.T) {
-	route.Register("_test_preheat_skip", "_test_preheat_skip", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_preheat_skip"}
-	})
-
-	fetchCount := 0
-	route.Register("_test_preheat_count", "_test_preheat_count", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{
-			name: "_test_preheat_count",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
-				fetchCount++
-				return []route.FeedItem{{Title: "t"}}, nil
-			},
-		}
-	})
-
-	store := &mockArticleStore{data: map[string]bool{"_test_preheat_count": true}}
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
-		ArticleStore: store,
-		StartupDelay: 0,
-		RoutesConfig: map[string]config.RouteConfig{
-			"_test_preheat_count": {
-				Enabled:          true,
-				RefreshInterval:  60,
-				PreheatOnStartup: true,
-				Feeds:            []config.FeedConfig{{UserID: "u1"}},
-			},
-		},
-	})
-
-	ref.Start()
-	time.Sleep(100 * time.Millisecond)
-	ref.Stop()
-
-	if fetchCount != 0 {
-		t.Errorf("已有数据时预热应跳过, 实际 Fetch 调用 %d 次", fetchCount)
-	}
-}
-
-func TestPreheatRunsWhenEnabledAndNoData(t *testing.T) {
+func TestPreheatRunsWheneverEnabled(t *testing.T) {
 	fetchCount := 0
 	route.Register("_test_preheat_run", "_test_preheat_run", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_preheat_run",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				fetchCount++
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
 		}
 	})
 
-	store := &mockArticleStore{data: map[string]bool{}} // 无数据
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
 		Notifier:     notifier.New(notifier.Config{}),
-		ArticleStore: store,
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat_run": {
@@ -832,7 +770,7 @@ func TestPreheatRunsWhenEnabledAndNoData(t *testing.T) {
 	ref.Stop()
 
 	if fetchCount == 0 {
-		t.Error("无数据且 preheat=true 时应执行预热, 实际 Fetch 调用 0 次")
+		t.Error("preheat=true 时每次进程启动都应执行预热")
 	}
 }
 
@@ -865,7 +803,7 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 	route.Register("_test_zero_iv_preheat", "_test_zero_iv_preheat", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_zero_iv_preheat",
-			fetchFn: func(_ route.ArticleStore, _ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				preheated <- struct{}{}
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
@@ -875,7 +813,6 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
 		Notifier:     notifier.New(notifier.Config{}),
-		ArticleStore: &mockArticleStore{},
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_zero_iv_preheat": {
@@ -929,7 +866,7 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 	route.Register("_test_r1_params", "_test_r1_params", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_params",
-			fetchFn: func(_ route.ArticleStore, _ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				capturedOpts = opts
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
@@ -952,12 +889,12 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 	}
 }
 
-func TestRefreshFeedsPassesZhihuIncludeAndLimit(t *testing.T) {
+func TestRefreshFeedsPassesZhihuIncludeAndDefaultLimit(t *testing.T) {
 	var capturedOpts route.FetchOptions
 	route.Register("_test_r1_include", "_test_r1_include", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
 			name: "_test_r1_include",
-			fetchFn: func(_ route.ArticleStore, _ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
+			fetchFn: func(_ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				capturedOpts = opts
 				return []route.FeedItem{{Title: "t"}}, nil
 			},
@@ -976,14 +913,13 @@ func TestRefreshFeedsPassesZhihuIncludeAndLimit(t *testing.T) {
 			{
 				UserID:  "user1",
 				Alias:   "用户A",
-				Limit:   15,
 				Include: []string{"answer", "article"},
 			},
 		},
 	})
 
-	if capturedOpts.Limit != 15 {
-		t.Fatalf("Limit = %d, want 15", capturedOpts.Limit)
+	if capturedOpts.Limit != 20 {
+		t.Fatalf("Limit = %d, want default 20", capturedOpts.Limit)
 	}
 	wantInclude := []string{"answer", "article"}
 	if fmt.Sprint(capturedOpts.Include) != fmt.Sprint(wantInclude) {

@@ -119,7 +119,6 @@ routes:
     refresh_jitter: 900
     feeds:
       - user_id: "u1"
-        limit: 20
 `)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("写入临时配置失败: %v", err)

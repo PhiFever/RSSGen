@@ -63,6 +63,32 @@ routes:
 
 **注意：** 如果宿主机配置了 HTTP 代理（`HTTP_PROXY`/`HTTPS_PROXY`），Docker 容器可能会继承代理设置，导致 Miniflux 无法通过 Docker 内部域名访问 RSSGen（返回 502）。`docker-compose.yml` 中已通过 `NO_PROXY` 环境变量排除内部服务，如有自定义服务名请一并添加。
 
+### Afdian 历史回填
+
+无参数启动仍运行 RSS server，并默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`。
+
+```bash
+# 1. 查询可回填的 Afdian feed ID
+export MINIFLUX_API_TOKEN="你的 Miniflux API token"
+go run ./cmd/rssgen afdian-backfill \
+  --miniflux-url http://localhost:8080 \
+  --list-feeds
+
+# 2. 完整扫描并预览缺失数量，不请求正文、评论或写入 Miniflux
+export AFDIAN_COOKIE="你的爱发电 Cookie"
+go run ./cmd/rssgen afdian-backfill \
+  --miniflux-url http://localhost:8080 \
+  --feed-id 42 \
+  --dry-run
+
+# 3. 按新到旧补齐全部缺失历史
+go run ./cmd/rssgen afdian-backfill \
+  --miniflux-url http://localhost:8080 \
+  --feed-id 42
+```
+
+回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
+
 ## 后台刷新
 
 RSSGen 会把本进程中真实访问过的 feed 动态加入后台刷新列表，避免只依赖 `config.yml` 手动维护预热列表。动态列表仅保存在内存中，重启后会重新学习；每个路由默认最多记录 200 个动态 feed，超过后按最久未访问淘汰。

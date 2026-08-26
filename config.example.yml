@@ -5,14 +5,9 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-# 持久化存储（文章正文持久化到 SQLite，避免重启重抓）
-storage:
-  sqlite_path: "./data/rssgen.db"   # 文章数据库路径，相对项目根；Docker 内会挂载
-
 # 全局缓存 TTL
 cache:
   feed_ttl: 21600       # Feed 级缓存 TTL，默认 6 小时（秒）
-  article_ttl: 43200    # 文章保留策略预留 TTL，当前暂未消费
 
 # 全局反爬配置
 scraper:
@@ -56,9 +51,7 @@ routes:
     feeds:                      # 预热列表（可选，不配置则无预热）
       - user_id: "author1"
         alias: "作者别名"          # 可选，用于易读的 feed title
-        limit: 20              # 获取最新 20 篇
       - user_id: "author2"
-        limit: 0               # 0 = 获取全部文章
 
   zhihu:
     enabled: true
@@ -85,7 +78,6 @@ routes:
     feeds:
       - user_id: "your_user_id"   # 用户主页 URL token
         alias: "用户别名"           # 仅供配置时辨认，不影响 RSS 输出
-        limit: 20                  # 获取最新 20 篇
         # include:                       # 可选：只返回指定活动类型，不配置则返回全部
         #   # === 自己创作 ===
         #   - answer                     # 回答了问题

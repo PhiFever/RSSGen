@@ -6,7 +6,6 @@ services:
     restart: unless-stopped
     volumes:
       - ./config.yml:/app/config.yml:ro
-      - ./data:/app/data
     depends_on:
       - db
 

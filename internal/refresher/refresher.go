@@ -28,17 +28,9 @@ type FeedCatalog interface {
 	List(routeName string) []pipeline.FeedRef
 }
 
-// ArticleStore 是文章存储接口。
-type ArticleStore interface {
-	Get(routeName, articleID string) (content string, found bool, err error)
-	Save(routeName, articleID, content string) error
-	HasArticles(routeName string) (bool, error)
-}
-
 // Config 是刷新器的配置。
 type Config struct {
 	FeedCache      *cache.TTLCache
-	ArticleStore   ArticleStore
 	Notifier       *notifier.Notifier
 	FeedHealth     *health.FeedHealth
 	Pipeline       *pipeline.Pipeline
@@ -53,7 +45,6 @@ type Config struct {
 
 // Refresher 是后台刷新调度器。
 type Refresher struct {
-	articleStore   ArticleStore
 	notifier       *notifier.Notifier
 	feedHealth     *health.FeedHealth
 	pipe           *pipeline.Pipeline
@@ -124,7 +115,6 @@ func New(cfg Config) *Refresher {
 	if pipe == nil {
 		pipe = pipeline.New(pipeline.Config{
 			FeedCache:     cfg.FeedCache,
-			ArticleStore:  cfg.ArticleStore,
 			ScraperConfig: cfg.ScraperConfig,
 			RoutesConfig:  cfg.RoutesConfig,
 		})
@@ -135,7 +125,6 @@ func New(cfg Config) *Refresher {
 	}
 
 	return &Refresher{
-		articleStore:   cfg.ArticleStore,
 		notifier:       cfg.Notifier,
 		feedHealth:     feedHealth,
 		pipe:           pipe,
@@ -258,16 +247,8 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 
 	// 预热阶段
 	if rc.PreheatOnStartup {
-		hasData := false
-		if r.articleStore != nil {
-			hasData, _ = r.articleStore.HasArticles(routeName)
-		}
-		if hasData {
-			slog.Info("路由已有数据，跳过预热", "route", routeName)
-		} else {
-			slog.Info("开始预热", "route", routeName)
-			r.refreshFeeds(refreshPhasePreheat, routeName, rc)
-		}
+		slog.Info("开始预热", "route", routeName)
+		r.refreshFeeds(refreshPhasePreheat, routeName, rc)
 	} else {
 		slog.Info("预热已关闭", "route", routeName)
 	}

@@ -1041,7 +1041,7 @@ func TestFetchReturnsFeedItems(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1068,7 +1068,7 @@ func TestFetchFiltersByInclude(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
+	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1090,7 +1090,7 @@ func TestFetchReturnsAllWhenNoInclude(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1109,7 +1109,7 @@ func TestFetchIncludeFromFetchOptions(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"test_user"}, route.FetchOptions{
+	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{
 		Limit:   20,
 		Include: []string{"pin"},
 	})
@@ -1147,7 +1147,7 @@ func TestFetchFiltersSelfInteractionByDefault(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1182,7 +1182,7 @@ func TestFetchKeepsSelfInteractionWhenEnabled(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1204,7 +1204,7 @@ func TestFetchCreateVerbNotFilteredEvenIfAuthorsMatch(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1225,7 +1225,7 @@ func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1292,7 +1292,7 @@ func TestFetchPropagatesError(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(nil, fmt.Errorf("网络超时"))
 
-	_, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	_, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err == nil {
 		t.Fatal("Fetch 应返回错误")
 	}
@@ -1303,7 +1303,7 @@ func TestFetchPropagatesError(t *testing.T) {
 
 func TestFetchRequiresUserID(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	_, err := r.Fetch(nil, []string{}, route.FetchOptions{Limit: 20})
+	_, err := r.Fetch([]string{}, route.FetchOptions{Limit: 20})
 	if err == nil {
 		t.Fatal("缺少 user_id 应返回错误")
 	}
@@ -1318,7 +1318,7 @@ func TestFetchSkipsNilTarget(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1438,7 +1438,7 @@ func TestFetchStopsWhenLimitReached(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 2})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 2})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1456,7 +1456,7 @@ func TestFetchStopsWhenIsEndTrue(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1470,7 +1470,7 @@ func TestFetchStopsWhenNextMissing(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
 	r.fetchActivitiesFn = mockFetchActivities([]map[string]interface{}{}, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}
@@ -1485,7 +1485,7 @@ func TestFetchRaisesOnNon200(t *testing.T) {
 		return nil, &route.HTTPError{StatusCode: 403, URL: "https://www.zhihu.com/api/v3/moments/test/activities"}
 	}
 
-	_, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20})
+	_, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err == nil {
 		t.Fatal("非 200 响应应返回错误")
 	}
@@ -1510,7 +1510,7 @@ func TestFetchIncludeCollectedAnswer(t *testing.T) {
 	})
 	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
 
-	result, err := r.Fetch(nil, []string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"collected_answer"}})
+	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"collected_answer"}})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
 	}

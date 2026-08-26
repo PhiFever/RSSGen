@@ -228,7 +228,7 @@ func (r *Route) feedInfo(pathParams []string, actor *zhihuPerson) (route.FeedInf
 	}, nil
 }
 
-func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
+func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	if len(pathParams) == 0 {
 		return route.FeedResult{}, fmt.Errorf("需要指定用户 ID")
 	}

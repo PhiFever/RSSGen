@@ -72,7 +72,7 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 5. 死接口清理（含原 P3-10）【Strong】
 
-状态：已完成（2026-07-08）。本轮不处理 SQLite `articles` 表保留策略；`cache.article_ttl` 作为预留配置暂时保留，即使当前没有行为消费。`deadcode ./...` 已无输出。
+状态：已完成（2026-07-08；持久化相关预留在 2026-08-26 的 Afdian 历史回填阶段移除）。`deadcode ./...` 已无输出。
 
 涉及：`internal/refresher/refresher.go`（Trigger、refreshOne）、`internal/pipeline/pipeline.go`（OptionsFromParams）、`internal/route/route.go`（FeedIDField、Unregister）、`internal/cache/`（Delete、Len）、`internal/scraper/`（Post、PostJSON）、`internal/config/config.go`（Server.CacheTTL）、`cmd/rssgen/main.go`（makeRouter 首页 handler、makeFeedHandler）
 
@@ -80,12 +80,12 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 - 第一轮 P1-4 整改后 `refresher.Trigger` 生产端已死（`.Trigger(` 只剩测试调用），连带 `refreshOne`、`pipeline.OptionsFromParams` 只经它可达，且维护着与 `refreshOneWithOptions` 重复的 pending 去重
 - `route.Route.FeedIDField()`、`route.Unregister`、`cache.Delete/Len`、`scraper.Post/PostJSON` 零生产调用者
-- `Server.CacheTTL` 是旧位置死配置；`Cache.ArticleTTL` 当前只设默认值无人读，但作为未来 articles 保留策略的预留配置保留
+- `Server.CacheTTL` 是旧位置死配置
 - 首页 handler 为读常量 `Description()` 每请求实例化全部路由工厂
 
-方向：死符号按删除测试处理——删掉后复杂度不重现的一律删除；注册表在 `Register` 时携带 description 元数据，首页不再实例化路由；`Server.CacheTTL` 从配置和示例中删除。`Cache.ArticleTTL` 和 store prune 单独搁置，不在本轮实现。
+方向：死符号按删除测试处理——删掉后复杂度不重现的一律删除；注册表在 `Register` 时携带 description 元数据，首页不再实例化路由；`Server.CacheTTL` 从配置和示例中删除。
 
-验收：本轮覆盖的死符号清零；首页不再实例化路由；除明确预留的 `cache.article_ttl` 外，配置文件字段均有对应行为。
+验收：本轮覆盖的死符号清零；首页不再实例化路由；配置文件字段均有对应行为。
 
 ### 6. 删除假想接缝：统一两条路由的测试注入 【Worth exploring】
 
@@ -124,6 +124,6 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 | 批次 | 内容 | 验收标准 |
 |------|------|----------|
 | 1 | 条目 1 FeedRef 键收口 | `/status` feed 名无查询串；无手拼键；`go test ./...` 全绿 |
-| 2 | 条目 5 死接口清理（删 Trigger 链后键相关代码更少，接在条目 1 后最顺） | `deadcode ./...` 无输出；首页不再实例化路由；`cache.article_ttl` 明确预留 |
+| 2 | 条目 5 死接口清理（删 Trigger 链后键相关代码更少，接在条目 1 后最顺） | `deadcode ./...` 无输出；首页不再实例化路由 |
 | 3 | 条目 2 路由基座（可含条目 8） | 新路由样板归零；include 单点 |
 | 4 | 条目 3、4、6、7（独立派发，条目 3 随时可做） | 各自测试通过 |

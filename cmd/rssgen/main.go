@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -12,23 +14,25 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/feedcatalog"
 	"github.com/PhiFever/RSSGen/internal/health"
+	"github.com/PhiFever/RSSGen/internal/miniflux"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/refresher"
 	"github.com/PhiFever/RSSGen/internal/route"
-	"github.com/PhiFever/RSSGen/internal/store"
 
 	// 注册路由（init 自动注册）
-	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
+	"github.com/PhiFever/RSSGen/internal/route/afdian"
 	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
 )
 
@@ -38,6 +42,19 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+	if len(os.Args) > 1 {
+		if os.Args[1] != "afdian-backfill" {
+			slog.Error("未知命令", "command", os.Args[1])
+			os.Exit(2)
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		if err := runAfdianBackfill(ctx, os.Args[2:], os.Getenv, os.Stdout); err != nil {
+			slog.Error("Afdian 历史回填失败", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// 加载配置
 	cfg, err := config.Load("config.yml")
@@ -51,11 +68,6 @@ func main() {
 		slog.Error("初始化运行时失败", "error", err)
 		os.Exit(1)
 	}
-	defer func() {
-		if err := app.articleStore.Close(); err != nil {
-			slog.Error("关闭文章存储失败", "error", err)
-		}
-	}()
 
 	// 优雅关停
 	done := make(chan os.Signal, 1)
@@ -85,9 +97,8 @@ func main() {
 }
 
 type runtimeApp struct {
-	server       *http.Server
-	refresher    *refresher.Refresher
-	articleStore *store.ArticleStore
+	server    *http.Server
+	refresher *refresher.Refresher
 }
 
 type feedObserver interface {
@@ -100,11 +111,6 @@ type feedNotifier interface {
 
 func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
-
-	articleStore := store.New(cfg.Storage.SQLitePath)
-	if err := articleStore.Init(); err != nil {
-		return nil, fmt.Errorf("初始化存储失败: %w", err)
-	}
 
 	var notifierServices []notifier.ServiceConfig
 	for _, svc := range cfg.Notifier.Services {
@@ -125,7 +131,6 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 
 	pipe := pipeline.New(pipeline.Config{
 		FeedCache:     feedCache,
-		ArticleStore:  articleStore,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
 	})
@@ -139,7 +144,6 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	if anyRouteEnabled(cfg) {
 		ref = refresher.New(refresher.Config{
 			FeedCache:      feedCache,
-			ArticleStore:   articleStore,
 			Notifier:       notif,
 			FeedHealth:     feedHealth,
 			Pipeline:       pipe,
@@ -155,15 +159,14 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(feedHealth, feedCache, ref, articleStore, cfg, pipe, feedCatalog, notif)
+	router := makeRouter(feedHealth, feedCache, ref, cfg, pipe, feedCatalog, notif)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
 			Addr:    addr,
 			Handler: router,
 		},
-		refresher:    ref,
-		articleStore: articleStore,
+		refresher: ref,
 	}, nil
 }
 
@@ -200,7 +203,6 @@ func makeRouter(
 	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	ref *refresher.Refresher,
-	articleStore *store.ArticleStore,
 	cfg *config.Config,
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
@@ -233,6 +235,113 @@ func makeRouter(
 	r.Get("/status", makeStatusHandler(ref))
 
 	return r
+}
+
+type afdianBackfillCLIConfig struct {
+	action          backfill.Action
+	minifluxURL     string
+	feedID          int64
+	requestInterval time.Duration
+	minifluxToken   string
+	afdianCookie    string
+}
+
+func parseAfdianBackfillArgs(args []string, getenv func(string) string) (afdianBackfillCLIConfig, error) {
+	fs := flag.NewFlagSet("afdian-backfill", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var cfg afdianBackfillCLIConfig
+	var listFeeds bool
+	var dryRun bool
+	fs.StringVar(&cfg.minifluxURL, "miniflux-url", "", "Miniflux instance root URL")
+	fs.Int64Var(&cfg.feedID, "feed-id", 0, "existing Miniflux feed ID")
+	fs.BoolVar(&listFeeds, "list-feeds", false, "list eligible Afdian feeds")
+	fs.BoolVar(&dryRun, "dry-run", false, "discover and reconcile without importing")
+	fs.DurationVar(&cfg.requestInterval, "request-interval", time.Second, "minimum interval between Afdian requests")
+	if err := fs.Parse(args); err != nil {
+		return cfg, err
+	}
+	if fs.NArg() != 0 {
+		return cfg, fmt.Errorf("不接受位置参数: %s", strings.Join(fs.Args(), " "))
+	}
+	if strings.TrimSpace(cfg.minifluxURL) == "" {
+		return cfg, fmt.Errorf("必须显式传入 --miniflux-url")
+	}
+	if cfg.requestInterval < time.Second {
+		return cfg, fmt.Errorf("--request-interval 不能小于 1s")
+	}
+	if listFeeds && dryRun {
+		return cfg, fmt.Errorf("--list-feeds 与 --dry-run 不能同时使用")
+	}
+	if listFeeds {
+		if cfg.feedID != 0 {
+			return cfg, fmt.Errorf("--list-feeds 不接受 --feed-id")
+		}
+		cfg.action = backfill.ActionList
+	} else {
+		if cfg.feedID <= 0 {
+			return cfg, fmt.Errorf("必须传入正整数 --feed-id")
+		}
+		if dryRun {
+			cfg.action = backfill.ActionDryRun
+		} else {
+			cfg.action = backfill.ActionExecute
+		}
+	}
+	cfg.minifluxToken = strings.TrimSpace(getenv("MINIFLUX_API_TOKEN"))
+	if cfg.minifluxToken == "" {
+		return cfg, fmt.Errorf("必须设置 MINIFLUX_API_TOKEN")
+	}
+	if cfg.action != backfill.ActionList {
+		cfg.afdianCookie = strings.TrimSpace(getenv("AFDIAN_COOKIE"))
+		if cfg.afdianCookie == "" {
+			return cfg, fmt.Errorf("必须设置 AFDIAN_COOKIE")
+		}
+	}
+	return cfg, nil
+}
+
+func runAfdianBackfill(ctx context.Context, args []string, getenv func(string) string, output io.Writer) error {
+	cfg, err := parseAfdianBackfillArgs(args, getenv)
+	if err != nil {
+		return err
+	}
+	destination, err := miniflux.New(cfg.minifluxURL, cfg.minifluxToken)
+	if err != nil {
+		return err
+	}
+	source, err := afdian.NewBackfillSource(cfg.afdianCookie, cfg.requestInterval)
+	if err != nil {
+		return err
+	}
+	deps := backfill.Dependencies{Source: source, Destination: destination}
+	slog.Info("开始 Afdian 历史回填", "action", cfg.action, "feed_id", cfg.feedID)
+	result, runErr := backfill.Run(ctx, backfill.Request{Action: cfg.action, FeedID: cfg.feedID}, deps)
+	if runErr == nil || result.Feed.ID != 0 || result.Scanned != 0 || result.Imported != 0 {
+		printBackfillResult(output, cfg.action, result)
+	}
+	return runErr
+}
+
+func printBackfillResult(output io.Writer, action backfill.Action, result backfill.Result) {
+	if action == backfill.ActionList {
+		writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(writer, "ID\tTITLE\tFEED_URL")
+		for _, feed := range result.Feeds {
+			_, _ = fmt.Fprintf(writer, "%d\t%s\t%s\n", feed.ID, feed.Title, feed.FeedURL)
+		}
+		_ = writer.Flush()
+		return
+	}
+	_, _ = fmt.Fprintf(output, "feed_id=%d author_slug=%s scanned=%d existing=%d missing=%d duplicates=%d imported=%d duplicate_imports=%d comment_failures=%d\n",
+		result.Feed.ID, result.SourceID, result.Scanned, result.Existing, result.Missing,
+		result.DuplicateCandidates, result.Imported, result.DuplicateImports, result.CommentFailures)
+	if result.MissingOldest != nil && result.MissingNewest != nil {
+		_, _ = fmt.Fprintf(output, "missing_range=%s..%s\n",
+			result.MissingOldest.UTC().Format(time.RFC3339), result.MissingNewest.UTC().Format(time.RFC3339))
+	}
+	for _, warning := range result.Warnings {
+		_, _ = fmt.Fprintf(output, "warning post_id=%s operation=%s error=%v\n", warning.CandidateID, warning.Operation, warning.Err)
+	}
 }
 
 // splitPath 将路径分割为非空段。

@@ -38,14 +38,18 @@ func TestNewDefaultConfig(t *testing.T) {
 	if s.impersonate != "chrome_131" {
 		t.Errorf("impersonate = %q, want %q", s.impersonate, "chrome_131")
 	}
+	if s.transportAttempts != 2 {
+		t.Errorf("transportAttempts = %d, want 2", s.transportAttempts)
+	}
 }
 
 func TestNewCustomConfig(t *testing.T) {
 	s, err := New(Config{
-		RateLimit:   2.5,
-		Impersonate: "chrome_120",
-		Proxy:       "http://proxy:8080",
-		Cookies:     map[string]string{"key": "val"},
+		RateLimit:         2.5,
+		Impersonate:       "chrome_120",
+		Proxy:             "http://proxy:8080",
+		Cookies:           map[string]string{"key": "val"},
+		TransportAttempts: 1,
 	})
 	if err != nil {
 		t.Fatalf("New 返回错误: %v", err)
@@ -61,6 +65,9 @@ func TestNewCustomConfig(t *testing.T) {
 	}
 	if s.cookies["key"] != "val" {
 		t.Errorf("cookies[key] = %q, want %q", s.cookies["key"], "val")
+	}
+	if s.transportAttempts != 1 {
+		t.Errorf("transportAttempts = %d, want 1", s.transportAttempts)
 	}
 }
 

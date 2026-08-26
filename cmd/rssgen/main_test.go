@@ -2,14 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/health"
@@ -27,8 +27,97 @@ import (
 	"github.com/PhiFever/RSSGen/internal/route"
 	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
 	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
-	"github.com/PhiFever/RSSGen/internal/store"
 )
+
+func TestParseAfdianBackfillArgs(t *testing.T) {
+	getenv := func(key string) string {
+		return map[string]string{
+			"MINIFLUX_API_TOKEN": "token",
+			"AFDIAN_COOKIE":      "auth=paid",
+		}[key]
+	}
+
+	t.Run("list only needs Miniflux token", func(t *testing.T) {
+		cfg, err := parseAfdianBackfillArgs([]string{"--miniflux-url", "https://miniflux.example", "--list-feeds"}, func(key string) string {
+			if key == "MINIFLUX_API_TOKEN" {
+				return "token"
+			}
+			return ""
+		})
+		if err != nil || cfg.action != backfill.ActionList || cfg.afdianCookie != "" {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	})
+
+	t.Run("execute defaults to one second", func(t *testing.T) {
+		cfg, err := parseAfdianBackfillArgs([]string{"--miniflux-url", "https://miniflux.example", "--feed-id", "42"}, getenv)
+		if err != nil || cfg.action != backfill.ActionExecute || cfg.feedID != 42 || cfg.requestInterval != time.Second {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	})
+
+	t.Run("dry run and slower interval", func(t *testing.T) {
+		cfg, err := parseAfdianBackfillArgs([]string{
+			"--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--dry-run", "--request-interval", "2s",
+		}, getenv)
+		if err != nil || cfg.action != backfill.ActionDryRun || cfg.requestInterval != 2*time.Second {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	})
+}
+
+func TestParseAfdianBackfillArgsRejectsUnsafeOrMissingInputs(t *testing.T) {
+	validEnv := func(key string) string { return "present" }
+	tests := [][]string{
+		{"--miniflux-url", "https://miniflux.example", "--feed-id", "1", "--request-interval", "999ms"},
+		{"--miniflux-url", "https://miniflux.example", "--list-feeds", "--feed-id", "1"},
+		{"--miniflux-url", "https://miniflux.example", "--list-feeds", "--dry-run"},
+		{"--miniflux-url", "https://miniflux.example"},
+	}
+	for _, args := range tests {
+		if _, err := parseAfdianBackfillArgs(args, validEnv); err == nil {
+			t.Fatalf("args %v should fail", args)
+		}
+	}
+	if _, err := parseAfdianBackfillArgs(
+		[]string{"--miniflux-url", "https://miniflux.example", "--feed-id", "1"},
+		func(key string) string {
+			if key == "MINIFLUX_API_TOKEN" {
+				return "token"
+			}
+			return ""
+		},
+	); err == nil {
+		t.Fatal("execute without AFDIAN_COOKIE should fail")
+	}
+}
+
+func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/feeds" || r.Header.Get("X-Auth-Token") != "token" {
+			t.Fatalf("request = %s token=%q", r.URL.Path, r.Header.Get("X-Auth-Token"))
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 42, "title": "Alice", "feed_url": "http://rssgen:8000/feed/afdian/alice"},
+			{"id": 43, "title": "Bob", "feed_url": "http://rssgen:8000/feed/zhihu/bob"},
+		})
+	}))
+	defer server.Close()
+
+	var output bytes.Buffer
+	err := runAfdianBackfill(context.Background(), []string{"--miniflux-url", server.URL, "--list-feeds"}, func(key string) string {
+		if key == "MINIFLUX_API_TOKEN" {
+			return "token"
+		}
+		return ""
+	}, &output)
+	if err != nil {
+		t.Fatalf("runAfdianBackfill: %v", err)
+	}
+	if !strings.Contains(output.String(), "42") || !strings.Contains(output.String(), "Alice") || strings.Contains(output.String(), "Bob") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
 
 func TestSplitPath(t *testing.T) {
 	tests := []struct {
@@ -103,7 +192,6 @@ func TestIndexEndpoint(t *testing.T) {
 		health.New(health.Config{}),
 		feedCache,
 		nil,
-		nil,
 		cfg,
 		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
 		nil,
@@ -153,9 +241,8 @@ func TestAnyRouteEnabled(t *testing.T) {
 
 func TestBuildRuntime(t *testing.T) {
 	cfg := &config.Config{
-		Server:  config.ServerConfig{Host: "127.0.0.1", Port: 0},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(t.TempDir(), "rssgen.db")},
-		Cache:   config.CacheConfig{FeedTTL: 60},
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
+		Cache:  config.CacheConfig{FeedTTL: 60},
 		Notifier: config.NotifierConfig{
 			Enabled: true,
 			Services: []config.NotifierServiceConfig{{
@@ -172,12 +259,6 @@ func TestBuildRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRuntime 返回错误: %v", err)
 	}
-	defer func() {
-		if err := app.articleStore.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}()
-
 	if app.server == nil || app.server.Handler == nil {
 		t.Fatal("buildRuntime 应创建 HTTP server 和 handler")
 	}
@@ -199,7 +280,6 @@ func TestBuildRuntime(t *testing.T) {
 func TestBuildRuntimeStartsRefresherWhenRouteScheduled(t *testing.T) {
 	cfg := &config.Config{
 		Server:    config.ServerConfig{Host: "127.0.0.1", Port: 0},
-		Storage:   config.StorageConfig{SQLitePath: filepath.Join(t.TempDir(), "rssgen.db")},
 		Cache:     config.CacheConfig{FeedTTL: 60},
 		Refresher: config.RefresherConfig{StartupDelay: 1},
 		Routes: map[string]config.RouteConfig{
@@ -211,31 +291,10 @@ func TestBuildRuntimeStartsRefresherWhenRouteScheduled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRuntime 返回错误: %v", err)
 	}
-	defer func() {
-		if err := app.articleStore.Close(); err != nil {
-			t.Errorf("Close: %v", err)
-		}
-	}()
 	if app.refresher == nil {
 		t.Fatal("启用后台调度的路由应创建 refresher")
 	}
 	app.refresher.Stop()
-}
-
-func TestBuildRuntimeStoreInitError(t *testing.T) {
-	parentFile := filepath.Join(t.TempDir(), "not-dir")
-	if err := os.WriteFile(parentFile, []byte("x"), 0o600); err != nil {
-		t.Fatalf("写入父级文件失败: %v", err)
-	}
-	cfg := &config.Config{
-		Server:  config.ServerConfig{Host: "127.0.0.1", Port: 0},
-		Storage: config.StorageConfig{SQLitePath: filepath.Join(parentFile, "db")},
-		Cache:   config.CacheConfig{FeedTTL: 60},
-		Routes:  map[string]config.RouteConfig{},
-	}
-	if _, err := buildRuntime(cfg); err == nil {
-		t.Fatal("存储初始化失败时 buildRuntime 应返回错误")
-	}
 }
 
 func TestStatusHandlerIncludesFeeds(t *testing.T) {
@@ -273,19 +332,17 @@ func setupTestRouter(feedHealth *health.FeedHealth, feedCache *cache.TTLCache) *
 		Scraper: config.ScraperConfig{},
 		Routes:  map[string]config.RouteConfig{},
 	}
-	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, nil, cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, cfg))
 	return r
 }
 
 func makeTestFeedHandler(
 	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
-	articleStore route.ArticleStore,
 	cfg *config.Config,
 ) http.HandlerFunc {
 	return makeFeedHandlerWithPipeline(feedHealth, feedCache, pipeline.New(pipeline.Config{
 		FeedCache:     feedCache,
-		ArticleStore:  articleStore,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
 	}), nil, nil)
@@ -464,7 +521,7 @@ func (o *recordingFeedObserver) Observe(ref pipeline.FeedRef) {
 }
 
 func (r *mainTestRoute) Name() string { return r.name }
-func (r *mainTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) (route.FeedResult, error) {
+func (r *mainTestRoute) Fetch(_ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount.Add(1)
 	r.capturedOpt = opts
 	if r.fetchErr != nil {
@@ -492,7 +549,7 @@ func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_success": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_success/u1?limit=7&include=a,b&format=rss", nil)
 	w := httptest.NewRecorder()
@@ -528,7 +585,7 @@ func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
 
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_variant": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_variant/u1?format=atom", nil)
 	w := httptest.NewRecorder()
@@ -553,7 +610,7 @@ func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_no_trigger": {Enabled: true}}}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, (*store.ArticleStore)(nil), cfg))
+	r.Get("/feed/{route_name}/*", makeTestFeedHandler(feedHealth, feedCache, cfg))
 
 	req := httptest.NewRequest("GET", "/feed/_main_no_trigger/u1", nil)
 	w := httptest.NewRecorder()
@@ -575,7 +632,7 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_fetch_err/u1", nil)
 		w := httptest.NewRecorder()
@@ -591,7 +648,7 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_info_err": {Enabled: true}}}
 		r := chi.NewRouter()
-		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), (*store.ArticleStore)(nil), cfg))
+		r.Get("/feed/{route_name}/*", makeTestFeedHandler(health.New(health.Config{}), cache.New(10*time.Second), cfg))
 
 		req := httptest.NewRequest("GET", "/feed/_main_info_err/u1", nil)
 		w := httptest.NewRecorder()

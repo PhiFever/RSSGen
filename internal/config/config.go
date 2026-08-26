@@ -13,7 +13,6 @@ const DefaultDynamicFeedLimit = 200
 // Config 是 RSSGen 的顶层配置结构。
 type Config struct {
 	Server    ServerConfig           `yaml:"server"`
-	Storage   StorageConfig          `yaml:"storage"`
 	Cache     CacheConfig            `yaml:"cache"`
 	Scraper   ScraperConfig          `yaml:"scraper"`
 	Refresher RefresherConfig        `yaml:"refresher"`
@@ -27,15 +26,9 @@ type ServerConfig struct {
 	Port int    `yaml:"port"`
 }
 
-// StorageConfig 是持久化存储配置。
-type StorageConfig struct {
-	SQLitePath string `yaml:"sqlite_path"`
-}
-
 // CacheConfig 是缓存 TTL 配置。
 type CacheConfig struct {
-	FeedTTL    int `yaml:"feed_ttl"`
-	ArticleTTL int `yaml:"article_ttl"`
+	FeedTTL int `yaml:"feed_ttl"`
 }
 
 // ScraperConfig 是反爬全局配置。
@@ -88,7 +81,6 @@ type RouteConfig struct {
 type FeedConfig struct {
 	UserID  string   `yaml:"user_id"`
 	Alias   string   `yaml:"alias"`
-	Limit   int      `yaml:"limit"`
 	Include []string `yaml:"include,omitempty"`
 }
 
@@ -157,9 +149,6 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Cache.FeedTTL == 0 {
 		cfg.Cache.FeedTTL = 21600
-	}
-	if cfg.Cache.ArticleTTL == 0 {
-		cfg.Cache.ArticleTTL = 43200
 	}
 	if cfg.Scraper.RateLimit == 0 {
 		cfg.Scraper.RateLimit = 1.0

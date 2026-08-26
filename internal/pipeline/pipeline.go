@@ -17,7 +17,6 @@ import (
 // Config 是 Pipeline 的配置。
 type Config struct {
 	FeedCache     *cache.TTLCache
-	ArticleStore  route.ArticleStore
 	ScraperConfig config.ScraperConfig
 	RoutesConfig  map[string]config.RouteConfig
 }
@@ -49,7 +48,6 @@ type RefreshResult struct {
 // Pipeline 完成从路由抓取到 XML 落缓存的全过程。
 type Pipeline struct {
 	feedCache     *cache.TTLCache
-	articleStore  route.ArticleStore
 	scraperConfig config.ScraperConfig
 	routesConfig  map[string]config.RouteConfig
 
@@ -61,7 +59,6 @@ type Pipeline struct {
 func New(cfg Config) *Pipeline {
 	return &Pipeline{
 		feedCache:     cfg.FeedCache,
-		articleStore:  cfg.ArticleStore,
 		scraperConfig: cfg.ScraperConfig,
 		routesConfig:  cfg.RoutesConfig,
 		routes:        make(map[string]route.Route),
@@ -86,7 +83,7 @@ func OptionsFromQuery(values url.Values) route.FetchOptions {
 
 // OptionsFromFeedConfig 从配置中的 feed 条目构建抓取选项。
 func OptionsFromFeedConfig(fc config.FeedConfig) route.FetchOptions {
-	opts := route.FetchOptions{Limit: fc.Limit, Include: fc.Include}
+	opts := route.FetchOptions{Include: fc.Include}
 	return route.NormalizeFetchOptions(opts)
 }
 
@@ -131,7 +128,7 @@ func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.Fet
 		return RefreshResult{Ref: ref}, err
 	}
 
-	result, err := rt.Fetch(p.articleStore, pathParams, opts)
+	result, err := rt.Fetch(pathParams, opts)
 	if err != nil {
 		return RefreshResult{Ref: ref}, err
 	}

@@ -105,19 +105,12 @@ type FeedResult struct {
 	Items []FeedItem
 }
 
-// ArticleStore 是文章持久化存储的接口。
-type ArticleStore interface {
-	Get(routeName, articleID string) (content string, found bool, err error)
-	Save(routeName, articleID, content string) error
-	HasArticles(routeName string) (bool, error)
-}
-
 // Route 是路由基类接口，每个数据源实现此接口。
 type Route interface {
 	// Name 返回路由名称，决定 URL 前缀 /feed/{name}/...
 	Name() string
 	// Fetch 抓取数据源，返回 feed 元信息和 FeedItem 列表。
-	Fetch(articleStore ArticleStore, pathParams []string, opts FetchOptions) (FeedResult, error)
+	Fetch(pathParams []string, opts FetchOptions) (FeedResult, error)
 }
 
 // FetchOptions 包含抓取的可选参数。

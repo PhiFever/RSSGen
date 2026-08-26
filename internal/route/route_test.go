@@ -10,7 +10,7 @@ import (
 type testRoute struct{}
 
 func (testRoute) Name() string { return "_test_route" }
-func (testRoute) Fetch(ArticleStore, []string, FetchOptions) (FeedResult, error) {
+func (testRoute) Fetch([]string, FetchOptions) (FeedResult, error) {
 	return FeedResult{
 		Info:  FeedInfo{Title: "test", Link: "https://example.com"},
 		Items: []FeedItem{{Title: "item"}},

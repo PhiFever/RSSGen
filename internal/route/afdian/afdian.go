@@ -2,6 +2,7 @@
 package afdian
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
@@ -138,7 +140,7 @@ func (r *Route) feedInfo(pathParams []string) (route.FeedInfo, error) {
 	}, nil
 }
 
-func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
+func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	if len(pathParams) == 0 {
 		return route.FeedResult{}, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
 	}
@@ -177,20 +179,6 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 
 	contents := make([]string, len(posts))
 	contentOK := make([]bool, len(posts))
-	var missing []int
-
-	for i, post := range posts {
-		if articleStore != nil {
-			cached, found, err := articleStore.Get("afdian", post.PostID)
-			if err == nil && found && cached != "" {
-				contents[i] = cached
-				contentOK[i] = true
-				continue
-			}
-		}
-		missing = append(missing, i)
-	}
-
 	detailFn := r.getPostDetail
 	if r.getPostDetailFn != nil {
 		detailFn = r.getPostDetailFn
@@ -201,7 +189,7 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 	}
 
 	var wg sync.WaitGroup
-	for _, idx := range missing {
+	for idx := range posts {
 		idx := idx
 		postID := posts[idx].PostID
 		wg.Add(1)
@@ -224,14 +212,6 @@ func (r *Route) Fetch(articleStore route.ArticleStore, pathParams []string, opts
 		}()
 	}
 	wg.Wait()
-
-	for _, idx := range missing {
-		if articleStore != nil && contentOK[idx] {
-			if err := articleStore.Save("afdian", posts[idx].PostID, contents[idx]); err != nil {
-				slog.Warn("文章详情落库失败", "post_id", posts[idx].PostID, "error", err)
-			}
-		}
-	}
 
 	// 构建 FeedItem，保持帖子列表原始顺序。
 	items := make([]route.FeedItem, 0, len(posts))
@@ -310,13 +290,14 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 	return userID.String(), nil
 }
 
-// getPostList 获取作者动态列表（简化版，只取第一页）。
+// getPostList 按 publish_sn 分页获取作者动态；limit <= 0 时遍历到自然结束。
 func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error) {
 	referer := fmt.Sprintf("%s/a/%s", hostURL, authorSlug)
 	var allPosts []afdianPost
 	publishSN := int64(0)
+	seenCursors := map[int64]struct{}{0: {}}
 
-	for len(allPosts) < limit {
+	for limit <= 0 || len(allPosts) < limit {
 		apiURL := fmt.Sprintf(
 			"%s/api/post/get-list?user_id=%s&type=old&publish_sn=%d&per_page=10&group_id=&all=1&is_public=&plan_id=&title=&name=",
 			hostURL, userID, publishSN,
@@ -354,15 +335,97 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 		if lastPost.PublishSN == 0 {
 			break
 		}
+		if _, seen := seenCursors[lastPost.PublishSN]; seen {
+			break
+		}
 		publishSN = lastPost.PublishSN
+		seenCursors[publishSN] = struct{}{}
 	}
 
 	// 截断到 limit
-	if len(allPosts) > limit {
+	if limit > 0 && len(allPosts) > limit {
 		allPosts = allPosts[:limit]
 	}
 
 	return allPosts, nil
+}
+
+// BackfillSource 把共享的 Afdian 解析实现适配为 backfill.Source。
+type BackfillSource struct {
+	route   *Route
+	scraper *scraper.Scraper
+}
+
+// FeedIdentity 校验 Afdian feed 路径并返回作者 slug。
+func (s *BackfillSource) FeedIdentity(feedURL string) (string, error) {
+	return backfill.FeedIdentityFromURL(feedURL, "afdian")
+}
+
+// NewBackfillSource 创建串行且限速的 Afdian 历史适配器。
+func NewBackfillSource(cookie string, requestInterval time.Duration) (*BackfillSource, error) {
+	if requestInterval < time.Second {
+		return nil, fmt.Errorf("Afdian 请求间隔不能小于 1s")
+	}
+	sc, err := scraper.New(scraper.Config{
+		Cookies:           scraper.ParseCookieString(cookie),
+		RateLimit:         requestInterval.Seconds(),
+		Impersonate:       "chrome_131",
+		TransportAttempts: 1,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("创建 Afdian HTTP 客户端: %w", err)
+	}
+	return &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: sc}, nil
+}
+
+// Discover 按新到旧遍历 Afdian 列表直到自然结束，不设置数量上限。
+func (s *BackfillSource) Discover(ctx context.Context, authorSlug string) ([]backfill.Candidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	userID, err := s.route.getAuthorID(s.scraper, authorSlug)
+	if err != nil {
+		return nil, err
+	}
+	posts, err := s.route.getPostList(s.scraper, userID, authorSlug, 0)
+	if err != nil {
+		return nil, err
+	}
+	candidates := make([]backfill.Candidate, 0, len(posts))
+	for _, post := range posts {
+		var publishedAt time.Time
+		if post.PublishTime > 0 {
+			publishedAt = time.Unix(int64(post.PublishTime), 0).UTC()
+		}
+		candidates = append(candidates, backfill.Candidate{
+			ID:          post.PostID,
+			Title:       post.Title,
+			Author:      post.User.Name,
+			URL:         fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
+			PublishedAt: publishedAt,
+		})
+	}
+	return candidates, nil
+}
+
+// Detail 获取一篇付费文章正文。
+func (s *BackfillSource) Detail(ctx context.Context, candidate backfill.Candidate) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return s.route.getPostDetail(s.scraper, candidate.ID)
+}
+
+// Comments 获取评论，并复用 feed 路由的渲染行为。
+func (s *BackfillSource) Comments(ctx context.Context, candidate backfill.Candidate) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	comments, err := s.route.getPostComments(s.scraper, candidate.ID)
+	if err != nil {
+		return "", err
+	}
+	return renderComments(comments), nil
 }
 
 // getPostDetail 获取文章正文 HTML。

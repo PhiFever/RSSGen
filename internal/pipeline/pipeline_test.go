@@ -16,7 +16,7 @@ type pipelineTestRoute struct {
 }
 
 func (r *pipelineTestRoute) Name() string { return "_pipeline_test" }
-func (r *pipelineTestRoute) Fetch(_ route.ArticleStore, _ []string, opts route.FetchOptions) (route.FeedResult, error) {
+func (r *pipelineTestRoute) Fetch(_ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount++
 	r.lastOpts = opts
 	return route.FeedResult{
