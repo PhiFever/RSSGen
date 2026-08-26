@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -28,6 +30,51 @@ import (
 	_ "github.com/PhiFever/RSSGen/internal/route/afdian"
 	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
 )
+
+func TestLoadBackfillEnv(t *testing.T) {
+	loadedKey := "RSSGEN_TEST_DOTENV_LOADED"
+	previous, existed := os.LookupEnv(loadedKey)
+	if err := os.Unsetenv(loadedKey); err != nil {
+		t.Fatalf("Unsetenv: %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(loadedKey, previous)
+		} else {
+			_ = os.Unsetenv(loadedKey)
+		}
+	})
+
+	existingKey := "RSSGEN_TEST_DOTENV_EXISTING"
+	t.Setenv(existingKey, "from-process")
+	envPath := filepath.Join(t.TempDir(), ".env")
+	contents := loadedKey + "=from-file\n" + existingKey + "=from-file\n"
+	if err := os.WriteFile(envPath, []byte(contents), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := loadBackfillEnv(envPath); err != nil {
+		t.Fatalf("loadBackfillEnv: %v", err)
+	}
+	if got := os.Getenv(loadedKey); got != "from-file" {
+		t.Fatalf("loaded env = %q, want from-file", got)
+	}
+	if got := os.Getenv(existingKey); got != "from-process" {
+		t.Fatalf("existing env = %q, want from-process", got)
+	}
+	if err := loadBackfillEnv(filepath.Join(t.TempDir(), ".env")); err != nil {
+		t.Fatalf("missing .env should be optional: %v", err)
+	}
+}
+
+func TestLoadBackfillEnvRejectsMalformedFile(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(envPath, []byte("BROKEN='unterminated\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := loadBackfillEnv(envPath); err == nil {
+		t.Fatal("malformed .env should fail")
+	}
+}
 
 func TestParseAfdianBackfillArgs(t *testing.T) {
 	getenv := func(key string) string {

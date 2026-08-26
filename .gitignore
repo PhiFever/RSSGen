@@ -14,6 +14,8 @@
 
 # 用户配置（含凭证）
 config.yml
+.env
+*.swp
 miniflux-db/
 
 # Python 残留（本地 .venv 仍被对比脚本使用）

@@ -15,6 +15,7 @@ tests/
 !README.md
 
 config.yml
+.env
 output.json
 test*.py
 test*.sh

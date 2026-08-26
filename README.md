@@ -6,7 +6,7 @@
 
 ```bash
 # 1. 复制配置文件并填入凭证
-cp config.example.yml config.yml
+cp config.yml.example config.yml
 
 # 2. Docker 一键部署（含 Miniflux + PostgreSQL）
 docker compose up -d
@@ -65,17 +65,19 @@ routes:
 
 ### Afdian 历史回填
 
-无参数启动仍运行 RSS server，并默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`。
+无参数启动仍运行 RSS server，并默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`，但会自动尝试加载当前工作目录下的 `.env`。
 
 ```bash
+# 创建本地凭证文件（.env 已被 Git 忽略）
+cp .env.example .env
+# 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE
+
 # 1. 查询可回填的 Afdian feed ID
-export MINIFLUX_API_TOKEN="你的 Miniflux API token"
 go run ./cmd/rssgen afdian-backfill \
   --miniflux-url http://localhost:8080 \
   --list-feeds
 
 # 2. 完整扫描并预览缺失数量，不请求正文、评论或写入 Miniflux
-export AFDIAN_COOKIE="你的爱发电 Cookie"
 go run ./cmd/rssgen afdian-backfill \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
@@ -87,7 +89,7 @@ go run ./cmd/rssgen afdian-backfill \
   --feed-id 42
 ```
 
-回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
+`.env` 是可选的；也可以继续直接设置进程环境变量，且进程环境变量优先于 `.env` 中的同名值。回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
 
 ## 后台刷新
 

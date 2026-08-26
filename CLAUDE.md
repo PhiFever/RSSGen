@@ -72,7 +72,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 
 ### 配置
 
-- `config.example.yml` — 配置模板
+- `config.yml.example` — 配置模板
 - `config.yml` — 用户实际配置（已 gitignore），包含 Cookie 凭证、限速、代理、各路由的 feeds 列表
 
 ## 部署注意事项

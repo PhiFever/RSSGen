@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/joho/godotenv"
 
 	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
@@ -46,6 +47,10 @@ func main() {
 		if os.Args[1] != "afdian-backfill" {
 			slog.Error("未知命令", "command", os.Args[1])
 			os.Exit(2)
+		}
+		if err := loadBackfillEnv(".env"); err != nil {
+			slog.Error("加载 backfill 环境变量失败", "error", err)
+			os.Exit(1)
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
@@ -94,6 +99,17 @@ func main() {
 		slog.Error("服务关闭异常", "error", err)
 	}
 	slog.Info("RSSGen 已停止")
+}
+
+// loadBackfillEnv 加载可选的 dotenv 文件，进程环境变量保持更高优先级。
+func loadBackfillEnv(filename string) error {
+	if err := godotenv.Load(filename); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("加载 %s: %w", filename, err)
+	}
+	return nil
 }
 
 type runtimeApp struct {
