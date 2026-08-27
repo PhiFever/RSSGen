@@ -40,3 +40,4 @@ WORKDIR /app
 EXPOSE 8000
 
 ENTRYPOINT ["/rssgen"]
+CMD ["server"]
