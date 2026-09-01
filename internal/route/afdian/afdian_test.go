@@ -803,3 +803,127 @@ func TestParseAfdianResponseInvalidJSON(t *testing.T) {
 		t.Fatal("无效 JSON 应返回错误")
 	}
 }
+
+func TestFetchRendersPicsIntoContent(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		post := makePost("p1")
+		post.Pics = []string{
+			"https://pic1.afdiancdn.com/user/uid/common/a_w980_h1536_s127.jpeg",
+			"",
+			"https://pic1.afdiancdn.com/user/uid/common/b_w1012_h1544_s132.jpeg",
+		}
+		return []afdianPost{post}, nil
+	}
+	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "正文文本", nil
+	}
+	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+		return sampleComments(), nil
+	}
+
+	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	content := result.Items[0].Content
+
+	wantPrefix := `正文文本` +
+		`<p><img src="https://pic1.afdiancdn.com/user/uid/common/a_w980_h1536_s127.jpeg"></p>` +
+		`<p><img src="https://pic1.afdiancdn.com/user/uid/common/b_w1012_h1544_s132.jpeg"></p>`
+	if !strings.HasPrefix(content, wantPrefix) {
+		t.Errorf("正文与图片顺序错误\n got = %q\nwant prefix = %q", content, wantPrefix)
+	}
+	if !strings.Contains(content[len(wantPrefix):], "<h2>热评</h2>") {
+		t.Errorf("评论应排在图片之后, content = %q", content)
+	}
+	if len(result.Items[0].Enclosures) != 0 {
+		t.Errorf("图片改为正文内联后不应再产出 enclosure, got = %+v", result.Items[0].Enclosures)
+	}
+}
+
+func TestFetchRendersPicsWithEmptyContent(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		post := makePost("p1")
+		post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+		return []afdianPost{post}, nil
+	}
+	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "", nil
+	}
+	r.getPostCommentsFn = emptyComments
+
+	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	want := `<p><img src="https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"></p>`
+	if result.Items[0].Content != want {
+		t.Errorf("空正文不应产生前导分隔符\n got = %q\nwant = %q", result.Items[0].Content, want)
+	}
+}
+
+func TestFetchConvertsPlainTextNewlines(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		post := makePost("p1")
+		post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+		return []afdianPost{post}, nil
+	}
+	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "第一段\n\n第二段", nil
+	}
+	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+		return sampleComments(), nil
+	}
+
+	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	content := result.Items[0].Content
+
+	wantPrefix := `第一段<br><br>第二段` +
+		`<p><img src="https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"></p>`
+	if !strings.HasPrefix(content, wantPrefix) {
+		t.Errorf("纯文本正文的换行应转为 <br>\n got = %q\nwant prefix = %q", content, wantPrefix)
+	}
+	// 评论区的换行由 renderComments 刻意生成，不能被一起转掉。
+	if !strings.Contains(content, "<h2>热评</h2>\n<hr>\n") {
+		t.Errorf("评论区的换行不应被转换, content = %q", content)
+	}
+}
+
+func TestFetchLeavesHTMLContentNewlinesAlone(t *testing.T) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test"})
+	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return "uid", nil
+	}
+	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
+		return []afdianPost{makePost("p1")}, nil
+	}
+	// 文章类正文是单行 HTML，实测不含字面换行符，转换应为空操作。
+	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+		return `<p>段落一</p><p><img src="https://pic1.afdiancdn.com/x.png?imageView2/2/w/1280"></p>`, nil
+	}
+	r.getPostCommentsFn = emptyComments
+
+	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	want := `<p>段落一</p><p><img src="https://pic1.afdiancdn.com/x.png?imageView2/2/w/1280"></p>`
+	if result.Items[0].Content != want {
+		t.Errorf("HTML 正文不应被改动\n got = %q\nwant = %q", result.Items[0].Content, want)
+	}
+}

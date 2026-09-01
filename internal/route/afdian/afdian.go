@@ -192,6 +192,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 	for idx := range posts {
 		idx := idx
 		postID := posts[idx].PostID
+		pics := posts[idx].Pics
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -201,6 +202,11 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
 				return
 			}
+			// 图片动态的正文是纯文本，换行要转成 <br> 才能在阅读器里保留分段；
+			// 文章类正文是单行 HTML（换行由 <p>/<br> 表达，不含字面换行符），此处为空操作。
+			// 必须在追加评论之前做，renderComments 生成的换行是有意的，不能一起转掉。
+			content = strings.ReplaceAll(content, "\n", "<br>")
+			content = appendPics(content, pics)
 			comments, err := commentsFn(sc, postID)
 			if err != nil {
 				slog.Warn("文章评论获取失败，省略评论", "post_id", postID, "error", err)
@@ -226,25 +232,13 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 			pubDate = &t
 		}
 
-		// 提取图片附件
-		var enclosures []route.Enclosure
-		for _, picURL := range post.Pics {
-			if picURL != "" {
-				enclosures = append(enclosures, route.Enclosure{
-					URL:  picURL,
-					Type: "image/jpeg",
-				})
-			}
-		}
-
 		item := route.FeedItem{
-			Title:      post.Title,
-			Link:       fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
-			Content:    contents[i],
-			PubDate:    pubDate,
-			Author:     post.User.Name,
-			GUID:       post.PostID,
-			Enclosures: enclosures,
+			Title:   post.Title,
+			Link:    fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
+			Content: contents[i],
+			PubDate: pubDate,
+			Author:  post.User.Name,
+			GUID:    post.PostID,
 		}
 		items = append(items, item)
 	}
@@ -534,6 +528,19 @@ func renderComments(comments afdianCommentList) string {
 		sections = append(sections, renderCommentSection("评论", comments.List))
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+// appendPics 把图片动态的 pics 以 <img> 形式追加到正文末尾。
+// pics 里的地址是完整的 CDN URL，原样引用；<p> 是块级元素，正文与图片之间无需额外分隔符。
+func appendPics(content string, pics []string) string {
+	var b strings.Builder
+	for _, picURL := range pics {
+		if picURL == "" {
+			continue
+		}
+		fmt.Fprintf(&b, `<p><img src="%s"></p>`, html.EscapeString(picURL))
+	}
+	return content + b.String()
 }
 
 func appendRenderedComments(content string, comments afdianCommentList) string {
