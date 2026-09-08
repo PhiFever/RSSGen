@@ -47,6 +47,7 @@ func (s *BackfillSource) KnownCategories() []string {
 	return []string{
 		TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle,
 		TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion,
+		TypeFollowedCollection, TypeVoteupPin, TypeAskedQuestion,
 	}
 }
 

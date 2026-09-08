@@ -241,7 +241,7 @@ func TestBackfillConstructionIdentityAndNoOpMethods(t *testing.T) {
 		if err != nil || identity.SourceID != "alice" || !reflect.DeepEqual(identity.Categories, []string{"answer", "voteup_answer"}) {
 			t.Fatalf("identity=%+v err=%v", identity, err)
 		}
-		want := []string{TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle, TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion}
+		want := []string{TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle, TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion, TypeFollowedCollection, TypeVoteupPin, TypeAskedQuestion}
 		if !reflect.DeepEqual(source.KnownCategories(), want) {
 			t.Fatalf("categories=%v", source.KnownCategories())
 		}

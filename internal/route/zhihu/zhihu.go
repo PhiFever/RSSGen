@@ -19,15 +19,18 @@ import (
 
 // 动态 category 常量
 const (
-	TypeAnswer           = "answer"
-	TypeArticle          = "article"
-	TypePin              = "pin"
-	TypeCollectedAnswer  = "collected_answer"
-	TypeCollectedArticle = "collected_article"
-	TypeCollectedPin     = "collected_pin"
-	TypeVoteupAnswer     = "voteup_answer"
-	TypeVoteupArticle    = "voteup_article"
-	TypeFollowedQuestion = "followed_question"
+	TypeAnswer             = "answer"
+	TypeArticle            = "article"
+	TypePin                = "pin"
+	TypeCollectedAnswer    = "collected_answer"
+	TypeCollectedArticle   = "collected_article"
+	TypeCollectedPin       = "collected_pin"
+	TypeVoteupAnswer       = "voteup_answer"
+	TypeVoteupArticle      = "voteup_article"
+	TypeVoteupPin          = "voteup_pin"
+	TypeFollowedQuestion   = "followed_question"
+	TypeFollowedCollection = "followed_collection"
+	TypeAskedQuestion      = "asked_question"
 )
 
 // PIN 内容 block 类型常量。
@@ -48,15 +51,21 @@ var verbCategoryMap = map[string]string{
 	"MEMBER_COLLECT_PIN":     TypeCollectedPin,
 	"MEMBER_VOTEUP_ANSWER":   TypeVoteupAnswer,
 	"MEMBER_VOTEUP_ARTICLE":  TypeVoteupArticle,
-	"MEMBER_FOLLOW_QUESTION": TypeFollowedQuestion,
+	// 项目投稿的 target.type 就是 article，URL 也是专栏地址，与赞同文章同构。
+	"MEMBER_VOTEUP_PROJECT":   TypeVoteupArticle,
+	"MEMBER_VOTE_PIN":         TypeVoteupPin,
+	"MEMBER_FOLLOW_QUESTION":  TypeFollowedQuestion,
+	"MEMBER_FOLLOW_FAVORITES": TypeFollowedCollection,
+	"MEMBER_ASK_QUESTION":     TypeAskedQuestion,
 }
 
 // targetTypeFallback 当 verb 缺失时按 target.type 兜底。
 var targetTypeFallback = map[string]string{
-	"answer":   TypeAnswer,
-	"article":  TypeArticle,
-	"pin":      TypePin,
-	"question": TypeFollowedQuestion,
+	"answer":     TypeAnswer,
+	"article":    TypeArticle,
+	"pin":        TypePin,
+	"question":   TypeFollowedQuestion,
+	"collection": TypeFollowedCollection,
 }
 
 // 预编译正则，避免在热路径重复编译。
@@ -73,6 +82,8 @@ var selfInteractableVerbs = map[string]bool{
 	"MEMBER_COLLECT_PIN":     true,
 	"MEMBER_VOTEUP_ANSWER":   true,
 	"MEMBER_VOTEUP_ARTICLE":  true,
+	"MEMBER_VOTEUP_PROJECT":  true,
+	"MEMBER_VOTE_PIN":        true,
 }
 
 func init() {
@@ -111,11 +122,13 @@ type zhihuTarget struct {
 	Title        string          `json:"title"`
 	Content      json.RawMessage `json:"content"`
 	Detail       string          `json:"detail"`
+	Description  string          `json:"description"`
 	Excerpt      string          `json:"excerpt"`
 	ExcerptTitle string          `json:"excerpt_title"`
 	CreatedTime  float64         `json:"created_time"`
 	Created      float64         `json:"created"`
 	Author       *zhihuPerson    `json:"author"`
+	Creator      *zhihuPerson    `json:"creator"`
 	Question     *zhihuQuestion  `json:"question"`
 	Raw          json.RawMessage `json:"-"`
 }
@@ -407,6 +420,9 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 	case "question":
 		title = target.Title
 		link = fmt.Sprintf("%s/question/%s", zhihuHostURL, targetID)
+	case "collection":
+		title = target.Title
+		link = fmt.Sprintf("%s/collection/%s", zhihuHostURL, targetID)
 	default:
 		title = target.Title
 		if title == "" {
@@ -429,8 +445,10 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 	}
 
 	// 生成 guid
+	// pin id 全局唯一，发布与赞同同一个 pin 应视为同一条目。
+	// 64 条历史赞同条目已使用裸 id，改加 voteup_pin_ 前缀会在 Miniflux 产生重复。
 	var guid string
-	if category == TypeAnswer || category == TypeArticle || category == TypePin {
+	if category == TypeAnswer || category == TypeArticle || category == TypePin || category == TypeVoteupPin {
 		guid = targetID
 	} else {
 		guid = fmt.Sprintf("%s_%s", category, targetID)
@@ -458,6 +476,8 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 		content = target.Detail
 	} else if target.Excerpt != "" {
 		content = target.Excerpt
+	} else if target.Description != "" {
+		content = target.Description
 	}
 	content = fixLazyImages(content)
 
@@ -475,6 +495,10 @@ func (r *Route) makeFeedItem(act zhihuActivity) route.FeedItem {
 	author := ""
 	if target.Author != nil {
 		author = target.Author.Name
+	}
+	// 收藏夹的作者字段叫 creator 而非 author，没有这层回退这类条目就没有署名。
+	if author == "" && target.Creator != nil {
+		author = target.Creator.Name
 	}
 
 	return route.FeedItem{
@@ -519,6 +543,9 @@ func deriveCategory(act zhihuActivity) string {
 		return "unknown"
 	}
 	if cat, ok := targetTypeFallback[act.Target.Type]; ok {
+		if act.Verb != "" {
+			slog.Warn("知乎动态 verb 未识别，已按 target.type 归类", "verb", act.Verb, "target_type", act.Target.Type, "action_text", act.ActionText, "category", cat)
+		}
 		return cat
 	}
 	slog.Warn("未识别的知乎动态", "verb", act.Verb, "target_type", act.Target.Type, "action_text", act.ActionText)

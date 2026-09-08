@@ -1,6 +1,7 @@
 package zhihu
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -648,6 +649,69 @@ func TestMakeFeedItemVoteupAnswerCategory(t *testing.T) {
 	}
 }
 
+func TestMakeFeedItemVoteupPin(t *testing.T) {
+	r := newTestRoute()
+	act := activityFromMap(map[string]interface{}{
+		"verb": "MEMBER_VOTE_PIN", "action_text": "赞同了视频",
+		"actor": map[string]interface{}{"name": "q9adg"},
+		"target": map[string]interface{}{
+			"id": "2054666743579160703", "type": "pin", "excerpt": "视频摘要",
+			"author": map[string]interface{}{"name": "可爱的沙哥"},
+		},
+	})
+	item := r.makeFeedItem(act)
+	if len(item.Categories) != 1 || item.Categories[0] != "voteup_pin" {
+		t.Errorf("Categories = %v, want [voteup_pin]", item.Categories)
+	}
+	if item.Link != "https://www.zhihu.com/pin/2054666743579160703" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "2054666743579160703" {
+		t.Errorf("GUID = %q, want bare target ID", item.GUID)
+	}
+	if item.Author != "可爱的沙哥" {
+		t.Errorf("Author = %q, want 可爱的沙哥", item.Author)
+	}
+}
+
+func TestMakeFeedItemVoteupProject(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	r := newTestRoute()
+	act := activityFromMap(map[string]interface{}{
+		"verb": "MEMBER_VOTEUP_PROJECT", "action_text": "赞同了项目",
+		"created_time": float64(1782038169),
+		"actor":        map[string]interface{}{"name": "夜神不说话"},
+		"target": map[string]interface{}{
+			"id": "2050707094135951855", "type": "article", "title": "读通鉴",
+			"content": "<p>【人文季-历史单元投稿】</p>",
+			"author":  map[string]interface{}{"name": "ZZTJ"},
+		},
+	})
+	item := r.makeFeedItem(act)
+	if len(item.Categories) != 1 || item.Categories[0] != "voteup_article" {
+		t.Errorf("Categories = %v, want [voteup_article]", item.Categories)
+	}
+	if item.Title != "[赞同了项目] 读通鉴" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://zhuanlan.zhihu.com/p/2050707094135951855" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "voteup_article_2050707094135951855" {
+		t.Errorf("GUID = %q, want voteup_article_2050707094135951855", item.GUID)
+	}
+	if item.Author != "ZZTJ" {
+		t.Errorf("Author = %q, want ZZTJ", item.Author)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("unexpected logs: %s", logs.String())
+	}
+}
+
 func TestMakeFeedItemFollowedQuestionViaEmptyVerb(t *testing.T) {
 	r := newTestRoute()
 	target := map[string]interface{}{
@@ -675,6 +739,87 @@ func TestMakeFeedItemFollowedQuestionViaEmptyVerb(t *testing.T) {
 	}
 	if item.Content != "<p>问题描述</p>" {
 		t.Errorf("Content 应回退到 detail, 实得 %q", item.Content)
+	}
+}
+
+func TestMakeFeedItemAskedQuestion(t *testing.T) {
+	var logs bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	r := newTestRoute()
+	a := map[string]interface{}{
+		"verb": "MEMBER_ASK_QUESTION", "action_text": "添加了问题",
+		"created_time": float64(1777708519),
+		"target": map[string]interface{}{
+			"id": "2073313235357398512", "type": "question",
+			"title": "死亡是不是自由的终结？", "detail": "<p>问题描述</p>",
+			"created_time": float64(1777630907),
+		},
+	}
+	item := r.makeFeedItem(activityFromMap(a))
+	if len(item.Categories) != 1 || item.Categories[0] != "asked_question" {
+		t.Errorf("Categories = %v, want [asked_question]", item.Categories)
+	}
+	if item.Title != "[添加了问题] 死亡是不是自由的终结？" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://www.zhihu.com/question/2073313235357398512" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "asked_question_2073313235357398512" {
+		t.Errorf("GUID = %q, want asked_question_2073313235357398512", item.GUID)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("unexpected logs: %s", logs.String())
+	}
+}
+
+func TestMakeFeedItemFollowedCollection(t *testing.T) {
+	r := newTestRoute()
+	description := "在这里，看懂知乎女孩的腿胸脸臀腰...也是她们的内心映射"
+	a := map[string]interface{}{
+		"verb": "MEMBER_FOLLOW_FAVORITES", "action_text": "关注了收藏夹",
+		"created_time": float64(1482806342), "type": "feed",
+		"target": map[string]interface{}{
+			"type": "collection", "id": float64(26815754), "title": "知女乎",
+			"description":  description,
+			"creator":      map[string]interface{}{"name": "回马一板砖", "url_token": "hmybz"},
+			"url":          "https://api.zhihu.com/collections/26815754",
+			"created_time": float64(1380519875), "follower_count": float64(26462),
+			"comment_count": float64(22), "answer_count": float64(625),
+		},
+	}
+	item := r.makeFeedItem(activityFromMap(a))
+	if len(item.Categories) != 1 || item.Categories[0] != "followed_collection" {
+		t.Errorf("Categories = %v, want [followed_collection]", item.Categories)
+	}
+	if item.Title != "[关注了收藏夹] 知女乎" {
+		t.Errorf("Title = %q", item.Title)
+	}
+	if item.Link != "https://www.zhihu.com/collection/26815754" {
+		t.Errorf("Link = %q", item.Link)
+	}
+	if item.GUID != "followed_collection_26815754" {
+		t.Errorf("GUID = %q", item.GUID)
+	}
+	if item.Author != "回马一板砖" {
+		t.Errorf("Author = %q, want 回马一板砖", item.Author)
+	}
+	if item.Content != description {
+		t.Errorf("Content 应回退到 description, 实得 %q", item.Content)
+	}
+	want := time.Date(2016, 12, 27, 2, 39, 2, 0, time.UTC)
+	if item.PubDate == nil || !item.PubDate.Equal(want) {
+		t.Errorf("PubDate = %v, want %v", item.PubDate, want)
+	}
+}
+
+func TestDeriveCategoryCollectionViaEmptyVerb(t *testing.T) {
+	act := mkAct(map[string]interface{}{"type": "collection"}, "", "关注了收藏夹")
+	if got := deriveCategory(act); got != TypeFollowedCollection {
+		t.Errorf("deriveCategory = %q, want %q", got, TypeFollowedCollection)
 	}
 }
 
@@ -722,6 +867,9 @@ func TestIsSelfInteraction(t *testing.T) {
 			false},
 		{"赞同自己的文章是自互动",
 			map[string]interface{}{"verb": "MEMBER_VOTEUP_ARTICLE", "actor": map[string]interface{}{"id": "X"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "X"}}},
+			true},
+		{"赞同自己的项目是自互动",
+			map[string]interface{}{"verb": "MEMBER_VOTEUP_PROJECT", "actor": map[string]interface{}{"id": "X"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "X"}}},
 			true},
 		{"创作类verb不算自互动",
 			map[string]interface{}{"verb": "MEMBER_ANSWER_QUESTION", "actor": map[string]interface{}{"id": "U1"}, "target": map[string]interface{}{"author": map[string]interface{}{"id": "U1"}}},
@@ -1238,6 +1386,33 @@ func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
 }
 
 // --- deriveCategory warning 测试（迁移自 Python TestZhihuApiChangeWarnings） ---
+
+func TestDeriveCategoryWarnsOnUnknownVerb(t *testing.T) {
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	act := mkAct(map[string]interface{}{"type": "answer"}, "MEMBER_MADE_UP_VERB", "做了某事")
+	if got := deriveCategory(act); got != TypeAnswer {
+		t.Errorf("deriveCategory = %q, want %q", got, TypeAnswer)
+	}
+	if !strings.Contains(buf.String(), "verb 未识别") {
+		t.Errorf("warning 日志应包含 verb 未识别, 实得: %q", buf.String())
+	}
+
+	buf.Reset()
+	deriveCategory(mkAct(map[string]interface{}{"type": "answer"}, "MEMBER_ANSWER_QUESTION", "回答了问题"))
+	if buf.Len() != 0 {
+		t.Errorf("已知 verb 不应告警, 实得: %s", buf.String())
+	}
+
+	buf.Reset()
+	deriveCategory(mkAct(map[string]interface{}{"type": "question"}, "", "关注了问题"))
+	if buf.Len() != 0 {
+		t.Errorf("空 verb + question 不应告警, 实得: %s", buf.String())
+	}
+}
 
 func TestDeriveCategoryWarnsOnUnknownType(t *testing.T) {
 	// 捕获 slog 输出

@@ -122,7 +122,7 @@ go run . backfill --source zhihu \
   --feed-id 42
 ```
 
-默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时不过滤；命令不读取 server 的 `default_include` 配置。非法类别会在历史扫描之前报错。未识别的动态类型照常导入，与 RSS 路径保持一致，其类别取上游的 `target.type` 并出现在 `missing_by_category` 中；缺失数量按类别显示为 `missing_by_category`。
+默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`、`followed_collection`、`voteup_pin`、`asked_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时不过滤；命令不读取 server 的 `default_include` 配置。非法类别会在历史扫描之前报错。未识别的动态类型照常导入，与 RSS 路径保持一致，其类别取上游的 `target.type` 并出现在 `missing_by_category` 中；缺失数量按类别显示为 `missing_by_category`。
 
 `--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项和 `--max-items` 仅适用于知乎，且都不接受与 `--list-feeds` 同时使用——列出 feed 不扫描动态历史，过滤和条数上限在那一步无从生效。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
 
