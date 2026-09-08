@@ -1762,3 +1762,105 @@ func TestFetchActivitiesStopsAtEmptyOrRepeatedPage(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchActivitiesPagedRetriesOn5xx(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		writeZhihuBody(t, w, `{"data":[{"id":1781935272669}],"paging":{"is_end":true}}`)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
+	got, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, nil)
+	if err != nil || len(got) != 1 || got[0].ID != "1781935272669" || requests != 2 {
+		t.Fatalf("activities=%v requests=%d err=%v", got, requests, err)
+	}
+}
+
+func TestParseStartBefore(t *testing.T) {
+	for _, tt := range []struct {
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{"1781935272669", 1781935272669, false},
+		{"2026-06-01", 1780272000000, false},
+		{"2026-06-01T00:00:00Z", 1780272000000, false},
+		{"999999999999", 0, true},
+		{"20260601", 0, true},
+		{"abc", 0, true},
+	} {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseStartBefore(tt.input)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("ParseStartBefore(%q)=%d, %v; want %d, error=%v", tt.input, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func firstActivitiesRequest(t *testing.T, offset int64) string {
+	t.Helper()
+	var urls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		urls = append(urls, r.URL.String())
+		writeZhihuBody(t, w, `{"data":[],"paging":{"is_end":true}}`)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
+	if _, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, offset, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("requests=%v", urls)
+	}
+	return urls[0]
+}
+
+func TestFetchActivitiesPagedStartOffsetFirstURL(t *testing.T) {
+	got := firstActivitiesRequest(t, 1781935272669)
+	if got != "/api/v3/moments/u/activities?offset=1781935272669&page_num=1" {
+		t.Fatalf("first URL=%s", got)
+	}
+}
+
+func TestFetchActivitiesPagedZeroOffsetKeepsRSSURL(t *testing.T) {
+	got := firstActivitiesRequest(t, 0)
+	if got != "/api/v3/moments/u/activities?limit=5&desktop=true" {
+		t.Fatalf("first URL=%s", got)
+	}
+}
+
+func TestFetchActivitiesPagedDoesNotRetryOn4xx(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, nil)
+	httpErr, ok := err.(*route.HTTPError)
+	if !ok || httpErr.StatusCode != 403 || requests != 1 {
+		t.Fatalf("requests=%d err=%v", requests, err)
+	}
+}
+
+func TestFetchActivitiesPagedProgressCarriesNextOffset(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeZhihuBody(t, w, `{"data":[{"id":1781935272669}],"paging":{"is_end":true,"next":"https://www.zhihu.com/api/v3/moments/u/activities?offset=1781935272669&page_num=2"}}`)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
+	var got string
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, func(page, pageItems, total int, nextOffset string) {
+		got = nextOffset
+	})
+	if err != nil || got != "1781935272669" {
+		t.Fatalf("nextOffset=%q err=%v", got, err)
+	}
+}

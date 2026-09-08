@@ -206,6 +206,8 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 - 支持非 Miniflux 的导入后端。
 - 跨进程锁、本地断点续跑状态或新增数据库。
 
+  > **修订（2026-09-08，实机抓包后）**：上游 `offset` 是按 activity ID 比较的数值游标，可由日期的 Unix 秒乘以 1000 合成，不必对应真实 activity。实机请求使用不存在的 `offset=1782038169000` 返回 HTTP 200，动态从 `2026-06-21T10:33:40Z` 开始，`paging.next` 正常给出 `page_num=2`。因此新增知乎专属 `--start-before`，接受至少 13 位的毫秒游标、UTC 零点日期或 RFC3339 时间；与 `--max-items` 配合可分批扫描。每页进度日志记录上游下一页的 `next_offset`，不写状态文件，所以「不引入本地断点续跑状态」这条边界未被推翻。扫描中断后游标只代表扫描位置，不代表内容已导入，补齐需重跑该窗口原命令。`--max-items` 截断落在页中间时，整页末尾的游标会把被丢弃的条目一并跳过，造成永远进不了任何窗口的静默空洞；因此「已达知乎历史扫描上限」这行的 `next_offset` 取最后一条**被保留**的动态 ID，不取整页末尾，无需重叠补扫（回归测试 `TestBackfillDiscoverTruncationCursorCoversDroppedItems`）。页级请求对网络错误和 HTTP 5xx 最多尝试 3 次，退避 1 秒、2 秒；HTTP 4xx 不重试，因为签名失效或风控下重试可能加重风控，JSON 解析失败也直接返回。外层 Discover 重试保留。
+
 ## Further Notes
 
 - 「知乎动态流能翻多深」是本设计中唯一未经测量的假设。首次实现完成后应先对一个真实 feed 运行 `--dry-run`，观察 `scanned` 与缺失时间范围的下界。如果动态流存在明显的保留窗口，再评估是否需要引入 members 系列端点作为第二来源——那将是一份独立设计，需要处理三套新解析以及与现有 GUID 规则的对齐。

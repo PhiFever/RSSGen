@@ -1080,3 +1080,21 @@ func TestPrintBackfillResultSortsCategories(t *testing.T) {
 		t.Fatalf("output=%q", output.String())
 	}
 }
+
+func TestBackfillCommandStartBeforeRejectsAfdian(t *testing.T) {
+	_, err := runBackfillCommandForTest(t, []string{
+		"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--start-before", "2026-06-01",
+	}, func(string) string { return "present" })
+	if err == nil || !strings.Contains(err.Error(), "只适用于数据源 zhihu") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestBackfillCommandStartBeforeRejectsListFeeds(t *testing.T) {
+	_, err := runBackfillCommandForTest(t, []string{
+		"--source", "zhihu", "--miniflux-url", "https://miniflux.example", "--list-feeds", "--start-before", "2026-06-01",
+	}, func(string) string { return "present" })
+	if err == nil || !strings.Contains(err.Error(), "--list-feeds 不接受") {
+		t.Fatalf("err=%v", err)
+	}
+}

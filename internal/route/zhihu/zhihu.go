@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -289,11 +290,11 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 
 // fetchActivities 请求知乎用户动态 API。
 func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, error) {
-	return r.fetchActivitiesPaged(userID, limit, nil)
+	return r.fetchActivitiesPaged(userID, limit, 0, nil)
 }
 
 // fetchActivitiesPaged 翻页拉取动态。limit <= 0 表示不设上限，翻到上游自然结束。
-func (r *Route) fetchActivitiesPaged(userID string, limit int, onPage func(page, pageItems, total int)) ([]zhihuActivity, error) {
+func (r *Route) fetchActivitiesPaged(userID string, limit int, startOffset int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -309,6 +310,10 @@ func (r *Route) fetchActivitiesPaged(userID string, limit int, onPage func(page,
 		"%s/api/v3/moments/%s/activities?limit=5&desktop=true",
 		zhihuHostURL, userID,
 	)
+
+	if startOffset != 0 {
+		nextURL = fmt.Sprintf("%s/api/v3/moments/%s/activities?offset=%d&page_num=1", zhihuHostURL, userID, startOffset)
+	}
 
 	var activities []zhihuActivity
 
@@ -333,6 +338,10 @@ func (r *Route) fetchActivitiesPaged(userID string, limit int, onPage func(page,
 		}
 
 		resp, err := sc.Get(nextURL, referer, headers)
+		for attempt := 1; attempt < 3 && (err != nil || (resp.StatusCode >= 500 && resp.StatusCode < 600)); attempt++ {
+			time.Sleep(time.Duration(attempt) * time.Second)
+			resp, err = sc.Get(nextURL, referer, headers)
+		}
 		if err != nil {
 			return activities, err
 		}
@@ -348,7 +357,11 @@ func (r *Route) fetchActivitiesPaged(userID string, limit int, onPage func(page,
 		activities = append(activities, data.Data...)
 		page++
 		if onPage != nil {
-			onPage(page, len(data.Data), len(activities))
+			nextOffset := ""
+			if next, err := url.Parse(data.Paging.Next); err == nil {
+				nextOffset = next.Query().Get("offset")
+			}
+			onPage(page, len(data.Data), len(activities), nextOffset)
 		}
 		if len(data.Data) == 0 {
 			break

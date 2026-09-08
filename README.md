@@ -124,7 +124,27 @@ go run . backfill --source zhihu \
 
 默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`、`followed_collection`、`voteup_pin`、`asked_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时不过滤；命令不读取 server 的 `default_include` 配置。非法类别会在历史扫描之前报错。未识别的动态类型照常导入，与 RSS 路径保持一致，其类别取上游的 `target.type` 并出现在 `missing_by_category` 中；缺失数量按类别显示为 `missing_by_category`。
 
-`--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项和 `--max-items` 仅适用于知乎，且都不接受与 `--list-feeds` 同时使用——列出 feed 不扫描动态历史，过滤和条数上限在那一步无从生效。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
+`--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项、`--max-items` 和 `--start-before` 仅适用于知乎，且都不接受与 `--list-feeds` 同时使用——列出 feed 不扫描动态历史，过滤和条数上限在那一步无从生效。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
+
+`--start-before` 指定从哪个游标向更早的动态扫描，接受两种形态：纯数字毫秒游标（至少 `1000000000000`，例如 `1781935272669`），或日期（`2026-06-01` 按 UTC 零点解释，也接受 `2026-06-01T00:00:00Z` 这样的 RFC3339 时间）。日期按 Unix 秒乘以 1000 转为游标。不传时从最新一页开始。
+
+每页「知乎历史扫描进度」日志包含 `next_offset=`。复制其中的非空值传回 `--start-before`，即可继续扫描更早的动态；与 `--max-items` 组合即为按窗口分批扫描：
+
+```bash
+# 从指定日期向前扫描一个窗口并导入
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 --feed-id 42 \
+  --start-before 2026-07-01 --max-items 1000
+
+# 从上一窗口日志复制 next_offset 的值，扫描下一个窗口
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 --feed-id 42 \
+  --start-before 1781935272669 --max-items 1000
+```
+
+扫描完成后才开始导入；中断扫描后直接使用最后的游标，会跳过本次已扫描但尚未导入的内容。要补齐这些内容，应重新执行该窗口原来的命令。`--max-items` 的上限落在一页中间时，该页剩余动态会被丢弃，此时应以「已达知乎历史扫描上限」那行的 `next_offset` 续扫——它取最后一条**被保留**的动态，不是整页末尾，因此被丢弃的条目会落进下一个窗口，不需要重叠补扫。系统不保存本地断点状态。
+
+单页遇到网络错误或 HTTP 5xx 最多尝试 3 次，失败后依次等待 1 秒、2 秒；HTTP 4xx 和 JSON 解析错误直接返回。4xx 通常涉及签名失效或风控，反复请求可能加重风控。
 
 ## 后台刷新
 

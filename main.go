@@ -116,9 +116,9 @@ var backfillSources = map[string]backfillSourceSpec{
 	},
 	"zhihu": {
 		cookieEnv: "ZHIHU_COOKIE",
-		ownFlags:  []string{"include", "include-self-interaction", "max-items"},
+		ownFlags:  []string{"include", "include-self-interaction", "max-items", "start-before"},
 		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
-			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems)
+			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems, cfg.startBefore)
 		},
 	},
 }
@@ -166,6 +166,10 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 			&cli.BoolFlag{
 				Name:  "include-self-interaction",
 				Usage: "include interactions with own content (zhihu only)",
+			},
+			&cli.StringFlag{
+				Name:  "start-before",
+				Usage: "起始毫秒游标或日期（YYYY-MM-DD / RFC3339，仅知乎）",
 			},
 			&cli.IntFlag{
 				Name:  "max-items",
@@ -430,6 +434,7 @@ type backfillCLIConfig struct {
 	includeCategories      []string
 	includeSelfInteraction bool
 	maxItems               int
+	startBefore            int64
 	source                 string
 	action                 backfill.Action
 	minifluxURL            string
@@ -493,6 +498,13 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 			cfg.action = backfill.ActionDryRun
 		} else {
 			cfg.action = backfill.ActionExecute
+		}
+	}
+	if cmd.IsSet("start-before") {
+		var err error
+		cfg.startBefore, err = zhihu.ParseStartBefore(cmd.String("start-before"))
+		if err != nil {
+			return cfg, err
 		}
 	}
 	cfg.minifluxToken = strings.TrimSpace(getenv("MINIFLUX_API_TOKEN"))

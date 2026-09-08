@@ -102,9 +102,9 @@ func TestBackfillDiscoverAllPages(t *testing.T) {
 		t.Fatalf("Discover count=%d requests=%d err=%v", len(got), requests, err)
 	}
 	want := []string{
-		"知乎历史扫描进度 [source_id alice page 1 page_items 4 scanned 4]",
-		"知乎历史扫描进度 [source_id alice page 2 page_items 4 scanned 8]",
-		"知乎历史扫描进度 [source_id alice page 3 page_items 4 scanned 12]",
+		"知乎历史扫描进度 [source_id alice page 1 page_items 4 scanned 4 next_offset ]",
+		"知乎历史扫描进度 [source_id alice page 2 page_items 4 scanned 8 next_offset ]",
+		"知乎历史扫描进度 [source_id alice page 3 page_items 4 scanned 12 next_offset ]",
 	}
 	if !reflect.DeepEqual(pages, want) {
 		t.Fatalf("progress=%v", pages)
@@ -223,17 +223,17 @@ func TestBackfillSelfInteraction(t *testing.T) {
 }
 
 func TestBackfillConstructionIdentityAndNoOpMethods(t *testing.T) {
-	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second-time.Millisecond, false, 0); err == nil {
+	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second-time.Millisecond, false, 0, 0); err == nil {
 		t.Fatal("interval below one second must fail")
 	}
-	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second, false, -1); err == nil {
+	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second, false, -1, 0); err == nil {
 		t.Fatal("negative max items must fail")
 	}
-	if _, err := NewBackfillSource("other=secret", time.Second, false, 0); err == nil || !strings.Contains(err.Error(), "d_c0") || strings.Contains(err.Error(), "secret") {
+	if _, err := NewBackfillSource("other=secret", time.Second, false, 0, 0); err == nil || !strings.Contains(err.Error(), "d_c0") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("missing d_c0 error=%v", err)
 	}
 	for _, cookie := range []string{"", `d_c0="abc";`} {
-		source, err := NewBackfillSource(cookie, time.Second, false, 0)
+		source, err := NewBackfillSource(cookie, time.Second, false, 0, 0)
 		if err != nil {
 			t.Fatalf("NewBackfillSource: %v", err)
 		}
@@ -300,5 +300,52 @@ func TestBackfillImportsEmptyAndInlineContentAndUnknownType(t *testing.T) {
 	}
 	if destination.imported[0].Content != "" || destination.imported[1].Content == "" {
 		t.Fatalf("imports=%+v", destination.imported)
+	}
+}
+
+// 截断丢弃的条目不能被游标跳过：按窗口续扫时最后一页会被 maxItems 截断，
+// 若续扫游标指向整页末尾，被丢弃的那几条将永远不会进入任何窗口。
+func TestBackfillDiscoverTruncationCursorCoversDroppedItems(t *testing.T) {
+	requests := 0
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		data := make([]zhihuActivity, 4)
+		for i := range data {
+			seq := (requests-1)*4 + i
+			act := backfillTestActivity(fmt.Sprint(seq), "MEMBER_CREATE_ARTICLE", "article")
+			act.ID = zhihuID(fmt.Sprint(2000 - seq))
+			data[i] = act
+		}
+		lastID := 2000 - ((requests-1)*4 + 3)
+		writeZhihuJSON(t, w, activitiesResponse{Data: data, Paging: zhihuPaging{
+			Next: fmt.Sprintf("%s/api/v3/moments/alice/activities?offset=%d&page_num=%d", serverURL, lastID, requests+1),
+		}})
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	withZhihuTestHost(t, server.URL)
+
+	source := newBackfillTestSource()
+	source.maxItems = 6
+	var pages []string
+	got, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
+		pages = append(pages, message+" "+fmt.Sprint(attrs))
+	})
+	if err != nil || len(got) != 6 {
+		t.Fatalf("Discover count=%d err=%v", len(got), err)
+	}
+	// 第 6 条（最后一条被保留的）activity id = 2000-5 = 1995；整页末尾是 2000-7 = 1993。
+	var truncation string
+	for _, line := range pages {
+		if strings.HasPrefix(line, "已达知乎历史扫描上限") {
+			truncation = line
+		}
+	}
+	if truncation == "" {
+		t.Fatalf("没有截断提示，progress=%v", pages)
+	}
+	if !strings.Contains(truncation, "next_offset 1995") {
+		t.Errorf("截断提示未给出可续扫游标，应为最后一条保留条目的 id 1995（而非整页末尾 1993）:\n  %s", truncation)
 	}
 }
