@@ -283,6 +283,12 @@ func (s *Scraper) replaceClient() error {
 
 func recoverableTransportError(err error) string {
 	switch message := err.Error(); {
+	case strings.Contains(message, "the cached transport does not speak"):
+		// tls-client v1.16.0 起，地址的 ALPN 在重连时改变（负载均衡后端从 http/1.1
+		// 切到 h2 是常见情形）会显式报错，不再表现为下面那条 malformed HTTP response。
+		// 上游返回该错误时已丢弃这个地址的缓存 transport，重试就会按新协议重建连接。
+		// 只能匹配错误文本：上游的 errProtocolChanged 未导出，errors.Is 无从引用。
+		return "alpn_change"
 	case strings.Contains(message, "HTTP/1.x transport connection broken: malformed HTTP response"):
 		return "protocol_mismatch"
 	case strings.Contains(message, "connection reset by peer"):
