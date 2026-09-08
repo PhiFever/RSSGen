@@ -1,6 +1,6 @@
 # Go 版本 Dockerfile - 多阶段构建，最终 scratch 镜像
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 # 安装 CA 证书和时区数据
 RUN apk add --no-cache ca-certificates tzdata
