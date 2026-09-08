@@ -10,7 +10,7 @@ RSSGen 是一个自托管 RSS 源生成框架（类似 RSSHub），使用 **Go**
 
 ## 技术栈
 
-- **Go 1.25**，测试只用标准库 `testing` + `httptest`（无 testify）
+- **Go 1.27**，测试只用标准库 `testing` + `httptest`（无 testify）
 - **HTTP 路由**: chi v5
 - **反爬 HTTP 客户端**: bogdanfinn/tls-client（Chrome TLS/JA3 指纹模拟，见 `internal/scraper/`）
 - **HTML**: bluemonday（消毒白名单）、golang.org/x/net/html（解析）
