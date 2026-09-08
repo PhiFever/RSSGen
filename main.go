@@ -605,7 +605,13 @@ func printBackfillResult(output io.Writer, action backfill.Action, result backfi
 		_, _ = fmt.Fprintf(output, "missing_by_category=%s\n", strings.Join(counts, ","))
 	}
 	if result.MissingOldest != nil && result.MissingNewest != nil {
-		_, _ = fmt.Fprintf(output, "missing_range=%s..%s\n",
+		// 区间是导入前的对账结论，而这一行在导入之后才打印：execute 下叫 missing
+		// 会被读成"仍然缺失"，实际是本轮打算补的范围。
+		label := "missing_range"
+		if action == backfill.ActionExecute {
+			label = "planned_range"
+		}
+		_, _ = fmt.Fprintf(output, "%s=%s..%s\n", label,
 			result.MissingOldest.UTC().Format(time.RFC3339), result.MissingNewest.UTC().Format(time.RFC3339))
 	}
 	for _, warning := range result.Warnings {

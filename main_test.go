@@ -1081,6 +1081,24 @@ func TestPrintBackfillResultSortsCategories(t *testing.T) {
 	}
 }
 
+func TestPrintBackfillResultRangeLabelByAction(t *testing.T) {
+	oldest := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	newest := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
+	for _, tc := range []struct {
+		action backfill.Action
+		want   string
+	}{
+		{backfill.ActionDryRun, "missing_range=2020-01-02T03:04:05Z..2021-06-07T08:09:10Z\n"},
+		{backfill.ActionExecute, "planned_range=2020-01-02T03:04:05Z..2021-06-07T08:09:10Z\n"},
+	} {
+		var output bytes.Buffer
+		printBackfillResult(&output, tc.action, backfill.Result{MissingOldest: &oldest, MissingNewest: &newest})
+		if !strings.Contains(output.String(), tc.want) {
+			t.Fatalf("action=%s output=%q", tc.action, output.String())
+		}
+	}
+}
+
 func TestBackfillCommandStartBeforeRejectsAfdian(t *testing.T) {
 	_, err := runBackfillCommandForTest(t, []string{
 		"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--start-before", "2026-06-01",
