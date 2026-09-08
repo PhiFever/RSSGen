@@ -72,26 +72,59 @@ routes:
 ```bash
 # 创建本地凭证文件（.env 已被 Git 忽略）
 cp .env.example .env
-# 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE
+# 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE（知乎回填使用 ZHIHU_COOKIE）
 
 # 1. 查询可回填的 Afdian feed ID
-go run . afdian-backfill \
+go run . backfill --source afdian \
   --miniflux-url http://localhost:8080 \
   --list-feeds
 
 # 2. 完整扫描并预览缺失数量，不请求正文、评论或写入 Miniflux
-go run . afdian-backfill \
+go run . backfill --source afdian \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
   --dry-run
 
 # 3. 按新到旧补齐全部缺失历史
-go run . afdian-backfill \
+go run . backfill --source afdian \
   --miniflux-url http://localhost:8080 \
   --feed-id 42
 ```
 
 `.env` 是可选的；也可以继续直接设置进程环境变量，且进程环境变量优先于 `.env` 中的同名值。回填从目标 feed 的 `feed_url` 推导作者 slug，不需要重复传参。运行期间会持续输出阶段切换、Afdian 分页扫描累计数、对账结果和逐篇导入进度。Afdian 请求严格串行，默认最小间隔为 1 秒；可以用 `--request-interval 2s` 调慢，但不能低于 1 秒。任务可安全重跑，Miniflux 中已有条目会被跳过。目标 Miniflux 需要支持 Entry Import（Miniflux 2.2.16 或更高版本）。
+
+### 知乎历史回填
+
+知乎回填从用户动态列表向前翻页，默认最多扫描 1000 条动态（`--max-items`，`0` 表示不限制）。动态流不会自然收敛——实测单个账号翻过 7674 条仍未出现结束标记——所以这个上限是必要的刹车，触发时会在日志中明确告知"已达知乎历史扫描上限"，而不是静默截断。命令同样尝试读取 `.env`；从 `.env.example` 复制后，在 `.env` 中填写 `MINIFLUX_API_TOKEN` 和 `ZHIHU_COOKIE`。执行与 dry-run 所用的 `ZHIHU_COOKIE` 必须含 `d_c0`，只列出 feed 时不需要 cookie。凭证仅通过环境变量或 `.env` 提供。
+
+```bash
+# 1. 查询可回填的知乎 feed ID
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 \
+  --list-feeds
+
+# 2. 扫描并预览缺失数量，不写入 Miniflux
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 \
+  --feed-id 42 \
+  --dry-run
+
+# 2b. 放开条数上限，翻到上游自然结束（大号可能是数千次请求）
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 \
+  --feed-id 42 \
+  --max-items 0 \
+  --dry-run
+
+# 3. 按新到旧补齐缺失历史
+go run . backfill --source zhihu \
+  --miniflux-url http://localhost:8080 \
+  --feed-id 42
+```
+
+默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时不过滤；命令不读取 server 的 `default_include` 配置。非法类别会在历史扫描之前报错。未识别的动态类型照常导入，与 RSS 路径保持一致，其类别取上游的 `target.type` 并出现在 `missing_by_category` 中；缺失数量按类别显示为 `missing_by_category`。
+
+`--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项和 `--max-items` 仅适用于知乎，且都不接受与 `--list-feeds` 同时使用——列出 feed 不扫描动态历史，过滤和条数上限在那一步无从生效。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
 
 ## 后台刷新
 

@@ -6,24 +6,29 @@ import (
 	"encoding/hex"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
 
 type fakeSource struct {
-	candidates    []Candidate
-	discoverErrs  []error
-	detailErrs    map[string][]error
-	commentErrs   map[string][]error
-	detailCalls   []string
-	commentCalls  []string
-	discoverCalls int
-	reportPage    bool
+	knownCategories []string
+	emptyComments   bool
+	candidates      []Candidate
+	discoverErrs    []error
+	detailErrs      map[string][]error
+	commentErrs     map[string][]error
+	detailCalls     []string
+	commentCalls    []string
+	discoverCalls   int
+	reportPage      bool
 }
 
-func (s *fakeSource) FeedIdentity(feedURL string) (string, error) {
+func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
 	return FeedIdentityFromURL(feedURL, "afdian")
 }
+
+func (s *fakeSource) KnownCategories() []string { return s.knownCategories }
 
 func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) ([]Candidate, error) {
 	s.discoverCalls++
@@ -49,6 +54,9 @@ func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, err
 
 func (s *fakeSource) Comments(_ context.Context, candidate Candidate) (string, error) {
 	s.commentCalls = append(s.commentCalls, candidate.ID)
+	if s.emptyComments {
+		return "", nil
+	}
 	errs := s.commentErrs[candidate.ID]
 	if err := popError(&errs); err != nil {
 		s.commentErrs[candidate.ID] = errs
@@ -59,6 +67,7 @@ func (s *fakeSource) Comments(_ context.Context, candidate Candidate) (string, e
 }
 
 type fakeDestination struct {
+	entriesCalls   int
 	feeds          []Feed
 	feed           Feed
 	entries        []Entry
@@ -76,6 +85,7 @@ func (d *fakeDestination) Feed(context.Context, int64) (Feed, error) {
 }
 
 func (d *fakeDestination) Entries(context.Context, int64) ([]Entry, error) {
+	d.entriesCalls++
 	return append([]Entry(nil), d.entries...), nil
 }
 
@@ -352,22 +362,23 @@ func TestFeedIdentityFromURL(t *testing.T) {
 	tests := []struct {
 		name    string
 		feedURL string
-		want    string
+		want    Identity
 		ok      bool
 	}{
-		{"plain", "http://rssgen:8000/feed/afdian/alice", "alice", true},
-		{"escaped", "https://rss.example/feed/afdian/%E7%88%B1", "爱", true},
-		{"wrong route", "https://rss.example/feed/zhihu/alice", "", false},
-		{"missing slug", "https://rss.example/feed/afdian", "", false},
-		{"extra segment", "https://rss.example/feed/afdian/alice/more", "", false},
-		{"encoded slash", "https://rss.example/feed/afdian/a%2Fb", "", false},
-		{"relative", "/feed/afdian/alice", "", false},
+		{"plain", "http://rssgen:8000/feed/afdian/alice", Identity{SourceID: "alice"}, true},
+		{"escaped", "https://rss.example/feed/afdian/%E7%88%B1", Identity{SourceID: "爱"}, true},
+		{"include", "http://rssgen/feed/afdian/alice?include=b,a", Identity{SourceID: "alice", Categories: []string{"a", "b"}}, true},
+		{"wrong route", "https://rss.example/feed/zhihu/alice", Identity{}, false},
+		{"missing slug", "https://rss.example/feed/afdian", Identity{}, false},
+		{"extra segment", "https://rss.example/feed/afdian/alice/more", Identity{}, false},
+		{"encoded slash", "https://rss.example/feed/afdian/a%2Fb", Identity{}, false},
+		{"relative", "/feed/afdian/alice", Identity{}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := FeedIdentityFromURL(tt.feedURL, "afdian")
-			if (err == nil) != tt.ok || got != tt.want {
-				t.Fatalf("FeedIdentityFromURL(%q) = %q, %v", tt.feedURL, got, err)
+			if (err == nil) != tt.ok || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("FeedIdentityFromURL(%q) = %+v, %v", tt.feedURL, got, err)
 			}
 		})
 	}
@@ -387,4 +398,126 @@ func attrsMap(attrs []any) map[string]any {
 		}
 	}
 	return result
+}
+
+func TestParseCategories(t *testing.T) {
+	for _, tt := range []struct {
+		raw  string
+		want []string
+	}{
+		{" b, a,,b,  c , ", []string{"a", "b", "c"}},
+		{"", nil},
+	} {
+		if got := ParseCategories(tt.raw); !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("ParseCategories(%q) = %v, want %v", tt.raw, got, tt.want)
+		}
+	}
+}
+
+func TestRunCategoryFiltersAndMissingCounts(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		query   string
+		include []string
+		want    map[string]int
+		count   int
+	}{
+		{"request overrides URL", "?include=article", []string{"answer"}, map[string]int{"answer": 2}, 2},
+		{"URL fallback", "?include=article", nil, map[string]int{"article": 1}, 1},
+		{"no filter", "", nil, map[string]int{"answer": 2, "article": 1}, 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := &fakeSource{knownCategories: []string{"article", "answer"}, candidates: []Candidate{
+				{ID: "a1", Category: "answer"}, {ID: "a2", Category: "answer"}, {ID: "p1", Category: "article"},
+			}}
+			destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice" + tt.query}}
+			result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: tt.include}, Dependencies{Source: source, Destination: destination})
+			if err != nil || result.Scanned != tt.count || result.Missing != tt.count || !reflect.DeepEqual(result.MissingByCategory, tt.want) {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if len(source.detailCalls) != 0 || len(source.commentCalls) != 0 || len(destination.imported) != 0 {
+				t.Fatal("dry-run must not fetch details/comments or import")
+			}
+		})
+	}
+}
+
+func TestRunRejectsInvalidCategoriesBeforeReadingEntriesAndDiscovery(t *testing.T) {
+	for _, fromURL := range []bool{false, true} {
+		source := &fakeSource{knownCategories: []string{"article", "answer"}}
+		destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
+		req := Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: []string{"invalid"}}
+		if fromURL {
+			req.IncludeCategories = nil
+			destination.feed.FeedURL += "?include=invalid"
+		}
+		_, err := Run(context.Background(), req, Dependencies{Source: source, Destination: destination})
+		if err == nil || !strings.Contains(err.Error(), "invalid") || !strings.Contains(err.Error(), "answer, article") {
+			t.Fatalf("invalid category error = %v", err)
+		}
+		if source.discoverCalls != 0 || destination.entriesCalls != 0 {
+			t.Fatalf("discover=%d entries=%d", source.discoverCalls, destination.entriesCalls)
+		}
+	}
+}
+
+func TestRunListKeepsFeedWithInvalidInclude(t *testing.T) {
+	source := &fakeSource{knownCategories: []string{"answer"}}
+	destination := &fakeDestination{feeds: []Feed{{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice?include=invalid"}}}
+	result, err := Run(context.Background(), Request{Action: ActionList}, Dependencies{Source: source, Destination: destination})
+	if err != nil || len(result.Feeds) != 1 || result.Feeds[0].ID != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+// 未知类别照常导入：RSS 路径会发布这类条目，回填不得与之分叉。
+func TestRunImportsUnknownCategoryAndUsesInlineContent(t *testing.T) {
+	source := &fakeSource{knownCategories: []string{"answer"}, emptyComments: true, candidates: []Candidate{
+		{ID: "known", Category: "answer", Content: "<p>inline</p>"},
+		{ID: "unknown", Category: "unknown", Content: "<p>unknown</p>"},
+	}}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}, importErrs: map[string][]error{}}
+	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{Source: source, Destination: destination})
+	if err != nil || result.Scanned != 2 || result.Imported != 2 || len(result.Warnings) != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if !reflect.DeepEqual(result.MissingByCategory, map[string]int{"answer": 1, "unknown": 1}) {
+		t.Fatalf("missing_by_category=%v", result.MissingByCategory)
+	}
+	if len(source.detailCalls) != 0 || len(destination.imported) != 2 || destination.imported[1].ExternalID != "unknown" || destination.imported[0].Content != source.candidates[0].Content {
+		t.Fatalf("detail=%v imports=%+v", source.detailCalls, destination.imported)
+	}
+}
+
+// 显式 --include 仍然排除未知类别：用户点名了要哪些类别。
+func TestRunExplicitIncludeStillExcludesUnknownCategory(t *testing.T) {
+	source := &fakeSource{knownCategories: []string{"answer"}, candidates: []Candidate{
+		{ID: "known", Category: "answer", Content: "<p>inline</p>"},
+		{ID: "unknown", Category: "unknown", Content: "<p>unknown</p>"},
+	}}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
+	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: []string{"answer"}},
+		Dependencies{Source: source, Destination: destination})
+	if err != nil || result.Scanned != 1 || result.Missing != 1 || !reflect.DeepEqual(result.MissingByCategory, map[string]int{"answer": 1}) {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunWithoutCategoriesIgnoresURLInclude(t *testing.T) {
+	source := &fakeSource{candidates: []Candidate{{ID: "a1"}}}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice?include=xxx"}}
+	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1}, Dependencies{Source: source, Destination: destination})
+	if err != nil || result.Scanned != 1 || result.Missing != 1 || len(result.MissingByCategory) != 0 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunExistingURLSkipsDifferentCandidateID(t *testing.T) {
+	url := "https://www.zhihu.com/question/1/answer/2"
+	source := &fakeSource{knownCategories: []string{"voteup_answer"}, candidates: []Candidate{{ID: "voteup_answer_2", Category: "voteup_answer", URL: url}}}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}, entries: []Entry{{URL: url, Hash: hashID("2")}}}
+	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{Source: source, Destination: destination})
+	if err != nil || result.Existing != 1 || result.Missing != 0 || result.Imported != 0 || len(destination.imported) != 0 || len(source.detailCalls) != 0 || len(source.commentCalls) != 0 {
+		t.Fatalf("result=%+v err=%v imports=%+v", result, err, destination.imported)
+	}
 }

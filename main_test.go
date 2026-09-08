@@ -87,7 +87,7 @@ func TestCommandWithoutSubcommandShowsHelp(t *testing.T) {
 			serverCalled = true
 			return nil
 		},
-		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+		runBackfill: func(context.Context, backfillCLIConfig, io.Writer) error {
 			backfillCalled = true
 			return nil
 		},
@@ -109,19 +109,19 @@ func TestCommandWithoutSubcommandShowsHelp(t *testing.T) {
 	if serverCalled || backfillCalled {
 		t.Fatalf("无子命令不应运行业务 action: server=%v backfill=%v", serverCalled, backfillCalled)
 	}
-	if got := output.String(); !strings.Contains(got, "COMMANDS:") || !strings.Contains(got, "server") || !strings.Contains(got, "afdian-backfill") {
+	if got := output.String(); !strings.Contains(got, "COMMANDS:") || !strings.Contains(got, "server") || !strings.Contains(got, "backfill") {
 		t.Fatalf("根帮助输出不完整: %q", got)
 	}
 }
 
-func TestAfdianBackfillHelpHasNoSideEffects(t *testing.T) {
+func TestBackfillHelpHasNoSideEffects(t *testing.T) {
 	var output bytes.Buffer
 	cmd := newCommand(commandDependencies{
 		runServer: func(context.Context) error {
 			t.Fatal("backfill help 不应启动 server")
 			return nil
 		},
-		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+		runBackfill: func(context.Context, backfillCLIConfig, io.Writer) error {
 			t.Fatal("backfill help 不应运行 backfill")
 			return nil
 		},
@@ -137,10 +137,10 @@ func TestAfdianBackfillHelpHasNoSideEffects(t *testing.T) {
 	cmd.Writer = &output
 	cmd.ErrWriter = &output
 
-	if err := cmd.Run(context.Background(), []string{"rssgen", "afdian-backfill", "--help"}); err != nil {
+	if err := cmd.Run(context.Background(), []string{"rssgen", "backfill", "--help"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got := output.String(); !strings.Contains(got, "--miniflux-url") || !strings.Contains(got, "--dry-run") {
+	if got := output.String(); !strings.Contains(got, "--source") || !strings.Contains(got, "--miniflux-url") || !strings.Contains(got, "--dry-run") {
 		t.Fatalf("backfill 帮助输出不完整: %q", got)
 	}
 }
@@ -152,7 +152,7 @@ func TestCommandDispatchesExplicitServer(t *testing.T) {
 			serverCalled = true
 			return nil
 		},
-		runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error {
+		runBackfill: func(context.Context, backfillCLIConfig, io.Writer) error {
 			t.Fatal("server 命令不应运行 backfill")
 			return nil
 		},
@@ -174,10 +174,10 @@ func TestCommandDispatchesExplicitServer(t *testing.T) {
 func TestCommandRejectsUnknownCommandAndPositionalArguments(t *testing.T) {
 	newTestCommand := func() *cli.Command {
 		return newCommand(commandDependencies{
-			runServer:         func(context.Context) error { return nil },
-			runAfdianBackfill: func(context.Context, afdianBackfillCLIConfig, io.Writer) error { return nil },
-			loadBackfillEnv:   func(string) error { return nil },
-			getenv:            func(string) string { return "present" },
+			runServer:       func(context.Context) error { return nil },
+			runBackfill:     func(context.Context, backfillCLIConfig, io.Writer) error { return nil },
+			loadBackfillEnv: func(string) error { return nil },
+			getenv:          func(string) string { return "present" },
 		})
 	}
 
@@ -230,15 +230,15 @@ func runBackfillCommandForTest(
 	t *testing.T,
 	args []string,
 	getenv func(string) string,
-) (afdianBackfillCLIConfig, error) {
+) (backfillCLIConfig, error) {
 	t.Helper()
-	var got afdianBackfillCLIConfig
+	var got backfillCLIConfig
 	cmd := newCommand(commandDependencies{
 		runServer: func(context.Context) error {
 			t.Fatal("backfill 命令不应启动 server")
 			return nil
 		},
-		runAfdianBackfill: func(_ context.Context, cfg afdianBackfillCLIConfig, _ io.Writer) error {
+		runBackfill: func(_ context.Context, cfg backfillCLIConfig, _ io.Writer) error {
 			got = cfg
 			return nil
 		},
@@ -253,12 +253,12 @@ func runBackfillCommandForTest(
 	var output bytes.Buffer
 	cmd.Writer = &output
 	cmd.ErrWriter = &output
-	argv := append([]string{"rssgen", "afdian-backfill"}, args...)
+	argv := append([]string{"rssgen", "backfill"}, args...)
 	err := cmd.Run(context.Background(), argv)
 	return got, err
 }
 
-func TestAfdianBackfillCommandBuildsConfig(t *testing.T) {
+func TestBackfillCommandBuildsConfig(t *testing.T) {
 	getenv := func(key string) string {
 		return map[string]string{
 			"MINIFLUX_API_TOKEN": "token",
@@ -267,41 +267,41 @@ func TestAfdianBackfillCommandBuildsConfig(t *testing.T) {
 	}
 
 	t.Run("list only needs Miniflux token", func(t *testing.T) {
-		cfg, err := runBackfillCommandForTest(t, []string{"--miniflux-url", "https://miniflux.example", "--list-feeds"}, func(key string) string {
+		cfg, err := runBackfillCommandForTest(t, []string{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--list-feeds"}, func(key string) string {
 			if key == "MINIFLUX_API_TOKEN" {
 				return "token"
 			}
 			return ""
 		})
-		if err != nil || cfg.action != backfill.ActionList || cfg.afdianCookie != "" {
+		if err != nil || cfg.source != "afdian" || cfg.action != backfill.ActionList || cfg.sourceCookie != "" {
 			t.Fatalf("cfg=%+v err=%v", cfg, err)
 		}
 	})
 
 	t.Run("execute defaults to one second", func(t *testing.T) {
-		cfg, err := runBackfillCommandForTest(t, []string{"--miniflux-url", "https://miniflux.example", "--feed-id", "42"}, getenv)
-		if err != nil || cfg.action != backfill.ActionExecute || cfg.feedID != 42 || cfg.requestInterval != time.Second {
+		cfg, err := runBackfillCommandForTest(t, []string{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "42"}, getenv)
+		if err != nil || cfg.source != "afdian" || cfg.sourceCookie != "auth=paid" || cfg.action != backfill.ActionExecute || cfg.feedID != 42 || cfg.requestInterval != time.Second {
 			t.Fatalf("cfg=%+v err=%v", cfg, err)
 		}
 	})
 
 	t.Run("dry run and slower interval", func(t *testing.T) {
 		cfg, err := runBackfillCommandForTest(t, []string{
-			"--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--dry-run", "--request-interval", "2s",
+			"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--dry-run", "--request-interval", "2s",
 		}, getenv)
-		if err != nil || cfg.action != backfill.ActionDryRun || cfg.requestInterval != 2*time.Second {
+		if err != nil || cfg.source != "afdian" || cfg.sourceCookie != "auth=paid" || cfg.action != backfill.ActionDryRun || cfg.requestInterval != 2*time.Second {
 			t.Fatalf("cfg=%+v err=%v", cfg, err)
 		}
 	})
 }
 
-func TestAfdianBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
+func TestBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
 	validEnv := func(key string) string { return "present" }
 	tests := [][]string{
-		{"--miniflux-url", "https://miniflux.example", "--feed-id", "1", "--request-interval", "999ms"},
-		{"--miniflux-url", "https://miniflux.example", "--list-feeds", "--feed-id", "1"},
-		{"--miniflux-url", "https://miniflux.example", "--list-feeds", "--dry-run"},
-		{"--miniflux-url", "https://miniflux.example"},
+		{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "1", "--request-interval", "999ms"},
+		{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--list-feeds", "--feed-id", "1"},
+		{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--list-feeds", "--dry-run"},
+		{"--source", "afdian", "--miniflux-url", "https://miniflux.example"},
 	}
 	for _, args := range tests {
 		if _, err := runBackfillCommandForTest(t, args, validEnv); err == nil {
@@ -309,7 +309,7 @@ func TestAfdianBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
 		}
 	}
 	if _, err := runBackfillCommandForTest(t,
-		[]string{"--miniflux-url", "https://miniflux.example", "--feed-id", "1"},
+		[]string{"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "1"},
 		func(key string) string {
 			if key == "MINIFLUX_API_TOKEN" {
 				return "token"
@@ -321,7 +321,25 @@ func TestAfdianBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
 	}
 }
 
-func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
+func TestBackfillCommandRequiresSource(t *testing.T) {
+	_, err := runBackfillCommandForTest(t, []string{
+		"--miniflux-url", "https://miniflux.example", "--list-feeds",
+	}, func(string) string { return "present" })
+	if err == nil || !strings.Contains(err.Error(), "source") || !strings.Contains(err.Error(), "Required") {
+		t.Fatalf("缺 --source 应报必填错误: %v", err)
+	}
+}
+
+func TestBackfillCommandRejectsUnknownSource(t *testing.T) {
+	_, err := runBackfillCommandForTest(t, []string{
+		"--source", "bilibili", "--miniflux-url", "https://miniflux.example", "--list-feeds",
+	}, func(string) string { return "present" })
+	if err == nil || !strings.Contains(err.Error(), "bilibili") || !strings.Contains(err.Error(), "zhihu") || !strings.Contains(err.Error(), "afdian") {
+		t.Fatalf("未知 source 错误应包含传入值及可用值: %v", err)
+	}
+}
+
+func TestRunBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
 	var logs bytes.Buffer
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
@@ -339,14 +357,15 @@ func TestRunAfdianBackfillListsEligibleFeedsWithoutServerConfig(t *testing.T) {
 	defer server.Close()
 
 	var output bytes.Buffer
-	err := runAfdianBackfill(context.Background(), afdianBackfillCLIConfig{
+	err := runBackfill(context.Background(), backfillCLIConfig{
+		source:          "afdian",
 		action:          backfill.ActionList,
 		minifluxURL:     server.URL,
 		requestInterval: time.Second,
 		minifluxToken:   "token",
 	}, &output)
 	if err != nil {
-		t.Fatalf("runAfdianBackfill: %v", err)
+		t.Fatalf("runBackfill: %v", err)
 	}
 	if !strings.Contains(output.String(), "42") || !strings.Contains(output.String(), "Alice") || strings.Contains(output.String(), "Bob") {
 		t.Fatalf("output = %q", output.String())
@@ -981,5 +1000,83 @@ func TestStatusHandlerDisabled(t *testing.T) {
 	}
 	if body["enabled"] != false {
 		t.Fatalf("enabled = %v, want false", body["enabled"])
+	}
+}
+
+func TestBackfillCommandRejectsFlagsForOtherSources(t *testing.T) {
+	for _, flags := range [][]string{{"--include", "a"}, {"--include-self-interaction"}} {
+		args := append([]string{"--source", "afdian", "--miniflux-url", "http://miniflux.example", "--feed-id", "1"}, flags...)
+		_, err := runBackfillCommandForTest(t, args, func(string) string { return "present" })
+		if err == nil || !strings.Contains(err.Error(), flags[0]) || !strings.Contains(err.Error(), "zhihu") {
+			t.Fatalf("flags=%v err=%v", flags, err)
+		}
+	}
+}
+
+func TestBackfillCommandRejectsSourceFlagsWithListFeeds(t *testing.T) {
+	for _, flags := range [][]string{{"--include", "answer"}, {"--include-self-interaction"}} {
+		args := append([]string{"--source", "zhihu", "--miniflux-url", "http://miniflux.example", "--list-feeds"}, flags...)
+		_, err := runBackfillCommandForTest(t, args, func(string) string { return "present" })
+		if err == nil || !strings.Contains(err.Error(), "--list-feeds") || !strings.Contains(err.Error(), flags[0]) {
+			t.Fatalf("flags=%v err=%v", flags, err)
+		}
+	}
+}
+
+func TestBackfillCommandBuildsZhihuConfig(t *testing.T) {
+	cfg, err := runBackfillCommandForTest(t, []string{
+		"--source", "zhihu", "--miniflux-url", "http://miniflux.example", "--feed-id", "1",
+		"--include", "voteup_answer,answer", "--include-self-interaction",
+	}, func(key string) string {
+		return map[string]string{"MINIFLUX_API_TOKEN": "token", "ZHIHU_COOKIE": "d_c0=test;"}[key]
+	})
+	if err != nil || cfg.source != "zhihu" || cfg.sourceCookie != "d_c0=test;" || strings.Join(cfg.includeCategories, ",") != "answer,voteup_answer" || !cfg.includeSelfInteraction {
+		t.Fatalf("unexpected Zhihu config: source=%s include=%v self=%v err=%v", cfg.source, cfg.includeCategories, cfg.includeSelfInteraction, err)
+	}
+}
+
+func TestBackfillCommandRequiresZhihuCookieExceptList(t *testing.T) {
+	getenv := func(key string) string {
+		if key == "MINIFLUX_API_TOKEN" {
+			return "token"
+		}
+		return ""
+	}
+	for _, action := range [][]string{{"--feed-id", "1"}, {"--feed-id", "1", "--dry-run"}} {
+		args := append([]string{"--source", "zhihu", "--miniflux-url", "http://miniflux.example"}, action...)
+		if _, err := runBackfillCommandForTest(t, args, getenv); err == nil || !strings.Contains(err.Error(), "ZHIHU_COOKIE") {
+			t.Fatalf("missing cookie error=%v", err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/feeds" || r.Header.Get("X-Auth-Token") != "token" {
+			t.Errorf("unexpected request %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "title": "Zhihu", "feed_url": "http://rssgen/feed/zhihu/alice?include=invalid"},
+			{"id": 2, "title": "Afdian", "feed_url": "http://rssgen/feed/afdian/alice"},
+		})
+	}))
+	defer server.Close()
+	cfg, err := runBackfillCommandForTest(t, []string{"--source", "zhihu", "--miniflux-url", server.URL, "--list-feeds"}, getenv)
+	if err != nil || cfg.sourceCookie != "" || cfg.action != backfill.ActionList {
+		t.Fatalf("list config error=%v", err)
+	}
+	var output bytes.Buffer
+	if err := runBackfill(context.Background(), cfg, &output); err != nil {
+		t.Fatalf("runBackfill list without cookie: %v", err)
+	}
+	if !strings.Contains(output.String(), "Zhihu") || strings.Contains(output.String(), "Afdian") {
+		t.Fatalf("output=%q", output.String())
+	}
+}
+
+func TestPrintBackfillResultSortsCategories(t *testing.T) {
+	var output bytes.Buffer
+	printBackfillResult(&output, backfill.ActionDryRun, backfill.Result{
+		MissingByCategory: map[string]int{"voteup_answer": 1, "answer": 3},
+	})
+	if !strings.Contains(output.String(), "missing_by_category=answer=3,voteup_answer=1\n") {
+		t.Fatalf("output=%q", output.String())
 	}
 }

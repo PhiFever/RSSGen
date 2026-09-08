@@ -276,6 +276,11 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 
 // fetchActivities 请求知乎用户动态 API。
 func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, error) {
+	return r.fetchActivitiesPaged(userID, limit, nil)
+}
+
+// fetchActivitiesPaged 翻页拉取动态。limit <= 0 表示不设上限，翻到上游自然结束。
+func (r *Route) fetchActivitiesPaged(userID string, limit int, onPage func(page, pageItems, total int)) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -294,7 +299,13 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 
 	var activities []zhihuActivity
 
-	for nextURL != "" && len(activities) < limit {
+	seen := map[string]struct{}{}
+	page := 0
+	for nextURL != "" && (limit <= 0 || len(activities) < limit) {
+		if _, ok := seen[nextURL]; ok {
+			break
+		}
+		seen[nextURL] = struct{}{}
 		// 获取签名
 		signResult, err := signzhihu.GetSignature(nextURL, dC0, "")
 		if err != nil {
@@ -322,6 +333,13 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 		}
 
 		activities = append(activities, data.Data...)
+		page++
+		if onPage != nil {
+			onPage(page, len(data.Data), len(activities))
+		}
+		if len(data.Data) == 0 {
+			break
+		}
 
 		// 翻页
 		if data.Paging.IsEnd {
@@ -334,7 +352,7 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 	}
 
 	// 截断到 limit
-	if len(activities) > limit {
+	if limit > 0 && len(activities) > limit {
 		activities = activities[:limit]
 	}
 

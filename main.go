@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -34,7 +35,7 @@ import (
 
 	// 注册路由（init 自动注册）
 	"github.com/PhiFever/RSSGen/internal/route/afdian"
-	_ "github.com/PhiFever/RSSGen/internal/route/zhihu"
+	"github.com/PhiFever/RSSGen/internal/route/zhihu"
 )
 
 func main() {
@@ -42,10 +43,10 @@ func main() {
 }
 
 type commandDependencies struct {
-	runServer         func(context.Context) error
-	runAfdianBackfill func(context.Context, afdianBackfillCLIConfig, io.Writer) error
-	loadBackfillEnv   func(string) error
-	getenv            func(string) string
+	runServer       func(context.Context) error
+	runBackfill     func(context.Context, backfillCLIConfig, io.Writer) error
+	loadBackfillEnv func(string) error
+	getenv          func(string) string
 }
 
 func runCLI(args []string) int {
@@ -57,10 +58,10 @@ func runCLI(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	cmd := newCommand(commandDependencies{
-		runServer:         runServer,
-		runAfdianBackfill: runAfdianBackfill,
-		loadBackfillEnv:   loadBackfillEnv,
-		getenv:            os.Getenv,
+		runServer:       runServer,
+		runBackfill:     runBackfill,
+		loadBackfillEnv: loadBackfillEnv,
+		getenv:          os.Getenv,
 	})
 	if err := cmd.Run(ctx, args); err != nil {
 		slog.Error("命令执行失败", "error", err)
@@ -93,18 +94,54 @@ func newCommand(deps commandDependencies) *cli.Command {
 					return deps.runServer(ctx)
 				},
 			},
-			newAfdianBackfillCommand(deps),
+			newBackfillCommand(deps),
 		},
 		// cli.Exit 默认会直接调用 os.Exit；交给 main 统一记录错误并决定退出码。
 		ExitErrHandler: func(context.Context, *cli.Command, error) {},
 	}
 }
 
-func newAfdianBackfillCommand(deps commandDependencies) *cli.Command {
+type backfillSourceSpec struct {
+	cookieEnv string
+	ownFlags  []string
+	newSource func(cfg backfillCLIConfig) (backfill.Source, error)
+}
+
+var backfillSources = map[string]backfillSourceSpec{
+	"afdian": {
+		cookieEnv: "AFDIAN_COOKIE",
+		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
+			return afdian.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval)
+		},
+	},
+	"zhihu": {
+		cookieEnv: "ZHIHU_COOKIE",
+		ownFlags:  []string{"include", "include-self-interaction", "max-items"},
+		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
+			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems)
+		},
+	},
+}
+
+func backfillSourceNames() string {
+	names := make([]string, 0, len(backfillSources))
+	for name := range backfillSources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+func newBackfillCommand(deps commandDependencies) *cli.Command {
 	return &cli.Command{
-		Name:  "afdian-backfill",
-		Usage: "将 Afdian 完整历史回填到已有 Miniflux feed",
+		Name:  "backfill",
+		Usage: "将数据源完整历史回填到已有 Miniflux feed",
 		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:     "source",
+				Usage:    "data source (available: " + backfillSourceNames() + ")",
+				Required: true,
+			},
 			&cli.StringFlag{
 				Name:     "miniflux-url",
 				Usage:    "Miniflux instance root URL",
@@ -116,15 +153,34 @@ func newAfdianBackfillCommand(deps commandDependencies) *cli.Command {
 			},
 			&cli.BoolFlag{
 				Name:  "list-feeds",
-				Usage: "list eligible Afdian feeds",
+				Usage: "list eligible feeds for the selected source",
 			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
 				Usage: "discover and reconcile without importing",
 			},
+			&cli.StringFlag{
+				Name:  "include",
+				Usage: "comma-separated categories overriding feed URL include (zhihu only)",
+			},
+			&cli.BoolFlag{
+				Name:  "include-self-interaction",
+				Usage: "include interactions with own content (zhihu only)",
+			},
+			&cli.IntFlag{
+				Name:  "max-items",
+				Usage: "maximum activities to scan, 0 for unlimited (zhihu only)",
+				Value: defaultBackfillMaxItems,
+				Validator: func(value int) error {
+					if value < 0 {
+						return fmt.Errorf("--max-items 不能为负数")
+					}
+					return nil
+				},
+			},
 			&cli.DurationFlag{
 				Name:  "request-interval",
-				Usage: "minimum interval between Afdian requests",
+				Usage: "minimum interval between source requests",
 				Value: time.Second,
 				Validator: func(value time.Duration) error {
 					if value < time.Second {
@@ -141,11 +197,11 @@ func newAfdianBackfillCommand(deps commandDependencies) *cli.Command {
 			if err := deps.loadBackfillEnv(".env"); err != nil {
 				return fmt.Errorf("加载 backfill 环境变量: %w", err)
 			}
-			cfg, err := afdianBackfillConfigFromCommand(cmd, deps.getenv)
+			cfg, err := backfillConfigFromCommand(cmd, deps.getenv)
 			if err != nil {
 				return err
 			}
-			return deps.runAfdianBackfill(ctx, cfg, cmd.Root().Writer)
+			return deps.runBackfill(ctx, cfg, cmd.Root().Writer)
 		},
 	}
 }
@@ -366,20 +422,46 @@ func makeRouter(
 	return r
 }
 
-type afdianBackfillCLIConfig struct {
-	action          backfill.Action
-	minifluxURL     string
-	feedID          int64
-	requestInterval time.Duration
-	minifluxToken   string
-	afdianCookie    string
+// defaultBackfillMaxItems 限制单次历史扫描的动态条数。知乎动态流不会自然收敛
+// （实测 7674 条仍未出现 is_end），无上限的回填等于上千次上游请求。
+const defaultBackfillMaxItems = 1000
+
+type backfillCLIConfig struct {
+	includeCategories      []string
+	includeSelfInteraction bool
+	maxItems               int
+	source                 string
+	action                 backfill.Action
+	minifluxURL            string
+	feedID                 int64
+	requestInterval        time.Duration
+	minifluxToken          string
+	sourceCookie           string
 }
 
-func afdianBackfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (afdianBackfillCLIConfig, error) {
-	cfg := afdianBackfillCLIConfig{
-		minifluxURL:     strings.TrimSpace(cmd.String("miniflux-url")),
-		feedID:          cmd.Int64("feed-id"),
-		requestInterval: cmd.Duration("request-interval"),
+func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (backfillCLIConfig, error) {
+	cfg := backfillCLIConfig{
+		includeCategories:      backfill.ParseCategories(cmd.String("include")),
+		includeSelfInteraction: cmd.Bool("include-self-interaction"),
+		maxItems:               cmd.Int("max-items"),
+		source:                 cmd.String("source"),
+		minifluxURL:            strings.TrimSpace(cmd.String("miniflux-url")),
+		feedID:                 cmd.Int64("feed-id"),
+		requestInterval:        cmd.Duration("request-interval"),
+	}
+	spec, ok := backfillSources[cfg.source]
+	if !ok {
+		return cfg, fmt.Errorf("未知数据源 %q，可用值: %s", cfg.source, backfillSourceNames())
+	}
+	for name, other := range backfillSources {
+		if name == cfg.source {
+			continue
+		}
+		for _, flag := range other.ownFlags {
+			if cmd.IsSet(flag) {
+				return cfg, fmt.Errorf("--%s 只适用于数据源 %s", flag, name)
+			}
+		}
 	}
 	if cfg.minifluxURL == "" {
 		return cfg, fmt.Errorf("必须显式传入 --miniflux-url")
@@ -395,6 +477,12 @@ func afdianBackfillConfigFromCommand(cmd *cli.Command, getenv func(string) strin
 	if listFeeds {
 		if cmd.IsSet("feed-id") {
 			return cfg, fmt.Errorf("--list-feeds 不接受 --feed-id")
+		}
+		// --list-feeds 只枚举 Miniflux feed，不扫描数据源历史，数据源专属过滤参数在此无效。
+		for _, flag := range spec.ownFlags {
+			if cmd.IsSet(flag) {
+				return cfg, fmt.Errorf("--list-feeds 不接受 --%s", flag)
+			}
 		}
 		cfg.action = backfill.ActionList
 	} else {
@@ -412,26 +500,30 @@ func afdianBackfillConfigFromCommand(cmd *cli.Command, getenv func(string) strin
 		return cfg, fmt.Errorf("必须设置 MINIFLUX_API_TOKEN")
 	}
 	if cfg.action != backfill.ActionList {
-		cfg.afdianCookie = strings.TrimSpace(getenv("AFDIAN_COOKIE"))
-		if cfg.afdianCookie == "" {
-			return cfg, fmt.Errorf("必须设置 AFDIAN_COOKIE")
+		cfg.sourceCookie = strings.TrimSpace(getenv(spec.cookieEnv))
+		if cfg.sourceCookie == "" {
+			return cfg, fmt.Errorf("必须设置 %s", spec.cookieEnv)
 		}
 	}
 	return cfg, nil
 }
 
-func runAfdianBackfill(ctx context.Context, cfg afdianBackfillCLIConfig, output io.Writer) error {
+func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) error {
 	destination, err := miniflux.New(cfg.minifluxURL, cfg.minifluxToken)
 	if err != nil {
 		return err
 	}
-	source, err := afdian.NewBackfillSource(cfg.afdianCookie, cfg.requestInterval)
+	spec, ok := backfillSources[cfg.source]
+	if !ok {
+		return fmt.Errorf("未知数据源 %q，可用值: %s", cfg.source, backfillSourceNames())
+	}
+	source, err := spec.newSource(cfg)
 	if err != nil {
 		return err
 	}
 	deps := backfill.Dependencies{Source: source, Destination: destination, Progress: slog.Info}
-	slog.Info("开始 Afdian 历史回填", "action", cfg.action, "feed_id", cfg.feedID)
-	result, runErr := backfill.Run(ctx, backfill.Request{Action: cfg.action, FeedID: cfg.feedID}, deps)
+	slog.Info("开始历史回填", "source", cfg.source, "action", cfg.action, "feed_id", cfg.feedID)
+	result, runErr := backfill.Run(ctx, backfill.Request{Action: cfg.action, FeedID: cfg.feedID, IncludeCategories: cfg.includeCategories}, deps)
 	if runErr == nil || result.Feed.ID != 0 || result.Scanned != 0 || result.Imported != 0 {
 		printBackfillResult(output, cfg.action, result)
 	}
@@ -448,9 +540,21 @@ func printBackfillResult(output io.Writer, action backfill.Action, result backfi
 		_ = writer.Flush()
 		return
 	}
-	_, _ = fmt.Fprintf(output, "feed_id=%d author_slug=%s scanned=%d existing=%d missing=%d duplicates=%d imported=%d duplicate_imports=%d comment_failures=%d\n",
+	_, _ = fmt.Fprintf(output, "feed_id=%d source_id=%s scanned=%d existing=%d missing=%d duplicates=%d imported=%d duplicate_imports=%d comment_failures=%d\n",
 		result.Feed.ID, result.SourceID, result.Scanned, result.Existing, result.Missing,
 		result.DuplicateCandidates, result.Imported, result.DuplicateImports, result.CommentFailures)
+	if len(result.MissingByCategory) > 0 {
+		categories := make([]string, 0, len(result.MissingByCategory))
+		for category := range result.MissingByCategory {
+			categories = append(categories, category)
+		}
+		sort.Strings(categories)
+		counts := make([]string, 0, len(categories))
+		for _, category := range categories {
+			counts = append(counts, fmt.Sprintf("%s=%d", category, result.MissingByCategory[category]))
+		}
+		_, _ = fmt.Fprintf(output, "missing_by_category=%s\n", strings.Join(counts, ","))
+	}
 	if result.MissingOldest != nil && result.MissingNewest != nil {
 		_, _ = fmt.Fprintf(output, "missing_range=%s..%s\n",
 			result.MissingOldest.UTC().Format(time.RFC3339), result.MissingNewest.UTC().Format(time.RFC3339))

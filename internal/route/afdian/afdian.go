@@ -374,9 +374,17 @@ type BackfillSource struct {
 }
 
 // FeedIdentity 校验 Afdian feed 路径并返回作者 slug。
-func (s *BackfillSource) FeedIdentity(feedURL string) (string, error) {
-	return backfill.FeedIdentityFromURL(feedURL, "afdian")
+func (s *BackfillSource) FeedIdentity(feedURL string) (backfill.Identity, error) {
+	identity, err := backfill.FeedIdentityFromURL(feedURL, "afdian")
+	if err != nil {
+		return backfill.Identity{}, err
+	}
+	// Afdian 没有 category 概念，丢弃 URL 上的 include。
+	return backfill.Identity{SourceID: identity.SourceID}, nil
 }
+
+// KnownCategories 返回 nil：Afdian 没有 category 概念。
+func (s *BackfillSource) KnownCategories() []string { return nil }
 
 // NewBackfillSource 创建串行且限速的 Afdian 历史适配器。
 func NewBackfillSource(cookie string, requestInterval time.Duration) (*BackfillSource, error) {

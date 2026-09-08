@@ -24,8 +24,9 @@ const (
 
 // Request 是一次回填运行的完整调用参数。
 type Request struct {
-	Action Action
-	FeedID int64
+	IncludeCategories []string
+	Action            Action
+	FeedID            int64
 }
 
 // Feed 是对账所需的 Miniflux feed 身份信息。
@@ -41,8 +42,16 @@ type Entry struct {
 	Hash string
 }
 
+// Identity 是从 feed URL 解析出的数据源身份与类别过滤。
+type Identity struct {
+	SourceID   string
+	Categories []string
+}
+
 // Candidate 是无需请求完整正文即可发现的数据源条目。
 type Candidate struct {
+	Content     string // 非空表示正文已随列表返回，Run 不再调用 Detail
+	Category    string // 无 category 概念的数据源恒为空串
 	ID          string
 	Title       string
 	Author      string
@@ -71,7 +80,8 @@ const (
 
 // Source 是历史内容源的内部接缝。
 type Source interface {
-	FeedIdentity(feedURL string) (string, error)
+	FeedIdentity(feedURL string) (Identity, error)
+	KnownCategories() []string
 	Discover(ctx context.Context, sourceID string, progress ProgressFunc) ([]Candidate, error)
 	Detail(ctx context.Context, candidate Candidate) (string, error)
 	Comments(ctx context.Context, candidate Candidate) (string, error)
@@ -94,6 +104,7 @@ type Warning struct {
 
 // Result 报告 Run 执行的可观察结果。
 type Result struct {
+	MissingByCategory   map[string]int
 	Feeds               []Feed
 	Feed                Feed
 	SourceID            string
@@ -167,13 +178,28 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		return result, fmt.Errorf("Miniflux feed 响应 ID=%d，与请求 ID=%d 不一致", feed.ID, req.FeedID)
 	}
 	result.Feed = feed
-	sourceID, err := deps.Source.FeedIdentity(feed.FeedURL)
+	identity, err := deps.Source.FeedIdentity(feed.FeedURL)
 	if err != nil {
 		return result, fmt.Errorf("feed %d 与当前数据源不匹配: %w", req.FeedID, err)
 	}
-	result.SourceID = sourceID
+	result.SourceID = identity.SourceID
 	reportProgress(deps.Progress, "目标 feed 已解析",
-		"feed_id", feed.ID, "feed_title", feed.Title, "source_id", sourceID)
+		"feed_id", feed.ID, "feed_title", feed.Title, "source_id", identity.SourceID)
+
+	effective := req.IncludeCategories
+	if len(effective) == 0 {
+		effective = identity.Categories
+	}
+	known := deps.Source.KnownCategories()
+	if known != nil {
+		for _, category := range effective {
+			if !containsCategory(known, category) {
+				valid := append([]string(nil), known...)
+				sort.Strings(valid)
+				return result, fmt.Errorf("非法类别 %q，可用值: %s", category, strings.Join(valid, ", "))
+			}
+		}
+	}
 
 	reportProgress(deps.Progress, "开始读取 Miniflux 现有条目", "feed_id", req.FeedID)
 	entries, err := retryValue(ctx, policy, func(ctx context.Context) ([]Entry, error) {
@@ -183,14 +209,27 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		return result, fmt.Errorf("读取 feed %d 的现有条目: %w", req.FeedID, err)
 	}
 	reportProgress(deps.Progress, "Miniflux 现有条目读取完成", "feed_id", req.FeedID, "entries", len(entries))
-	reportProgress(deps.Progress, "开始扫描数据源完整历史", "source_id", sourceID)
+	reportProgress(deps.Progress, "开始扫描数据源完整历史", "source_id", identity.SourceID)
 	candidates, err := retryValue(ctx, policy, func(ctx context.Context) ([]Candidate, error) {
-		return deps.Source.Discover(ctx, sourceID, deps.Progress)
+		return deps.Source.Discover(ctx, identity.SourceID, deps.Progress)
 	})
 	if err != nil {
 		return result, fmt.Errorf("发现数据源完整历史: %w", err)
 	}
-	reportProgress(deps.Progress, "数据源完整历史扫描完成", "source_id", sourceID, "candidates", len(candidates))
+	reportProgress(deps.Progress, "数据源完整历史扫描完成", "source_id", identity.SourceID, "candidates", len(candidates))
+
+	// 未知类别不拦截：RSS 路径会照常发布这类条目，回填必须与之一致。
+	// known == nil 表示该数据源没有类别概念，此时按类别过滤只会把候选清空。
+	if known != nil && len(effective) > 0 {
+		filtered := make([]Candidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			if !containsCategory(effective, candidate.Category) {
+				continue
+			}
+			filtered = append(filtered, candidate)
+		}
+		candidates = filtered
+	}
 
 	missing, err := reconcile(candidates, entries, &result)
 	if err != nil {
@@ -207,11 +246,14 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		current := index + 1
 		reportProgress(deps.Progress, "开始处理缺失条目",
 			"current", current, "total", len(missing), "post_id", candidate.ID, "title", candidate.Title)
-		content, err := retryValue(ctx, policy, func(ctx context.Context) (string, error) {
-			return deps.Source.Detail(ctx, candidate)
-		})
-		if err != nil {
-			return result, fmt.Errorf("获取文章 %s 详情: %w", candidate.ID, err)
+		content := candidate.Content
+		if content == "" {
+			content, err = retryValue(ctx, policy, func(ctx context.Context) (string, error) {
+				return deps.Source.Detail(ctx, candidate)
+			})
+			if err != nil {
+				return result, fmt.Errorf("获取文章 %s 详情: %w", candidate.ID, err)
+			}
 		}
 
 		comments, commentErr := retryValue(ctx, policy, func(ctx context.Context) (string, error) {
@@ -308,6 +350,12 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 			continue
 		}
 		missing = append(missing, candidate)
+		if candidate.Category != "" {
+			if result.MissingByCategory == nil {
+				result.MissingByCategory = make(map[string]int)
+			}
+			result.MissingByCategory[candidate.Category]++
+		}
 		result.Missing++
 		if candidate.PublishedAt.IsZero() {
 			continue
@@ -325,26 +373,48 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 }
 
 // FeedIdentityFromURL 校验 RSSGen feed 路径并解码单段数据源 ID。
-func FeedIdentityFromURL(feedURL, routeName string) (string, error) {
+func FeedIdentityFromURL(feedURL, routeName string) (Identity, error) {
 	u, err := url.Parse(feedURL)
 	if err != nil {
-		return "", fmt.Errorf("解析 feed_url: %w", err)
+		return Identity{}, fmt.Errorf("解析 feed_url: %w", err)
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("feed_url 必须是绝对 URL")
+		return Identity{}, fmt.Errorf("feed_url 必须是绝对 URL")
 	}
 	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
 	if len(parts) != 3 || parts[0] != "feed" || parts[1] != routeName || parts[2] == "" {
-		return "", fmt.Errorf("feed_url 路径必须是 /feed/%s/{source_id}", routeName)
+		return Identity{}, fmt.Errorf("feed_url 路径必须是 /feed/%s/{source_id}", routeName)
 	}
 	slug, err := url.PathUnescape(parts[2])
 	if err != nil {
-		return "", fmt.Errorf("解码数据源 ID: %w", err)
+		return Identity{}, fmt.Errorf("解码数据源 ID: %w", err)
 	}
 	if slug == "" || strings.Contains(slug, "/") {
-		return "", fmt.Errorf("数据源 ID 必须是单个非空路径段")
+		return Identity{}, fmt.Errorf("数据源 ID 必须是单个非空路径段")
 	}
-	return slug, nil
+	return Identity{SourceID: slug, Categories: ParseCategories(u.Query().Get("include"))}, nil
+}
+
+// ParseCategories 按 include 约定解析类别：逗号分隔、去空白、丢弃空串、去重并排序。
+func ParseCategories(raw string) []string {
+	var categories []string
+	for _, category := range strings.Split(raw, ",") {
+		category = strings.TrimSpace(category)
+		if category != "" && !containsCategory(categories, category) {
+			categories = append(categories, category)
+		}
+	}
+	sort.Strings(categories)
+	return categories
+}
+
+func containsCategory(categories []string, category string) bool {
+	for _, item := range categories {
+		if item == category {
+			return true
+		}
+	}
+	return false
 }
 
 func externalIDHash(id string) string {

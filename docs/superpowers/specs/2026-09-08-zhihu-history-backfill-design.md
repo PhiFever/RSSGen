@@ -42,6 +42,8 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 6. 作为操作者，我希望知乎回填扫描动态流直到上游自然结束，这样没有人为水位截断我的历史。
 7. 作为操作者，我希望翻页遇到重复游标时终止，这样上游分页异常不会变成无限请求。
 8. 作为操作者，我希望回填不设页数上限，这样安全阀不会与「补齐全历史」的目的冲突。
+
+   > **修订（2026-09-08，实测后）**：本条被实测推翻。见下文「不设页数上限」的修订。
 9. 作为操作者，我希望知乎正文随列表一次取回，这样回填不会为已经拿到的内容重复请求。
 10. 作为操作者，我希望回填生成的标题、链接、正文与 RSS 路径逐字一致，这样两条摄入路径的去重能够收敛。
 11. 作为操作者，我希望回填按 feed URL 上的 `include` 过滤类别，这样补进来的东西不会超出这个订阅原本的范围。
@@ -94,13 +96,21 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 
 - `Result` 新增 `MissingByCategory map[string]int` 与 `SkippedUnknown int`。不新增 `ScannedByCategory`：类别过滤发生在对账之前，过滤后 scanned 的键集与 missing 的键集完全相同，第二个 map 提供不了新信息。
 
+  > **修订（2026-09-08，实测后）**：`SkippedUnknown` 已删除。未知类别改为放行（见下文「未知类别」条的修订），该计数恒为 0，属于本次改动造成的未使用项。
+
 - `Source` 接口新增 `KnownCategories() []string`，返回该数据源的合法类别白名单；返回 `nil` 表示本数据源没有 category 概念。Afdian 返回 `nil`，与类别相关的全部逻辑对它整段跳过。这与之前拒绝为评论能力加接口方法的判断不冲突：`IncludeCategories` 已经是共享模块持有的概念，共享模块持有它却不知道取值域，向数据源问一次是职责划分而非能力协商。
 
-- `Run` 在 execute / dry-run 分支的顺序固定为：解析目标 feed 与 identity → 确定最终类别集合 → **校验类别** → 读取 Miniflux 现有条目 → 发现上游历史 → 跳过未知类别 → 按类别过滤 → 对账 →（dry-run 到此为止）→ 逐条导入。校验排在翻页之前，拼错的 `--include` 不会在翻完整段历史之后才暴露。
+- `Run` 在 execute / dry-run 分支的顺序固定为：解析目标 feed 与 identity → 确定最终类别集合 → **校验类别** → 读取 Miniflux 现有条目 → 发现上游历史 → 按类别过滤 → 对账 →（dry-run 到此为止）→ 逐条导入。校验排在翻页之前，拼错的 `--include` 不会在翻完整段历史之后才暴露。
 
 - 类别校验对**两条入口同等严格**：`--include` 与 feed URL 上的 `include` 有任一值不在 `KnownCategories()` 中即报错退出。`ActionList` 分支不做类别校验——`FeedIdentity` 在那里只用于判断 feed 是否属于当前数据源，让校验错误参与筛选会导致带非法 include 的 feed 从 `--list-feeds` 输出中静默消失，与「显式报错」的要求正相反。
 
 - 上游候选中 `Category` 不在 `KnownCategories()` 内的条目被**跳过**，计入 `SkippedUnknown` 并记录 `Warning`，不计入 `Scanned`。理由是回填与 RSS 路径的风险不对称：未识别类型在 `makeFeedItem` 中落到 `default` 分支，标题兜底为字面量「未知内容」，链接是拼出来的 `https://www.zhihu.com/{target_type}/{id}`；在 RSS 路径上这个降级结果会随缓存过期滚掉，在回填路径上它会成为 Miniflux 永久条目，而那个猜测出来的 URL 同时是 `reconcile` 的去重判据——一旦写错，将来即使代码支持了该类型也再匹配不上。跳过而非中断整次运行：知乎历史中出现一条早已下线的动态类型，不该让整份历史回填不了。
+
+  > **修订（2026-09-08，实测后）**：改为**放行**，按用户决定。跳过的做法让两条路径分叉：RSS 路径会把未识别类型照常发布给 Miniflux（`zhihu.go:410-418` 的 `default` 分支产出 item，category 兜底为 `target.Type`），回填却把它丢弃，与本设计反复强调的「两条路径逐字一致」冲突。实测 feed 87（`Chiaki_Hinata`）出现一条 `MEMBER_FOLLOW_FAVORITES` / `target_type=collection`（「关注了收藏夹」），被旧逻辑跳过。
+  >
+  > **遗留问题（已知，待后续处理）**：上面那段关于「猜测 URL 成为永久去重判据」的担忧**依然成立**，放行并没有解决它，只是接受了它。`https://www.zhihu.com/{target_type}/{id}` 猜对与否取决于类型——实测这条 `collection/26815754` 恰好是知乎收藏夹的真实 URL 格式，但没有任何机制保证下一种未知类型也这么走运。将来若为某个类型补上正式支持，其链接形态一旦与当年猜测的不同，`reconcile` 就匹配不上，会产生重复条目。用户已知悉并计划后续处理。
+  >
+  > 显式 `--include` 仍然排除未知类别：用户点名了要哪些类别，未知类别不在其中。`KnownCategories()` 保留，用途收窄为校验 `--include` 的取值。
 
 - 类别过滤与未知类型跳过均发生在 `reconcile` 之前，被排除的候选不参与对账，`Scanned` 保持「实际纳入对账的候选数」这一既有语义。
 
@@ -112,15 +122,21 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 
 - 翻页终止条件补齐为四条：`paging.is_end` 为真、`paging.next` 为空、本页 `data` 为空、**next URL 已见过**。最后一条是对齐 Afdian 既有不变量的缺口修补——`getPostListWithProgress` 用 `seenCursors` 挡游标回绕，而知乎侧目前只有前两条出口，此前靠 `len(activities) < limit` 兜底，`limit` 一拆就没有兜底了。不设页数上限：`--max-pages` 之类的安全阀与「补齐全历史」直接冲突，限流由 `--request-interval` 承担，规模预判由 dry-run 承担。
 
+  > **修订（2026-09-08，实测后）**：加上了 `--max-items`，默认 1000，`0` 表示不限制。原论证有两个漏洞，都是实测暴露的：其一，**「规模预判由 dry-run 承担」是循环论证**——dry-run 本身就要翻完整段历史，预判的代价等于它要预防的代价；实测对一个账号 dry-run 翻到 **1096 页 / 7674 条仍未出现 `is_end`**，光这一次预判就是 1096 次上游请求。其二，**中止不可用**：`Discover` 在 ctx 取消时返回 error，`Run` 随即 `return result, err`，`result.Scanned` 归零，杀进程等于这些请求全部作废，什么统计都拿不到。所以上限不是与目的冲突的安全阀，而是让"先小规模验证再放开"成为可能的前提。截断时通过 `ProgressFunc` 明确告知，不静默。
+
 - 候选构造完全复用 `makeFeedItem`：标题（含 `[action_text]` 前缀）、链接、GUID、正文（含问题描述前缀与 `fixLazyImages` 处理）、作者、发布时间全部取自它的输出，`Candidate.Content` 直接取 `FeedItem.Content`，`Candidate.ID` 取 `FeedItem.GUID`，`Candidate.Category` 取 `deriveCategory` 的结果。不复制任何渲染逻辑——RSS 路径与回填路径的身份一致性完全依赖这一点。
 
-- `Detail` 永远不会被 `Run` 调用（`Content` 恒非空），实现为返回错误以标记不可达。`Comments` 返回 `("", nil)`：`appendContent` 对空串是恒等操作，也不计入 `CommentFailures`，走的是既有正常分支，不产生虚假语义。此处与 `Detail` 的处理不同是有意的——`Detail` 返回空正文会让空文章被静默导入，而 `Comments` 本就是可选补充。
+- `Detail` 与 `Comments` 均实现为返回 `("", nil)`。`appendContent` 对空串是恒等操作，也不计入 `CommentFailures`，走的是既有正常分支，不产生虚假语义。
+
+  > **修订（实现阶段）**：本节原写作「`Content` 恒非空，故 `Detail` 不可达，实现为返回错误以标记之」。该前提是错的：`renderContent`（zhihu.go:473-493）在 `target.content` 缺失、为 `null` 或无法解析时返回 `("", false)`，若 `target.detail` 与 `target.excerpt` 也为空，`makeFeedItem` 产出的正文就是空串。而 `Run` 对 `Detail` 错误的处理是 `return result, err`——照原设计，历史中一条正文为空的动态会中断整次回填。空正文是 RSS 路径对同一条动态的真实渲染结果，回填照样导入才是「两条路径逐字一致」，因此 `Detail` 返回 `("", nil)`。
 
 - `KnownCategories()` 返回 `zhihu.go` 中已有的九个常量：`answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`，即 `verbCategoryMap` 的完整值域。
 
 - `include_self_interaction` 默认 `false`，与路由默认一致，`--include-self-interaction` 可覆盖。该过滤在适配器的 `Discover` 内完成（复用现有 `isSelfInteraction`），不提升到共享模块——它不是 category 维度的概念。注意它只在最终类别集合允许 `voteup_*` / `collected_*` 通过时才有实际作用。
 
-- `NewBackfillSource(cookie string, requestInterval time.Duration, includeSelfInteraction bool)` 在构造时校验 cookie 含 `d_c0`，缺失即报错，不等到第一次请求。类别校验不在构造函数中——它已由 `Run` 通过 `KnownCategories()` 统一承担。
+- `NewBackfillSource(cookie string, requestInterval time.Duration, includeSelfInteraction bool)` 在 **cookie 非空时**校验其含 `d_c0`，缺失即报错，不等到第一次请求。类别校验不在构造函数中——它已由 `Run` 通过 `KnownCategories()` 统一承担。
+
+  > **修订（实现阶段）**：原写作无条件校验，与 `ActionList` 冲突。CLI 只为非 List 动作读取 cookie（`--list-feeds` 仅需 `MINIFLUX_API_TOKEN`），而 `Run` 的 `ActionList` 分支仍需要一个 `Source` 来跑 `FeedIdentity`，无条件校验会让 `--source zhihu --list-feeds` 必然失败。真正的不变量是「不发请求的动作不需要凭证；发请求的动作在启动阶段就必须持有合法凭证」——List 只做 feed URL 字符串解析，不触碰 scraper。
 
 - `Discover` 通过 `ProgressFunc` 汇报翻页进度（页码、本页条数、累计条数），与 Afdian 对称。
 
@@ -154,6 +170,8 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 
 - 未知类别测试：构造一条 verb 与 target.type 均不在映射表中的动态，断言它被跳过、`SkippedUnknown` 递增、产生 `Warning`、不计入 `Scanned`、不产生导入。
 
+  > **修订（2026-09-08，实测后）**：断言反转为「照常导入、计入 `Scanned`、类别取 `target.type` 并出现在 `MissingByCategory`、不产生 `Warning`」；另加一条断言显式 `--include` 仍排除它。
+
 - 正文来源测试：断言 `Content` 非空的候选不触发 `Detail` 调用，且导入 Miniflux 的正文与 RSS 路径对同一条动态生成的正文逐字相同。
 
 - 身份一致性测试：断言 `Candidate.ID` 与 RSS 路径对同一条动态生成的 GUID 相同，覆盖 answer / article / pin 的裸 ID 形式与其余类别的 `{category}_{id}` 形式。
@@ -161,6 +179,8 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 - URL 判重碰撞测试：feed 中已存在某篇 answer 时，回填同一 target 的 `voteup_answer` 被计为已存在且不产生导入——断言这个期望行为，而非绕过它。
 
 - dry-run 测试：断言完整翻页、准确的 scanned/existing/missing 计数、`MissingByCategory` 分组正确、`SkippedUnknown` 正确，且零 detail / 零 comments / 零 import 调用。
+
+  > **修订（2026-09-08，实测后）**：去掉 `SkippedUnknown` 断言；另加 `TestBackfillStopsAtMaxItems`——上游永不返回 `is_end` 时，`--max-items` 是唯一的终止条件。
 
 - Afdian 回归测试：`KnownCategories()` 返回 `nil` 时类别逻辑整段跳过；带 `?include=` 的 Afdian feed URL 不会导致候选被过滤为空。
 
@@ -174,7 +194,9 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 - 为知乎抓取评论或渲染评论。
 - 修改知乎路由在 RSS 路径上的任何行为，包括条目顺序、默认条数、内容渲染。
 - 为回填路径新增图片归档、图片 URL 重写、enclosure 合成或媒体存储。
-- `--max-pages`、时间下界或任何形式的历史数量上限。
+- ~~`--max-pages`、时间下界或任何形式的历史数量上限。~~
+
+  > **修订（2026-09-08，实测后）**：`--max-items` 已进入范围，理由见上。时间下界仍不在范围内。
 - 保留 `afdian-backfill` 兼容别名。
 - 一次调用回填多个 feed，或隐式 `--all` 模式。
 - 清理 `docs/architecture-review.md` 中列出的假想接缝（`fetchActivitiesFn` 及 afdian 的四个函数字段）。

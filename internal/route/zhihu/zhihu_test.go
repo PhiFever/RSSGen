@@ -1549,3 +1549,41 @@ func TestMakeFeedItemWarnsWhenTitleEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestFetchActivitiesStopsAtEmptyOrRepeatedPage(t *testing.T) {
+	for _, empty := range []bool{false, true} {
+		name := "repeated next URL"
+		if empty {
+			name = "empty data"
+		}
+		t.Run(name, func(t *testing.T) {
+			requests := 0
+			var serverURL string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				data := []zhihuActivity{{Target: &zhihuTarget{ID: "1", Type: "article"}}}
+				if empty {
+					data = nil
+				}
+				writeZhihuJSON(t, w, activitiesResponse{
+					Data: data,
+					Paging: zhihuPaging{
+						Next:  serverURL + "/api/v3/moments/user1/activities?limit=5&desktop=true",
+						IsEnd: requests >= 2,
+					},
+				})
+			}))
+			defer server.Close()
+			serverURL = server.URL
+			withZhihuTestHost(t, server.URL)
+			r := New(config.ResolvedRouteConfig{Cookie: `d_c0="abc";`, RateLimit: 0.001})
+			_, err := r.fetchActivities("user1", 20)
+			if err != nil {
+				t.Fatalf("fetchActivities: %v", err)
+			}
+			if requests != 1 {
+				t.Fatalf("requests = %d, want 1", requests)
+			}
+		})
+	}
+}

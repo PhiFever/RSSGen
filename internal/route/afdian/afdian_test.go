@@ -927,3 +927,11 @@ func TestFetchLeavesHTMLContentNewlinesAlone(t *testing.T) {
 		t.Errorf("HTML 正文不应被改动\n got = %q\nwant = %q", result.Items[0].Content, want)
 	}
 }
+
+func TestBackfillFeedIdentityDiscardsInclude(t *testing.T) {
+	source := &BackfillSource{}
+	identity, err := source.FeedIdentity("http://rssgen/feed/afdian/alice?include=answer,article")
+	if err != nil || identity.SourceID != "alice" || len(identity.Categories) != 0 || source.KnownCategories() != nil {
+		t.Fatalf("identity=%+v err=%v categories=%v", identity, err, source.KnownCategories())
+	}
+}
