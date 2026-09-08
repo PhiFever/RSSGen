@@ -78,15 +78,50 @@ func commandExitCode(err error) int {
 	return 1
 }
 
+// helpSectionTitles 把 urfave/cli 帮助模板里的英文段落标题换成中文。
+// 用替换而不是整段复制模板：复制会让副本在升级 cli 时悄悄落后于上游的模板改动，
+// 替换只动标题词，其余模板逻辑继续跟随上游。"GLOBAL OPTIONS:" 必须先于 "OPTIONS:" 列出。
+var helpSectionTitles = strings.NewReplacer(
+	"GLOBAL OPTIONS:", "全局选项：",
+	"OPTIONS:", "选项：",
+	"NAME:", "名称：",
+	"USAGE:", "用法：",
+	"VERSION:", "版本：",
+	"DESCRIPTION:", "说明：",
+	"COMMANDS:", "命令：",
+	"CATEGORY:", "分类：",
+	"COPYRIGHT:", "版权：",
+)
+
+// localizeHelp 汉化 urfave/cli 自带的帮助文案。替换是幂等的，重复调用无副作用。
+func localizeHelp() {
+	// HideDefault 和 Local 沿用上游默认值，否则会多出 "(default: false)" 并传播到子命令。
+	cli.HelpFlag = &cli.BoolFlag{
+		Name:        "help",
+		Aliases:     []string{"h"},
+		Usage:       "显示帮助",
+		HideDefault: true,
+		Local:       true,
+	}
+	cli.UsageCommandHelp = "列出全部命令，或查看某个命令的帮助"
+	cli.ArgsUsageCommandHelp = "[命令]"
+	cli.RootCommandHelpTemplate = helpSectionTitles.Replace(cli.RootCommandHelpTemplate)
+	cli.CommandHelpTemplate = helpSectionTitles.Replace(cli.CommandHelpTemplate)
+	cli.SubcommandHelpTemplate = helpSectionTitles.Replace(cli.SubcommandHelpTemplate)
+}
+
 func newCommand(deps commandDependencies) *cli.Command {
+	localizeHelp()
 	return &cli.Command{
-		Name:    "rssgen",
-		Usage:   "将网站内容转换为 RSS/Atom，并提供历史回填工具",
-		Suggest: true,
+		Name:      "rssgen",
+		Usage:     "将网站内容转换为 RSS/Atom，并提供历史回填工具",
+		UsageText: "rssgen [全局选项] [命令 [命令选项]]",
+		Suggest:   true,
 		Commands: []*cli.Command{
 			{
-				Name:  "server",
-				Usage: "启动 RSS/Atom HTTP server",
+				Name:      "server",
+				Usage:     "启动 RSS/Atom HTTP 服务",
+				UsageText: "rssgen server [选项]",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					if err := rejectPositionalArgs(cmd); err != nil {
 						return err
@@ -134,38 +169,40 @@ func backfillSourceNames() string {
 
 func newBackfillCommand(deps commandDependencies) *cli.Command {
 	return &cli.Command{
-		Name:  "backfill",
-		Usage: "将数据源完整历史回填到已有 Miniflux feed",
+		Name:      "backfill",
+		Usage:     "将数据源完整历史回填到已有 Miniflux feed",
+		UsageText: "rssgen backfill [选项]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "source",
-				Usage:    "data source (available: " + backfillSourceNames() + ")",
+				Usage:    "数据源（可选：" + backfillSourceNames() + "）",
 				Required: true,
 			},
 			&cli.StringFlag{
 				Name:     "miniflux-url",
-				Usage:    "Miniflux instance root URL",
+				Usage:    "Miniflux 实例的根 URL",
 				Required: true,
 			},
 			&cli.Int64Flag{
 				Name:  "feed-id",
-				Usage: "existing Miniflux feed ID",
+				Usage: "目标 Miniflux feed 的 ID",
 			},
 			&cli.BoolFlag{
 				Name:  "list-feeds",
-				Usage: "list eligible feeds for the selected source",
+				Usage: "列出该数据源下可回填的 feed",
 			},
 			&cli.BoolFlag{
 				Name:  "dry-run",
-				Usage: "discover and reconcile without importing",
+				Usage: "只扫描并对账，不写入 Miniflux",
 			},
 			&cli.StringFlag{
-				Name:  "include",
-				Usage: "comma-separated categories overriding feed URL include (zhihu only)",
+				Name: "include",
+				Usage: "覆盖 feed URL 中 include 的类别，逗号分隔（仅知乎）；可选值：" +
+					strings.Join(zhihu.KnownBackfillCategories(), ", "),
 			},
 			&cli.BoolFlag{
 				Name:  "include-self-interaction",
-				Usage: "include interactions with own content (zhihu only)",
+				Usage: "保留作者对自己内容的赞同和收藏（仅知乎）",
 			},
 			&cli.StringFlag{
 				Name:  "start-before",
@@ -173,7 +210,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 			},
 			&cli.IntFlag{
 				Name:  "max-items",
-				Usage: "maximum activities to scan, 0 for unlimited (zhihu only)",
+				Usage: "最多扫描的动态条数，0 表示不限（仅知乎）",
 				Value: defaultBackfillMaxItems,
 				Validator: func(value int) error {
 					if value < 0 {
@@ -184,7 +221,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 			},
 			&cli.DurationFlag{
 				Name:  "request-interval",
-				Usage: "minimum interval between source requests",
+				Usage: "数据源请求之间的最小间隔",
 				Value: time.Second,
 				Validator: func(value time.Duration) error {
 					if value < time.Second {

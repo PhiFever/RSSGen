@@ -109,7 +109,7 @@ func TestCommandWithoutSubcommandShowsHelp(t *testing.T) {
 	if serverCalled || backfillCalled {
 		t.Fatalf("无子命令不应运行业务 action: server=%v backfill=%v", serverCalled, backfillCalled)
 	}
-	if got := output.String(); !strings.Contains(got, "COMMANDS:") || !strings.Contains(got, "server") || !strings.Contains(got, "backfill") {
+	if got := output.String(); !strings.Contains(got, "命令：") || !strings.Contains(got, "server") || !strings.Contains(got, "backfill") {
 		t.Fatalf("根帮助输出不完整: %q", got)
 	}
 }
