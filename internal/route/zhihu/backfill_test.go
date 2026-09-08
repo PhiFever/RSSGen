@@ -110,13 +110,14 @@ func TestBackfillDiscoverAllPages(t *testing.T) {
 		t.Fatalf("progress=%v", pages)
 	}
 
-	// 用同一组完整分页验证 dry-run 的现有条目、未知类别放行和缺失统计。
+	// 用同一组完整分页验证 dry-run 的现有条目和缺失统计。feed URL 未带 include，
+	// 默认只回填创作类，12 条候选里那条 unknown_type 因此不计入。
 	requests = 0
 	destination := &backfillTestDestination{entries: []backfill.Entry{{URL: "https://zhuanlan.zhihu.com/p/0"}}}
 	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionDryRun, FeedID: 1}, backfill.Dependencies{
 		Source: newBackfillTestSource(), Destination: destination,
 	})
-	if err != nil || requests != 3 || result.Scanned != 12 || result.Existing != 1 || result.Missing != 11 || !reflect.DeepEqual(result.MissingByCategory, map[string]int{"article": 10, "unknown_type": 1}) || len(destination.imported) != 0 {
+	if err != nil || requests != 3 || result.Scanned != 11 || result.Existing != 1 || result.Missing != 10 || !reflect.DeepEqual(result.MissingByCategory, map[string]int{"article": 10}) || len(destination.imported) != 0 {
 		t.Fatalf("dry-run result=%+v requests=%d err=%v imports=%v", result, requests, err, destination.imported)
 	}
 }
@@ -241,6 +242,11 @@ func TestBackfillConstructionIdentityAndNoOpMethods(t *testing.T) {
 		if err != nil || identity.SourceID != "alice" || !reflect.DeepEqual(identity.Categories, []string{"answer", "voteup_answer"}) {
 			t.Fatalf("identity=%+v err=%v", identity, err)
 		}
+		// feed URL 未带 include 时回落到创作类，而不是不过滤。
+		bare, err := source.FeedIdentity("http://rssgen/feed/zhihu/alice")
+		if err != nil || !reflect.DeepEqual(bare.Categories, []string{TypeAnswer, TypeArticle, TypePin}) {
+			t.Fatalf("默认类别 identity=%+v err=%v", bare, err)
+		}
 		want := []string{TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle, TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion, TypeFollowedCollection, TypeVoteupPin, TypeAskedQuestion}
 		if !reflect.DeepEqual(source.KnownCategories(), want) {
 			t.Fatalf("categories=%v", source.KnownCategories())
@@ -274,7 +280,7 @@ func (d *backfillTestDestination) Import(_ context.Context, _ int64, article bac
 	return backfill.ImportCreated, nil
 }
 
-func TestBackfillImportsEmptyAndInlineContentAndUnknownType(t *testing.T) {
+func TestBackfillImportsEmptyAndInlineContentAndSkipsUnknownType(t *testing.T) {
 	activities := []zhihuActivity{
 		backfillTestActivity("empty", "MEMBER_CREATE_ARTICLE", "article"),
 		backfillTestActivity("inline", "MEMBER_ANSWER_QUESTION", "answer"),
@@ -288,8 +294,9 @@ func TestBackfillImportsEmptyAndInlineContentAndUnknownType(t *testing.T) {
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
 	destination := &backfillTestDestination{}
+	// 默认类别不含 unknown_type，第三条被过滤；前两条的索引仍与 activities 对齐。
 	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionExecute, FeedID: 1}, backfill.Dependencies{Source: source, Destination: destination})
-	if err != nil || result.Imported != 3 || result.Scanned != 3 || len(result.Warnings) != 0 || len(destination.imported) != 3 {
+	if err != nil || result.Imported != 2 || result.Scanned != 2 || len(result.Warnings) != 0 || len(destination.imported) != 2 {
 		t.Fatalf("result=%+v err=%v imports=%+v", result, err, destination.imported)
 	}
 	for i, article := range destination.imported {

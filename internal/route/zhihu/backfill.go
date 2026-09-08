@@ -40,18 +40,39 @@ func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelf
 	return &BackfillSource{route: r, includeSelfInteraction: includeSelfInteraction, maxItems: maxItems, startOffset: startOffset}, nil
 }
 
-// FeedIdentity 保留 feed URL 中的类别过滤。
+// defaultBackfillCategories 是 feed URL 未带 include 时的回填默认类别：只要作者
+// 本人创作的内容。backfill 命令不加载 config.yml，够不到 RSS 路径的 default_include，
+// 默认值只能定在这里；要收藏、点赞、关注等类别时用 --include 显式列出。
+var defaultBackfillCategories = []string{TypeAnswer, TypeArticle, TypePin}
+
+// FeedIdentity 保留 feed URL 中的类别过滤；URL 未指定时回落到仅创作类。
 func (s *BackfillSource) FeedIdentity(feedURL string) (backfill.Identity, error) {
-	return backfill.FeedIdentityFromURL(feedURL, "zhihu")
+	identity, err := backfill.FeedIdentityFromURL(feedURL, "zhihu")
+	if err != nil {
+		return identity, err
+	}
+	if len(identity.Categories) == 0 {
+		identity.Categories = append([]string(nil), defaultBackfillCategories...)
+	}
+	return identity, nil
+}
+
+// knownBackfillCategories 是知乎动态的全部合法类别，按创作、收藏、点赞、关注分组排列。
+// backfill.Run 的类别校验与 CLI 的 --include 帮助文本共用这一份，避免两处各写一遍而悄悄发散。
+var knownBackfillCategories = []string{
+	TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle,
+	TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion,
+	TypeFollowedCollection, TypeVoteupPin, TypeAskedQuestion,
+}
+
+// KnownBackfillCategories 返回合法类别的副本，供 CLI 组装 --include 的帮助文本。
+func KnownBackfillCategories() []string {
+	return append([]string(nil), knownBackfillCategories...)
 }
 
 // KnownCategories 返回知乎动态的合法类别。
 func (s *BackfillSource) KnownCategories() []string {
-	return []string{
-		TypeAnswer, TypeArticle, TypePin, TypeCollectedAnswer, TypeCollectedArticle,
-		TypeCollectedPin, TypeVoteupAnswer, TypeVoteupArticle, TypeFollowedQuestion,
-		TypeFollowedCollection, TypeVoteupPin, TypeAskedQuestion,
-	}
+	return KnownBackfillCategories()
 }
 
 // Discover 扫描至多 maxItems 条动态，类别过滤由 backfill.Run 执行。
