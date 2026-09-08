@@ -1116,3 +1116,34 @@ func TestBackfillCommandStartBeforeRejectsListFeeds(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestNotifyContextTwoStage(t *testing.T) {
+	second := make(chan struct{})
+	ctx, stop := notifyContextTwoStage(context.Background(), func() { close(second) }, syscall.SIGUSR1)
+	t.Cleanup(stop)
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+		if ctx.Err() != context.Canceled {
+			t.Fatalf("ctx.Err()=%v", ctx.Err())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("首个信号没有取消 ctx")
+	}
+	select {
+	case <-second:
+		t.Fatal("首个信号触发了 onSecond")
+	default:
+	}
+	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-second:
+	case <-time.After(3 * time.Second):
+		t.Fatal("第二个信号没有触发 onSecond")
+	}
+	stop()
+}

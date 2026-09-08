@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -55,7 +56,7 @@ func runCLI(args []string) int {
 	}))
 	slog.SetDefault(logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := notifyContextTwoStage(context.Background(), func() { os.Exit(130) }, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	cmd := newCommand(commandDependencies{
 		runServer:       runServer,
@@ -68,6 +69,42 @@ func runCLI(args []string) int {
 		return commandExitCode(err)
 	}
 	return 0
+}
+
+// notifyContextTwoStage 首个信号取消返回的 ctx，第二个信号调用 onSecond。
+// signal.NotifyContext 在首个信号后仍占着 SIGINT 的处理权且不再消费，
+// 中断后的收尾工作可能要跑几分钟，必须留一个立即退出的逃生口。
+func notifyContextTwoStage(parent context.Context, onSecond func(), signals ...os.Signal) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	signalsCh := make(chan os.Signal, 2)
+	signal.Notify(signalsCh, signals...)
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			signal.Stop(signalsCh)
+			close(done)
+			cancel()
+		})
+	}
+	go func() {
+		defer stop()
+		select {
+		case <-signalsCh:
+			cancel()
+			// 文案不能提回填：这里同时罩着 server 和 backfill 两条子命令。
+			slog.Warn("收到中断信号：正在收尾，再按一次 Ctrl+C 立即退出")
+		case <-ctx.Done():
+			return
+		}
+		select {
+		case <-signalsCh:
+			onSecond()
+		case <-done:
+		case <-parent.Done():
+		}
+	}()
+	return ctx, stop
 }
 
 func commandExitCode(err error) int {
