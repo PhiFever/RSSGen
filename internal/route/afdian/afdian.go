@@ -4,6 +4,7 @@ package afdian
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -286,12 +287,14 @@ func (r *Route) getAuthorID(sc *scraper.Scraper, authorSlug string) (string, err
 
 // getPostList 按 publish_sn 分页获取作者动态；limit <= 0 时遍历到自然结束。
 func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error) {
-	return r.getPostListWithProgress(sc, userID, authorSlug, limit, nil)
+	// RSS 路径没有 ctx 可供传递。
+	return r.getPostListWithProgress(context.Background(), sc, userID, authorSlug, limit, nil)
 }
 
 type postListProgressFunc func(page, pageItems, totalItems int)
 
 func (r *Route) getPostListWithProgress(
+	ctx context.Context,
 	sc *scraper.Scraper,
 	userID, authorSlug string,
 	limit int,
@@ -304,6 +307,9 @@ func (r *Route) getPostListWithProgress(
 	page := 0
 
 	for limit <= 0 || len(allPosts) < limit {
+		if err := ctx.Err(); err != nil {
+			return allPosts, err
+		}
 		page++
 		apiURL := fmt.Sprintf(
 			"%s/api/post/get-list?user_id=%s&type=old&publish_sn=%d&per_page=10&group_id=&all=1&is_public=&plan_id=&title=&name=",
@@ -408,22 +414,23 @@ func (s *BackfillSource) Discover(
 	ctx context.Context,
 	authorSlug string,
 	progress backfill.ProgressFunc,
-) ([]backfill.Candidate, error) {
+) (backfill.Scan, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return backfill.Scan{}, err
 	}
 	userID, err := s.route.getAuthorID(s.scraper, authorSlug)
 	if err != nil {
-		return nil, err
+		return backfill.Scan{}, err
 	}
-	posts, err := s.route.getPostListWithProgress(s.scraper, userID, authorSlug, 0, func(page, pageItems, totalItems int) {
+	posts, err := s.route.getPostListWithProgress(ctx, s.scraper, userID, authorSlug, 0, func(page, pageItems, totalItems int) {
 		if progress != nil {
 			progress("Afdian 历史扫描进度",
 				"source_id", authorSlug, "page", page, "page_items", pageItems, "scanned", totalItems)
 		}
 	})
-	if err != nil {
-		return nil, err
+	interrupted := len(posts) > 0 && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	if err != nil && !interrupted {
+		return backfill.Scan{}, err
 	}
 	candidates := make([]backfill.Candidate, 0, len(posts))
 	for _, post := range posts {
@@ -439,7 +446,7 @@ func (s *BackfillSource) Discover(
 			PublishedAt: publishedAt,
 		})
 	}
-	return candidates, nil
+	return backfill.Scan{Candidates: candidates, Truncated: interrupted, Interrupted: interrupted}, nil
 }
 
 // Detail 获取一篇付费文章正文。

@@ -22,6 +22,10 @@ type fakeSource struct {
 	commentCalls    []string
 	discoverCalls   int
 	reportPage      bool
+	scanNextCursor  string
+	discoverCancel  context.CancelFunc
+	scanTruncated   bool
+	scanInterrupted bool
 }
 
 func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
@@ -30,15 +34,23 @@ func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
 
 func (s *fakeSource) KnownCategories() []string { return s.knownCategories }
 
-func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) ([]Candidate, error) {
+func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) (Scan, error) {
 	s.discoverCalls++
+	if s.discoverCancel != nil {
+		s.discoverCancel()
+	}
 	if err := popError(&s.discoverErrs); err != nil {
-		return nil, err
+		return Scan{}, err
 	}
 	if s.reportPage {
 		reportProgress(progress, "数据源分页扫描进度", "page", 1, "page_items", len(s.candidates), "scanned", len(s.candidates))
 	}
-	return append([]Candidate(nil), s.candidates...), nil
+	return Scan{
+		Candidates:  append([]Candidate(nil), s.candidates...),
+		NextCursor:  s.scanNextCursor,
+		Truncated:   s.scanTruncated,
+		Interrupted: s.scanInterrupted,
+	}, nil
 }
 
 func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, error) {
@@ -113,6 +125,56 @@ func popError(errs *[]error) error {
 }
 
 func noWait(context.Context, time.Duration) error { return nil }
+
+func TestRunFlushesInterruptedScan(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &fakeSource{
+		candidates: []Candidate{
+			{ID: "a", URL: "https://afdian.com/p/a"},
+			{ID: "b", URL: "https://afdian.com/p/b"},
+		},
+		detailErrs:      map[string][]error{},
+		commentErrs:     map[string][]error{},
+		discoverCancel:  cancel,
+		scanTruncated:   true,
+		scanInterrupted: true,
+	}
+	destination := &fakeDestination{
+		feed:       Feed{ID: 42, FeedURL: "http://rssgen:8000/feed/afdian/alice"},
+		importErrs: map[string][]error{},
+	}
+	result, err := Run(ctx, Request{Action: ActionExecute, FeedID: 42}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+	})
+	if err != nil || result.Imported != len(source.candidates) || len(destination.imported) != len(source.candidates) || !result.ScanInterrupted {
+		t.Fatalf("Run result=%+v imports=%d err=%v", result, len(destination.imported), err)
+	}
+	if ctx.Err() != context.Canceled || source.discoverCalls != 1 {
+		t.Fatalf("ctx.Err()=%v discoverCalls=%d", ctx.Err(), source.discoverCalls)
+	}
+}
+
+func TestRunCarriesScanTruncationIntoResult(t *testing.T) {
+	source := &fakeSource{
+		candidates:     []Candidate{{ID: "a", URL: "https://afdian.com/p/a"}},
+		scanTruncated:  true,
+		scanNextCursor: "1995",
+	}
+	destination := &fakeDestination{feed: Feed{ID: 42, FeedURL: "http://rssgen:8000/feed/afdian/alice"}}
+
+	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 42}, Dependencies{
+		Source:      source,
+		Destination: destination,
+		Wait:        noWait,
+	})
+	if err != nil {
+		t.Fatalf("Run dry-run: %v", err)
+	}
+	if !result.ScanTruncated || result.ScanNextCursor != "1995" {
+		t.Fatalf("Result = %+v", result)
+	}
+}
 
 func TestRunListFiltersAfdianFeeds(t *testing.T) {
 	destination := &fakeDestination{feeds: []Feed{

@@ -59,6 +59,17 @@ type Candidate struct {
 	PublishedAt time.Time
 }
 
+// Scan 是一轮历史扫描的产物。Truncated 报告扫描是否提前停止（数量上限或中断），
+// Interrupted 进一步区分「是用户按了 Ctrl+C」，
+// NextCursor 给出续扫游标——三者一起让"还有更早的历史没扫"成为可断言的返回值，
+// 而不是一条淹没在导入日志里的提示。
+type Scan struct {
+	Candidates  []Candidate
+	NextCursor  string
+	Truncated   bool
+	Interrupted bool
+}
+
 // Article 是发送到 Miniflux Entry Import 的规范化条目。
 type Article struct {
 	Title       string
@@ -82,7 +93,7 @@ const (
 type Source interface {
 	FeedIdentity(feedURL string) (Identity, error)
 	KnownCategories() []string
-	Discover(ctx context.Context, sourceID string, progress ProgressFunc) ([]Candidate, error)
+	Discover(ctx context.Context, sourceID string, progress ProgressFunc) (Scan, error)
 	Detail(ctx context.Context, candidate Candidate) (string, error)
 	Comments(ctx context.Context, candidate Candidate) (string, error)
 }
@@ -118,6 +129,9 @@ type Result struct {
 	MissingOldest       *time.Time
 	MissingNewest       *time.Time
 	Warnings            []Warning
+	ScanNextCursor      string
+	ScanTruncated       bool
+	ScanInterrupted     bool
 }
 
 // WaitFunc 让测试可以确定性地替换重试等待。
@@ -210,11 +224,23 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 	}
 	reportProgress(deps.Progress, "Miniflux 现有条目读取完成", "feed_id", req.FeedID, "entries", len(entries))
 	reportProgress(deps.Progress, "开始扫描数据源完整历史", "source_id", identity.SourceID)
-	candidates, err := retryValue(ctx, policy, func(ctx context.Context) ([]Candidate, error) {
+	scan, err := retryValue(ctx, policy, func(ctx context.Context) (Scan, error) {
 		return deps.Source.Discover(ctx, identity.SourceID, deps.Progress)
 	})
 	if err != nil {
 		return result, fmt.Errorf("发现数据源完整历史: %w", err)
+	}
+	candidates := scan.Candidates
+	result.ScanTruncated = scan.Truncated
+	result.ScanNextCursor = scan.NextCursor
+	result.ScanInterrupted = scan.Interrupted
+	if scan.Interrupted {
+		// 扫描被用户中断：后续对账和导入必须脱离已取消的 ctx，
+		// 否则第一次 retryValue 就会以 context.Canceled 返回，已扫到的条目一条也落不了地。
+		// 用户的逃生口是 CLI 的第二次 Ctrl+C，不是这里。
+		ctx = context.WithoutCancel(ctx)
+		reportProgress(deps.Progress, "扫描已中断，开始写入已扫描部分",
+			"source_id", identity.SourceID, "candidates", len(candidates))
 	}
 	reportProgress(deps.Progress, "数据源完整历史扫描完成", "source_id", identity.SourceID, "candidates", len(candidates))
 

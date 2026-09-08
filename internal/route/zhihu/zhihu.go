@@ -2,6 +2,7 @@
 package zhihu
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -290,11 +291,12 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 
 // fetchActivities 请求知乎用户动态 API。
 func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, error) {
-	return r.fetchActivitiesPaged(userID, limit, 0, nil)
+	// RSS 路径没有 ctx 可供传递。
+	return r.fetchActivitiesPaged(context.Background(), userID, limit, 0, nil)
 }
 
 // fetchActivitiesPaged 翻页拉取动态。limit <= 0 表示不设上限，翻到上游自然结束。
-func (r *Route) fetchActivitiesPaged(userID string, limit int, startOffset int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
+func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit int, startOffset int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -320,6 +322,9 @@ func (r *Route) fetchActivitiesPaged(userID string, limit int, startOffset int64
 	seen := map[string]struct{}{}
 	page := 0
 	for nextURL != "" && (limit <= 0 || len(activities) < limit) {
+		if err := ctx.Err(); err != nil {
+			return activities, err
+		}
 		if _, ok := seen[nextURL]; ok {
 			break
 		}

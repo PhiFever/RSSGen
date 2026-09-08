@@ -654,6 +654,25 @@ func printBackfillResult(output io.Writer, action backfill.Action, result backfi
 	for _, warning := range result.Warnings {
 		_, _ = fmt.Fprintf(output, "warning post_id=%s operation=%s error=%v\n", warning.CandidateID, warning.Operation, warning.Err)
 	}
+	// 放在最后一行：扫描阶段就已确定，但导入阶段每条要打两行日志，
+	// 在扫描处提示会被淹没。next_offset 直接就是下一段 --start-before 的值。
+	if result.ScanInterrupted || result.ScanTruncated {
+		key, reason := "scan_truncated", "更早的历史未被扫描"
+		if result.ScanInterrupted {
+			key = "scan_interrupted"
+			reason = "扫描被中断，已扫描部分已写入"
+			// dry-run 一条都不写，"已写入"在这条路径上是假话。
+			if action == backfill.ActionDryRun {
+				reason = "扫描被中断，以上仅为已扫描部分的对账结果"
+			}
+		}
+		// 游标为空表示该数据源没有续扫游标（afdian），不要打出半截的 --start-before=。
+		resume := ""
+		if result.ScanNextCursor != "" {
+			resume = fmt.Sprintf("，续扫请传 --start-before=%s", result.ScanNextCursor)
+		}
+		_, _ = fmt.Fprintf(output, "%s=true %s%s\n", key, reason, resume)
+	}
 }
 
 // splitPath 将路径分割为非空段。

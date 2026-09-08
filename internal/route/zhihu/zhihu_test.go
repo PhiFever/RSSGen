@@ -2,6 +2,7 @@ package zhihu
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1775,7 +1776,7 @@ func TestFetchActivitiesPagedRetriesOn5xx(t *testing.T) {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	got, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, nil)
+	got, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, nil)
 	if err != nil || len(got) != 1 || got[0].ID != "1781935272669" || requests != 2 {
 		t.Fatalf("activities=%v requests=%d err=%v", got, requests, err)
 	}
@@ -1812,7 +1813,7 @@ func firstActivitiesRequest(t *testing.T, offset int64) string {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	if _, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, offset, nil); err != nil {
+	if _, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, offset, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(urls) != 1 {
@@ -1843,7 +1844,7 @@ func TestFetchActivitiesPagedDoesNotRetryOn4xx(t *testing.T) {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	_, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, nil)
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, nil)
 	httpErr, ok := err.(*route.HTTPError)
 	if !ok || httpErr.StatusCode != 403 || requests != 1 {
 		t.Fatalf("requests=%d err=%v", requests, err)
@@ -1857,7 +1858,7 @@ func TestFetchActivitiesPagedProgressCarriesNextOffset(t *testing.T) {
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
 	var got string
-	_, err := newBackfillTestSource().route.fetchActivitiesPaged("u", 0, 0, func(page, pageItems, total int, nextOffset string) {
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, func(page, pageItems, total int, nextOffset string) {
 		got = nextOffset
 	})
 	if err != nil || got != "1781935272669" {

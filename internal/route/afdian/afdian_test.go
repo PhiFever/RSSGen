@@ -600,18 +600,18 @@ func TestBackfillSourceUsesSharedParsingAndRendering(t *testing.T) {
 	source := &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: newTestScraper(t)}
 	var progress []string
 
-	candidates, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
+	scan, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
 		progress = append(progress, message+" "+fmt.Sprint(attrs))
 	})
-	if err != nil || len(candidates) != 1 {
-		t.Fatalf("Discover = %+v, %v", candidates, err)
+	if err != nil || len(scan.Candidates) != 1 || scan.Truncated {
+		t.Fatalf("Discover = %+v, %v", scan, err)
 	}
 	if len(progress) != 2 ||
 		!strings.Contains(progress[0], "page 1 page_items 1 scanned 1") ||
 		!strings.Contains(progress[1], "page 2 page_items 0 scanned 1") {
 		t.Fatalf("progress = %v", progress)
 	}
-	candidate := candidates[0]
+	candidate := scan.Candidates[0]
 	if candidate.ID != "p1" || candidate.Author != "Alice" || candidate.URL != server.URL+"/p/p1" || candidate.PublishedAt.Unix() != 123 {
 		t.Fatalf("candidate = %+v", candidate)
 	}
@@ -933,5 +933,40 @@ func TestBackfillFeedIdentityDiscardsInclude(t *testing.T) {
 	identity, err := source.FeedIdentity("http://rssgen/feed/afdian/alice?include=answer,article")
 	if err != nil || identity.SourceID != "alice" || len(identity.Categories) != 0 || source.KnownCategories() != nil {
 		t.Fatalf("identity=%+v err=%v categories=%v", identity, err, source.KnownCategories())
+	}
+}
+
+func TestBackfillDiscoverInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pages := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/user/get-profile-by-slug":
+			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"user": map[string]any{"user_id": "uid"}}})
+		case "/api/post/get-list":
+			pages++
+			if pages == 2 {
+				cancel()
+			}
+			var posts []map[string]any
+			if pages <= 3 {
+				posts = []map[string]any{{"post_id": fmt.Sprintf("p%d", pages), "publish_sn": 100 - pages}}
+			}
+			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"list": posts}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	withTestHost(t, server.URL)
+	source := &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: newTestScraper(t)}
+
+	scan, err := source.Discover(ctx, "alice", nil)
+	if err != nil || !scan.Interrupted || !scan.Truncated || pages != 2 || len(scan.Candidates) != 2 {
+		t.Fatalf("Discover scan=%+v pages=%d err=%v", scan, pages, err)
+	}
+	if scan.Candidates[0].ID != "p1" || scan.Candidates[1].ID != "p2" || scan.NextCursor != "" {
+		t.Fatalf("Discover scan=%+v", scan)
 	}
 }

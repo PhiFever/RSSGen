@@ -1099,6 +1099,20 @@ func TestPrintBackfillResultRangeLabelByAction(t *testing.T) {
 	}
 }
 
+func TestPrintBackfillResultPutsScanTruncationLast(t *testing.T) {
+	var output bytes.Buffer
+	printBackfillResult(&output, backfill.ActionExecute, backfill.Result{
+		Warnings:       []backfill.Warning{{CandidateID: "p1", Operation: "comments", Err: errors.New("boom")}},
+		ScanNextCursor: "1995",
+		ScanTruncated:  true,
+	})
+	lines := strings.Split(strings.TrimRight(output.String(), "\n"), "\n")
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "scan_truncated=true") || !strings.Contains(last, "--start-before=1995") {
+		t.Fatalf("截断提示应压在最后一行，output=%q", output.String())
+	}
+}
+
 func TestBackfillCommandStartBeforeRejectsAfdian(t *testing.T) {
 	_, err := runBackfillCommandForTest(t, []string{
 		"--source", "afdian", "--miniflux-url", "https://miniflux.example", "--feed-id", "42", "--start-before", "2026-06-01",
@@ -1114,6 +1128,36 @@ func TestBackfillCommandStartBeforeRejectsListFeeds(t *testing.T) {
 	}, func(string) string { return "present" })
 	if err == nil || !strings.Contains(err.Error(), "--list-feeds 不接受") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestPrintBackfillResultInterruptedLast(t *testing.T) {
+	cases := []struct {
+		name   string
+		action backfill.Action
+		cursor string
+		want   string
+	}{
+		{"execute 说已写入并给出续扫游标", backfill.ActionExecute, "1995",
+			"scan_interrupted=true 扫描被中断，已扫描部分已写入，续扫请传 --start-before=1995\n"},
+		{"dry-run 一条都没写，不能说已写入", backfill.ActionDryRun, "1995",
+			"scan_interrupted=true 扫描被中断，以上仅为已扫描部分的对账结果，续扫请传 --start-before=1995\n"},
+		{"数据源没有续扫游标时不打半截参数", backfill.ActionExecute, "",
+			"scan_interrupted=true 扫描被中断，已扫描部分已写入\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			printBackfillResult(&output, tc.action, backfill.Result{
+				ScanInterrupted: true,
+				ScanTruncated:   true,
+				ScanNextCursor:  tc.cursor,
+				Warnings:        []backfill.Warning{{CandidateID: "a", Operation: "comments", Err: errors.New("failed")}},
+			})
+			if !strings.HasSuffix(output.String(), tc.want) || strings.Contains(output.String(), "scan_truncated=") || !strings.Contains(output.String(), "warning post_id=a") {
+				t.Fatalf("output=%q want suffix %q", output.String(), tc.want)
+			}
+		})
 	}
 }
 

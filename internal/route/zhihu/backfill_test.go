@@ -60,13 +60,13 @@ func TestBackfillPaginationStops(t *testing.T) {
 			defer server.Close()
 			serverURL = server.URL
 			withZhihuTestHost(t, server.URL)
-			got, err := newBackfillTestSource().Discover(context.Background(), "alice", nil)
+			scan, err := newBackfillTestSource().Discover(context.Background(), "alice", nil)
 			want := 1
 			if stop == "empty data" {
 				want = 0
 			}
-			if err != nil || requests != 1 || len(got) != want {
-				t.Fatalf("Discover count=%d requests=%d err=%v", len(got), requests, err)
+			if err != nil || requests != 1 || len(scan.Candidates) != want {
+				t.Fatalf("Discover count=%d requests=%d err=%v", len(scan.Candidates), requests, err)
 			}
 		})
 	}
@@ -95,11 +95,11 @@ func TestBackfillDiscoverAllPages(t *testing.T) {
 	serverURL = server.URL
 	withZhihuTestHost(t, server.URL)
 	var pages []string
-	got, err := newBackfillTestSource().Discover(context.Background(), "alice", func(message string, attrs ...any) {
+	scan, err := newBackfillTestSource().Discover(context.Background(), "alice", func(message string, attrs ...any) {
 		pages = append(pages, message+" "+fmt.Sprint(attrs))
 	})
-	if err != nil || requests != 3 || len(got) != 12 || got[0].ID != "0" || got[11].ID != "11" {
-		t.Fatalf("Discover count=%d requests=%d err=%v", len(got), requests, err)
+	if err != nil || requests != 3 || len(scan.Candidates) != 12 || scan.Candidates[0].ID != "0" || scan.Candidates[11].ID != "11" {
+		t.Fatalf("Discover count=%d requests=%d err=%v", len(scan.Candidates), requests, err)
 	}
 	want := []string{
 		"知乎历史扫描进度 [source_id alice page 1 page_items 4 scanned 4 next_offset ]",
@@ -144,15 +144,12 @@ func TestBackfillStopsAtMaxItems(t *testing.T) {
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
 	source.maxItems = 6
-	var messages []string
-	got, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
-		messages = append(messages, message)
-	})
-	if err != nil || requests != 2 || len(got) != 6 {
-		t.Fatalf("candidates=%d requests=%d err=%v", len(got), requests, err)
+	scan, err := source.Discover(context.Background(), "alice", nil)
+	if err != nil || requests != 2 || len(scan.Candidates) != 6 {
+		t.Fatalf("candidates=%d requests=%d err=%v", len(scan.Candidates), requests, err)
 	}
-	if len(messages) == 0 || messages[len(messages)-1] != "已达知乎历史扫描上限，更早的历史未被扫描" {
-		t.Fatalf("messages=%v", messages)
+	if !scan.Truncated {
+		t.Fatalf("达到扫描上限却没有报告截断，scan=%+v", scan)
 	}
 }
 
@@ -178,11 +175,11 @@ func TestBackfillMatchesRSSIdentityAndContent(t *testing.T) {
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
-	got, err := source.Discover(context.Background(), "alice", nil)
-	if err != nil || len(got) != len(activities) {
-		t.Fatalf("Discover count=%d err=%v", len(got), err)
+	scan, err := source.Discover(context.Background(), "alice", nil)
+	if err != nil || len(scan.Candidates) != len(activities) {
+		t.Fatalf("Discover count=%d err=%v", len(scan.Candidates), err)
 	}
-	for i, candidate := range got {
+	for i, candidate := range scan.Candidates {
 		item := source.route.makeFeedItem(activities[i])
 		wantID := fmt.Sprint(i + 1)
 		if i >= 3 {
@@ -212,13 +209,13 @@ func TestBackfillSelfInteraction(t *testing.T) {
 	for _, include := range []bool{false, true} {
 		source := newBackfillTestSource()
 		source.includeSelfInteraction = include
-		got, err := source.Discover(context.Background(), "alice", nil)
+		scan, err := source.Discover(context.Background(), "alice", nil)
 		want := 1
 		if include {
 			want = 3
 		}
-		if err != nil || len(got) != want || got[len(got)-1].ID != "3" {
-			t.Fatalf("include=%v candidates=%+v err=%v", include, got, err)
+		if err != nil || len(scan.Candidates) != want || scan.Candidates[len(scan.Candidates)-1].ID != "3" {
+			t.Fatalf("include=%v candidates=%+v err=%v", include, scan.Candidates, err)
 		}
 	}
 }
@@ -335,24 +332,46 @@ func TestBackfillDiscoverTruncationCursorCoversDroppedItems(t *testing.T) {
 
 	source := newBackfillTestSource()
 	source.maxItems = 6
-	var pages []string
-	got, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
-		pages = append(pages, message+" "+fmt.Sprint(attrs))
-	})
-	if err != nil || len(got) != 6 {
-		t.Fatalf("Discover count=%d err=%v", len(got), err)
+	scan, err := source.Discover(context.Background(), "alice", nil)
+	if err != nil || len(scan.Candidates) != 6 {
+		t.Fatalf("Discover count=%d err=%v", len(scan.Candidates), err)
+	}
+	if !scan.Truncated {
+		t.Fatalf("达到扫描上限却没有报告截断，scan=%+v", scan)
 	}
 	// 第 6 条（最后一条被保留的）activity id = 2000-5 = 1995；整页末尾是 2000-7 = 1993。
-	var truncation string
-	for _, line := range pages {
-		if strings.HasPrefix(line, "已达知乎历史扫描上限") {
-			truncation = line
+	if scan.NextCursor != "1995" {
+		t.Errorf("续扫游标应为最后一条保留条目的 id 1995（而非整页末尾 1993），实际 %q", scan.NextCursor)
+	}
+}
+
+func TestBackfillDiscoverInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	requests := 0
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		id := fmt.Sprint(100 - requests)
+		activity := backfillTestActivity(id, "MEMBER_CREATE_ARTICLE", "article")
+		activity.ID = zhihuID(id)
+		if requests == 2 {
+			cancel()
 		}
+		writeZhihuJSON(t, w, activitiesResponse{
+			Data:   []zhihuActivity{activity},
+			Paging: zhihuPaging{IsEnd: requests >= 3, Next: fmt.Sprintf("%s/page/%d", serverURL, requests+1)},
+		})
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	withZhihuTestHost(t, server.URL)
+
+	scan, err := newBackfillTestSource().Discover(ctx, "alice", nil)
+	if err != nil || !scan.Interrupted || !scan.Truncated || requests != 2 || len(scan.Candidates) != 2 {
+		t.Fatalf("Discover scan=%+v requests=%d err=%v", scan, requests, err)
 	}
-	if truncation == "" {
-		t.Fatalf("没有截断提示，progress=%v", pages)
-	}
-	if !strings.Contains(truncation, "next_offset 1995") {
-		t.Errorf("截断提示未给出可续扫游标，应为最后一条保留条目的 id 1995（而非整页末尾 1993）:\n  %s", truncation)
+	if scan.Candidates[0].ID != "99" || scan.Candidates[1].ID != "98" || scan.NextCursor != "98" {
+		t.Fatalf("Discover scan=%+v", scan)
 	}
 }

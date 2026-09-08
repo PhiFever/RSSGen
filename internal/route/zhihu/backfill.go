@@ -2,6 +2,7 @@ package zhihu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -76,25 +77,26 @@ func (s *BackfillSource) KnownCategories() []string {
 }
 
 // Discover 扫描至多 maxItems 条动态，类别过滤由 backfill.Run 执行。
-func (s *BackfillSource) Discover(ctx context.Context, userID string, progress backfill.ProgressFunc) ([]backfill.Candidate, error) {
+func (s *BackfillSource) Discover(ctx context.Context, userID string, progress backfill.ProgressFunc) (backfill.Scan, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return backfill.Scan{}, err
 	}
-	activities, err := s.route.fetchActivitiesPaged(userID, s.maxItems, s.startOffset, func(page, pageItems, totalItems int, nextOffset string) {
+	activities, err := s.route.fetchActivitiesPaged(ctx, userID, s.maxItems, s.startOffset, func(page, pageItems, totalItems int, nextOffset string) {
 		if progress != nil {
 			progress("知乎历史扫描进度", "source_id", userID, "page", page, "page_items", pageItems, "scanned", totalItems, "next_offset", nextOffset)
 		}
 	})
-	if err != nil {
-		return nil, err
+	interrupted := len(activities) > 0 && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	if err != nil && !interrupted {
+		return backfill.Scan{}, err
 	}
+	scan := backfill.Scan{Interrupted: interrupted}
 	// 截断必须说出来：静默截断会让用户以为回填已覆盖全部历史。
 	// 游标取最后一条被保留的动态，而非整页末尾——按 maxItems 截断会丢弃该页剩余条目，
 	// 用整页末尾续扫会让这几条永远落不进任何窗口。
-	if s.maxItems > 0 && len(activities) >= s.maxItems && progress != nil {
-		progress("已达知乎历史扫描上限，更早的历史未被扫描",
-			"source_id", userID, "max_items", s.maxItems,
-			"next_offset", string(activities[len(activities)-1].ID))
+	if interrupted || (s.maxItems > 0 && len(activities) >= s.maxItems) {
+		scan.Truncated = true
+		scan.NextCursor = string(activities[len(activities)-1].ID)
 	}
 	candidates := make([]backfill.Candidate, 0, len(activities))
 	for _, act := range activities {
@@ -114,7 +116,8 @@ func (s *BackfillSource) Discover(ctx context.Context, userID string, progress b
 		}
 		candidates = append(candidates, candidate)
 	}
-	return candidates, nil
+	scan.Candidates = candidates
+	return scan, nil
 }
 
 // Detail 无操作：动态列表就是完整来源，没有独立正文详情请求。
