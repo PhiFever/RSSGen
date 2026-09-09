@@ -106,7 +106,14 @@ func TestFetchWithMockServer(t *testing.T) {
 			writeJSON(t, w, resp)
 
 		case "/api/post/get-list":
-			// 返回帖子列表
+			// 返回帖子列表；第二页返回空列表以结束翻页
+			if r.URL.Query().Get("publish_sn") != "0" {
+				writeJSON(t, w, map[string]interface{}{
+					"ec":   200,
+					"data": map[string]interface{}{"list": []interface{}{}},
+				})
+				return
+			}
 			resp := map[string]interface{}{
 				"ec": 200,
 				"data": map[string]interface{}{
@@ -115,7 +122,7 @@ func TestFetchWithMockServer(t *testing.T) {
 							"post_id":      "post_001",
 							"title":        "测试文章",
 							"publish_time": 1700000000,
-							"publish_sn":   "100",
+							"publish_sn":   100,
 							"user":         map[string]interface{}{"name": "作者"},
 							"pics":         []interface{}{},
 						},
@@ -136,27 +143,53 @@ func TestFetchWithMockServer(t *testing.T) {
 			}
 			writeJSON(t, w, resp)
 
+		case "/api/comment/get-list":
+			// 返回评论
+			resp := map[string]interface{}{
+				"ec": 200,
+				"data": map[string]interface{}{
+					"list": []interface{}{
+						map[string]interface{}{
+							"user":         map[string]interface{}{"name": "读者"},
+							"publish_time": 1700000100,
+							"content":      "评论内容",
+						},
+					},
+				},
+			}
+			writeJSON(t, w, resp)
+
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
+	withTestHost(t, server.URL)
 
-	// 注意：这个测试需要修改 Route 以支持自定义 base URL
-	// 当前实现使用硬编码的 hostURL，所以这个测试主要验证结构
 	r := New(config.ResolvedRouteConfig{
 		Cookie:    "test",
-		RateLimit: 0.1,
+		RateLimit: 0.001,
 	})
 
-	// 由于使用硬编码 URL，这里只测试 Fetch 不会 panic
-	// 实际测试需要 mock 整个 HTTP 客户端或允许自定义 base URL
-	_, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 5})
-	// 期望错误（因为 URL 是硬编码的，无法连接）
-	if err == nil {
-		t.Log("Fetch 成功（可能连接到了真实服务器）")
-	} else {
-		t.Logf("Fetch 错误（预期）: %v", err)
+	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 5})
+	if err != nil {
+		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("应返回 1 个 item, 实得 %d", len(result.Items))
+	}
+	item := result.Items[0]
+	if item.GUID != "post_001" || item.Title != "测试文章" || item.Author != "作者" {
+		t.Fatalf("item = %+v", item)
+	}
+	if item.Link != server.URL+"/p/post_001" {
+		t.Fatalf("Link = %q, want %q", item.Link, server.URL+"/p/post_001")
+	}
+	if item.PubDate == nil || item.PubDate.Unix() != 1700000000 {
+		t.Fatalf("PubDate = %v", item.PubDate)
+	}
+	if !strings.Contains(item.Content, "<p>测试内容</p>") || !strings.Contains(item.Content, "评论内容") {
+		t.Fatalf("Content = %q", item.Content)
 	}
 }
 

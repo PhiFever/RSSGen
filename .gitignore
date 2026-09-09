@@ -17,6 +17,7 @@ config.yml
 .env
 *.swp
 miniflux-db/
+*.log
 
 # Python 残留（本地 .venv 仍被对比脚本使用）
 .venv

@@ -89,13 +89,15 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 6. 删除假想接缝：统一两条路由的测试注入 【Worth exploring】
 
+状态：部分完成（2026-09-09）。`TestFetchWithMockServer` 已改走 `withTestHost` 并补上真实断言，`go test ./...` 不再发任何真实外网请求；函数字段的删除仍未做。
+
 涉及：`internal/route/afdian/afdian.go`（getAuthorIDFn、getPostListFn、getPostDetailFn、getPostCommentsFn 四个函数字段）、`internal/route/zhihu/zhihu.go`（fetchActivitiesFn）、`internal/route/afdian/afdian_test.go`（TestFetchWithMockServer）
 
-摩擦：afdian 结构体里 4 个函数字段只有一个生产适配器（一个适配器 = 假想接缝），而它们替换的行为已经经 `hostURL` + httptest 这条真实接缝测过——同一批行为存在两套测试注入机制，测试脚手架渗进了生产结构体。zhihu 用另一套（fetchActivitiesFn），两条路由测法不一致。`TestFetchWithMockServer` 起了 httptest 却不覆盖 hostURL，实际对真实爱发电发请求且断言永不失败。
+摩擦：afdian 结构体里 4 个函数字段只有一个生产适配器（一个适配器 = 假想接缝），而它们替换的行为已经经 `hostURL` + httptest 这条真实接缝测过——同一批行为存在两套测试注入机制，测试脚手架渗进了生产结构体。zhihu 用另一套（fetchActivitiesFn），两条路由测法不一致。（原「`TestFetchWithMockServer` 起了 httptest 却不覆盖 hostURL，实际对真实爱发电发请求且断言永不失败」已修复。）
 
-方向：统一 baseURL 可注入 + httptest；删 5 个函数字段，路由结构体回归纯数据；`TestFetchWithMockServer` 删除或改走 `setTestHostURL`。
+方向：统一 baseURL 可注入 + httptest；删 5 个函数字段，路由结构体回归纯数据。
 
-验收：路由结构体无函数字段；`go test ./...` 不发任何真实外网请求。
+验收：路由结构体无函数字段。
 
 ### 7. afdian 详情抓取：删掉被限速锁串行化的伪并发 【Worth exploring】
 
