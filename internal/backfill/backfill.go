@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -492,7 +491,9 @@ func retryValue[T any](ctx context.Context, policy retryPolicy, operation func(c
 			return value, nil
 		}
 		lastErr = err
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		// 本地 HTTP 客户端超时也满足 errors.Is(err, context.DeadlineExceeded)，
+		// 是否因调用方取消而放弃重试，必须以 ctx 自身状态为准。
+		if ctx.Err() != nil {
 			return zero, err
 		}
 		if attempt+1 < policy.maxAttempts {

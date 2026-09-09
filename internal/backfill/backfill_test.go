@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -581,5 +582,51 @@ func TestRunExistingURLSkipsDifferentCandidateID(t *testing.T) {
 	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{Source: source, Destination: destination})
 	if err != nil || result.Existing != 1 || result.Missing != 0 || result.Imported != 0 || len(destination.imported) != 0 || len(source.detailCalls) != 0 || len(source.commentCalls) != 0 {
 		t.Fatalf("result=%+v err=%v imports=%+v", result, err, destination.imported)
+	}
+}
+
+func TestRunRetriesClientTimeoutMistakenForContextDeadline(t *testing.T) {
+	source := &fakeSource{
+		candidates:  []Candidate{{ID: "post-1", URL: "https://afdian.com/p/post-1"}},
+		detailErrs:  map[string][]error{},
+		commentErrs: map[string][]error{},
+	}
+	destination := &fakeDestination{
+		feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"},
+		importErrs: map[string][]error{"post-1": {
+			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
+			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
+		}},
+	}
+
+	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var importIDs []string
+	for _, article := range destination.imported {
+		importIDs = append(importIDs, article.ExternalID)
+	}
+	if !reflect.DeepEqual(importIDs, []string{"post-1", "post-1", "post-1"}) || result.Imported != 1 {
+		t.Fatalf("import attempts=%v result=%+v", importIDs, result)
+	}
+}
+
+func TestRunStopsImmediatelyWhenCallerContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	source := &fakeSource{}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
+
+	_, err := Run(ctx, Request{Action: ActionExecute, FeedID: 1}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+	})
+	if !errors.Is(err, ctx.Err()) {
+		t.Fatalf("Run error=%v, want %v", err, ctx.Err())
+	}
+	if len(destination.imported) != 0 || source.discoverCalls != 0 {
+		t.Fatalf("imports=%v discoverCalls=%d", destination.imported, source.discoverCalls)
 	}
 }
