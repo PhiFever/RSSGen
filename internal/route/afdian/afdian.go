@@ -105,11 +105,7 @@ func init() {
 // Route 是爱发电路由实现。
 type Route struct {
 	route.BaseRoute
-	cfg               config.ResolvedRouteConfig
-	getAuthorIDFn     func(sc *scraper.Scraper, authorSlug string) (string, error)
-	getPostListFn     func(sc *scraper.Scraper, userID, authorSlug string, limit int) ([]afdianPost, error)
-	getPostDetailFn   func(sc *scraper.Scraper, postID string) (string, error)
-	getPostCommentsFn func(sc *scraper.Scraper, postID string) (afdianCommentList, error)
+	cfg config.ResolvedRouteConfig
 }
 
 // New 创建爱发电路由实例。
@@ -159,35 +155,19 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 	}
 
 	// 获取作者 ID
-	authorIDFn := r.getAuthorID
-	if r.getAuthorIDFn != nil {
-		authorIDFn = r.getAuthorIDFn
-	}
-	userID, err := authorIDFn(sc, authorSlug)
+	userID, err := r.getAuthorID(sc, authorSlug)
 	if err != nil {
 		return route.FeedResult{}, fmt.Errorf("获取作者 ID 失败: %w", err)
 	}
 
 	// 获取帖子列表
-	postListFn := r.getPostList
-	if r.getPostListFn != nil {
-		postListFn = r.getPostListFn
-	}
-	posts, err := postListFn(sc, userID, authorSlug, limit)
+	posts, err := r.getPostList(sc, userID, authorSlug, limit)
 	if err != nil {
 		return route.FeedResult{}, fmt.Errorf("获取帖子列表失败: %w", err)
 	}
 
 	contents := make([]string, len(posts))
 	contentOK := make([]bool, len(posts))
-	detailFn := r.getPostDetail
-	if r.getPostDetailFn != nil {
-		detailFn = r.getPostDetailFn
-	}
-	commentsFn := r.getPostComments
-	if r.getPostCommentsFn != nil {
-		commentsFn = r.getPostCommentsFn
-	}
 
 	var wg sync.WaitGroup
 	for idx := range posts {
@@ -197,7 +177,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			content, err := detailFn(sc, postID)
+			content, err := r.getPostDetail(sc, postID)
 			if err != nil {
 				// 获取详情失败，跳过此条目（与 Python 行为一致）
 				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
@@ -208,7 +188,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 			// 必须在追加评论之前做，renderComments 生成的换行是有意的，不能一起转掉。
 			content = strings.ReplaceAll(content, "\n", "<br>")
 			content = appendPics(content, pics)
-			comments, err := commentsFn(sc, postID)
+			comments, err := r.getPostComments(sc, postID)
 			if err != nil {
 				slog.Warn("文章评论获取失败，省略评论", "post_id", postID, "error", err)
 			} else {

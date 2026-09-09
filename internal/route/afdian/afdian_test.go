@@ -203,8 +203,44 @@ func makePost(postID string) afdianPost {
 	}
 }
 
-func emptyComments(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
-	return afdianCommentList{}, nil
+// newFetchTestServer 起一个覆盖 Fetch 全链路四个接口的 mock 服务，并把 hostURL 指向它。
+// detail/comments 回调返回 error 时对应接口回 403，用于模拟上游失败；comments 为 nil 表示返回空评论。
+func newFetchTestServer(t *testing.T, posts []afdianPost, detail func(string) (string, error), comments func(string) (afdianCommentList, error)) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var data any
+		switch req.URL.Path {
+		case "/api/user/get-profile-by-slug":
+			data = map[string]any{"user": map[string]any{"user_id": "uid"}}
+		case "/api/post/get-list":
+			data = map[string]any{"list": posts}
+		case "/api/post/get-detail":
+			content, err := detail(req.URL.Query().Get("post_id"))
+			if err != nil {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			data = map[string]any{"post": map[string]any{"content": content}}
+		case "/api/comment/get-list":
+			var list afdianCommentList
+			if comments != nil {
+				var err error
+				list, err = comments(req.URL.Query().Get("post_id"))
+				if err != nil {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+			}
+			data = list
+		default:
+			t.Errorf("unexpected path %s", req.URL.Path)
+			http.NotFound(w, req)
+			return
+		}
+		writeJSON(t, w, map[string]any{"ec": 200, "data": data})
+	}))
+	t.Cleanup(server.Close)
+	withTestHost(t, server.URL)
 }
 
 func sampleComments() afdianCommentList {
@@ -228,17 +264,13 @@ func sampleComments() afdianCommentList {
 }
 
 func TestFetchGetsDetailAndComments(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid1", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{makePost("post3")}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{makePost("post3")}
+	detail := func(_ string) (string, error) {
 		return "<p>detail</p>", nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -252,20 +284,16 @@ func TestFetchGetsDetailAndComments(t *testing.T) {
 // --- Pipeline 测试（迁移自 Python test_afdian_pipeline.py） ---
 
 func TestFetchPipelineOrderPreserved(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{
+		makePost("p1"), makePost("p2"), makePost("p3"),
+		makePost("p4"), makePost("p5"),
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{
-			makePost("p1"), makePost("p2"), makePost("p3"),
-			makePost("p4"), makePost("p5"),
-		}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, postID string) (string, error) {
+	detail := func(postID string) (string, error) {
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -286,17 +314,12 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 }
 
 func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{makePost("p1"), makePost("p2"), makePost("p3")}, nil
-	}
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{makePost("p1"), makePost("p2"), makePost("p3")}
 
 	var active int32
 	var maxActive int32
-	r.getPostDetailFn = func(_ *scraper.Scraper, postID string) (string, error) {
+	detail := func(postID string) (string, error) {
 		current := atomic.AddInt32(&active, 1)
 		for {
 			max := atomic.LoadInt32(&maxActive)
@@ -308,7 +331,8 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 		atomic.AddInt32(&active, -1)
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -325,22 +349,18 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 }
 
 func TestFetchPartialDetailFailure(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{
+		makePost("p1"), makePost("p2"), makePost("p3"), makePost("p4"),
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{
-			makePost("p1"), makePost("p2"), makePost("p3"), makePost("p4"),
-		}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, postID string) (string, error) {
+	detail := func(postID string) (string, error) {
 		if postID == "p3" {
 			return "", fmt.Errorf("simulated detail failure")
 		}
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -359,19 +379,16 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 }
 
 func TestFetchCommentFailureKeepsBody(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{makePost("p1")}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{makePost("p1")}
+	detail := func(_ string) (string, error) {
 		return "<p>body</p>", nil
 	}
-	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+	comments := func(_ string) (afdianCommentList, error) {
 		return afdianCommentList{}, fmt.Errorf("comment boom")
 	}
+
+	newFetchTestServer(t, posts, detail, comments)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -387,16 +404,13 @@ func TestFetchCommentFailureKeepsBody(t *testing.T) {
 
 func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 	// 验证详情失败时跳过该条目（与 Python 行为一致）
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{makePost("p1")}
+	detail := func(_ string) (string, error) {
+		return "", fmt.Errorf("详情接口失败")
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{makePost("p1")}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "", &route.HTTPError{StatusCode: 403, URL: "test"}
-	}
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -434,10 +448,12 @@ func TestRenderCommentsHotBeforeNormalAndReply(t *testing.T) {
 }
 
 func TestFetchGetAuthorIDError(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "", fmt.Errorf("用户不存在")
-	}
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	withTestHost(t, server.URL)
 
 	_, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err == nil {
@@ -446,13 +462,16 @@ func TestFetchGetAuthorIDError(t *testing.T) {
 }
 
 func TestFetchGetPostListError(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return nil, &route.HTTPError{StatusCode: 403, URL: "test"}
-	}
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/api/user/get-profile-by-slug" {
+			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"user": map[string]any{"user_id": "uid"}}})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	withTestHost(t, server.URL)
 
 	_, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err == nil {
@@ -838,25 +857,22 @@ func TestParseAfdianResponseInvalidJSON(t *testing.T) {
 }
 
 func TestFetchRendersPicsIntoContent(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	post := makePost("p1")
+	post.Pics = []string{
+		"https://pic1.afdiancdn.com/user/uid/common/a_w980_h1536_s127.jpeg",
+		"",
+		"https://pic1.afdiancdn.com/user/uid/common/b_w1012_h1544_s132.jpeg",
 	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		post := makePost("p1")
-		post.Pics = []string{
-			"https://pic1.afdiancdn.com/user/uid/common/a_w980_h1536_s127.jpeg",
-			"",
-			"https://pic1.afdiancdn.com/user/uid/common/b_w1012_h1544_s132.jpeg",
-		}
-		return []afdianPost{post}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	posts := []afdianPost{post}
+	detail := func(_ string) (string, error) {
 		return "正文文本", nil
 	}
-	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+	comments := func(_ string) (afdianCommentList, error) {
 		return sampleComments(), nil
 	}
+
+	newFetchTestServer(t, posts, detail, comments)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -879,19 +895,15 @@ func TestFetchRendersPicsIntoContent(t *testing.T) {
 }
 
 func TestFetchRendersPicsWithEmptyContent(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		post := makePost("p1")
-		post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
-		return []afdianPost{post}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	post := makePost("p1")
+	post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+	posts := []afdianPost{post}
+	detail := func(_ string) (string, error) {
 		return "", nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -904,21 +916,18 @@ func TestFetchRendersPicsWithEmptyContent(t *testing.T) {
 }
 
 func TestFetchConvertsPlainTextNewlines(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		post := makePost("p1")
-		post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
-		return []afdianPost{post}, nil
-	}
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	post := makePost("p1")
+	post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+	posts := []afdianPost{post}
+	detail := func(_ string) (string, error) {
 		return "第一段\n\n第二段", nil
 	}
-	r.getPostCommentsFn = func(_ *scraper.Scraper, _ string) (afdianCommentList, error) {
+	comments := func(_ string) (afdianCommentList, error) {
 		return sampleComments(), nil
 	}
+
+	newFetchTestServer(t, posts, detail, comments)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -938,18 +947,14 @@ func TestFetchConvertsPlainTextNewlines(t *testing.T) {
 }
 
 func TestFetchLeavesHTMLContentNewlinesAlone(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test"})
-	r.getAuthorIDFn = func(_ *scraper.Scraper, _ string) (string, error) {
-		return "uid", nil
-	}
-	r.getPostListFn = func(_ *scraper.Scraper, _, _ string, _ int) ([]afdianPost, error) {
-		return []afdianPost{makePost("p1")}, nil
-	}
+	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
+	posts := []afdianPost{makePost("p1")}
 	// 文章类正文是单行 HTML，实测不含字面换行符，转换应为空操作。
-	r.getPostDetailFn = func(_ *scraper.Scraper, _ string) (string, error) {
+	detail := func(_ string) (string, error) {
 		return `<p>段落一</p><p><img src="https://pic1.afdiancdn.com/x.png?imageView2/2/w/1280"></p>`, nil
 	}
-	r.getPostCommentsFn = emptyComments
+
+	newFetchTestServer(t, posts, detail, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {

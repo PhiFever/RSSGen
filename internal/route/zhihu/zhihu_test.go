@@ -1134,22 +1134,14 @@ func TestRenderPinContentUnknownBlockType(t *testing.T) {
 
 // --- Fetch 集成测试（迁移自 Python TestZhihuRouteFetch 等） ---
 
-// mockFetchActivities 创建一个返回固定 activities 的 fetchActivitiesFunc。
-func mockFetchActivities(activities []map[string]interface{}, err error) fetchActivitiesFunc {
-	return func(userID string, limit int) ([]zhihuActivity, error) {
-		if err != nil {
-			return nil, err
-		}
-		var typed []zhihuActivity
-		for _, act := range activities {
-			typed = append(typed, activityFromMap(act))
-		}
-		// 模拟截断行为
-		if len(typed) > limit {
-			return typed[:limit], nil
-		}
-		return typed, nil
-	}
+// serveActivities 起一个单页返回固定动态列表（is_end=true）的 mock 服务，并把 zhihuHostURL 指向它。
+func serveActivities(t *testing.T, activities []map[string]interface{}) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		writeZhihuJSON(t, w, map[string]any{"data": activities, "paging": map[string]any{"is_end": true}})
+	}))
+	t.Cleanup(server.Close)
+	withZhihuTestHost(t, server.URL)
 }
 
 // mkAnswerTarget 构造 answer 类型的 target map。
@@ -1187,8 +1179,8 @@ func TestFetchReturnsFeedItems(t *testing.T) {
 		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_ARTICLE", "action_text": "发表了文章",
 			"target": mkArticleTarget("789", "文章标题")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"kvxjr369f"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1213,9 +1205,10 @@ func TestFetchFiltersByInclude(t *testing.T) {
 			"target": mkPinTarget("2", "想法内容")},
 	}
 	r := New(config.ResolvedRouteConfig{
-		Cookie: "d_c0=test",
+		Cookie:    "d_c0=test",
+		RateLimit: 0.001,
 	})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
@@ -1236,8 +1229,8 @@ func TestFetchReturnsAllWhenNoInclude(t *testing.T) {
 		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_PIN", "action_text": "发布了想法",
 			"target": mkPinTarget("2", "想法内容")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1255,8 +1248,8 @@ func TestFetchIncludeFromFetchOptions(t *testing.T) {
 		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_PIN", "action_text": "发布了想法",
 			"target": mkPinTarget("2", "想法内容")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"test_user"}, route.FetchOptions{
 		Limit:   20,
@@ -1293,8 +1286,8 @@ func TestFetchFiltersSelfInteractionByDefault(t *testing.T) {
 				"author":       map[string]interface{}{"id": "USER_B", "name": "他人"},
 				"question":     map[string]interface{}{"id": "20", "title": "问题B"}}},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1327,9 +1320,10 @@ func TestFetchKeepsSelfInteractionWhenEnabled(t *testing.T) {
 	}
 	r := New(config.ResolvedRouteConfig{
 		Cookie:                 "d_c0=test",
+		RateLimit:              0.001,
 		IncludeSelfInteraction: true,
 	})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1350,8 +1344,8 @@ func TestFetchCreateVerbNotFilteredEvenIfAuthorsMatch(t *testing.T) {
 				"created_time": float64(1700000000), "author": author,
 				"question": map[string]interface{}{"id": "10", "title": "问题"}}},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1370,9 +1364,10 @@ func TestFetchIncludeExcludesCollectedWhenOnlyAnswer(t *testing.T) {
 			"target": mkAnswerTarget("2", "20", "问题2")},
 	}
 	r := New(config.ResolvedRouteConfig{
-		Cookie: "d_c0=test",
+		Cookie:    "d_c0=test",
+		RateLimit: 0.001,
 	})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"answer"}})
 	if err != nil {
@@ -1465,14 +1460,18 @@ func TestDeriveCategoryNoWarnOnKnownTypes(t *testing.T) {
 // --- Fetch 错误处理 ---
 
 func TestFetchPropagatesError(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(nil, fmt.Errorf("网络超时"))
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		writeZhihuBody(t, w, `{bad json`)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
 
 	_, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err == nil {
 		t.Fatal("Fetch 应返回错误")
 	}
-	if !strings.Contains(err.Error(), "网络超时") {
+	if !strings.Contains(err.Error(), "解析响应 JSON 失败") {
 		t.Errorf("错误信息应包含原始错误, 实得: %v", err)
 	}
 }
@@ -1491,8 +1490,8 @@ func TestFetchSkipsNilTarget(t *testing.T) {
 		{"id": "act2", "type": "feed", "verb": "MEMBER_CREATE_ARTICLE", "action_text": "发表了文章",
 			"target": mkArticleTarget("789", "文章标题")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1611,12 +1610,30 @@ func TestFetchStopsWhenLimitReached(t *testing.T) {
 		{"id": "act3", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
 			"target": mkAnswerTarget("3", "30", "问题3")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	pages := 0
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		pages++
+		if pages > 2 {
+			t.Errorf("limit=2 时不应请求第 %d 页", pages)
+			http.NotFound(w, req)
+			return
+		}
+		writeZhihuJSON(t, w, map[string]any{
+			"data":   activities[pages-1 : pages],
+			"paging": map[string]any{"is_end": false, "next": fmt.Sprintf("%s/api/v3/moments/u/activities?page=%d", server.URL, pages+1)},
+		})
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 2})
 	if err != nil {
 		t.Fatalf("Fetch 返回错误: %v", err)
+	}
+	if pages != 2 {
+		t.Errorf("limit=2 应只请求 2 页, 实得 %d", pages)
 	}
 	if len(result.Items) != 2 {
 		t.Errorf("limit=2 应返回 2 个 item, 实得 %d", len(result.Items))
@@ -1624,13 +1641,12 @@ func TestFetchStopsWhenLimitReached(t *testing.T) {
 }
 
 func TestFetchStopsWhenIsEndTrue(t *testing.T) {
-	// mockFetchActivities 已在内部处理截断，这里验证单页数据正常返回
 	activities := []map[string]interface{}{
 		{"id": "act1", "verb": "MEMBER_ANSWER_QUESTION", "action_text": "回答了问题",
 			"target": mkAnswerTarget("1", "10", "问题")},
 	}
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1642,9 +1658,13 @@ func TestFetchStopsWhenIsEndTrue(t *testing.T) {
 }
 
 func TestFetchStopsWhenNextMissing(t *testing.T) {
-	// 空 activities 列表模拟 next 缺失
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = mockFetchActivities([]map[string]interface{}{}, nil)
+	// 上游返回空页即停止翻页（此时 paging.next 也缺失），Fetch 返回空列表。
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		writeZhihuJSON(t, w, map[string]any{"data": []any{}, "paging": map[string]any{"is_end": false}})
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -1656,10 +1676,12 @@ func TestFetchStopsWhenNextMissing(t *testing.T) {
 }
 
 func TestFetchRaisesOnNon200(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test"})
-	r.fetchActivitiesFn = func(userID string, limit int) ([]zhihuActivity, error) {
-		return nil, &route.HTTPError{StatusCode: 403, URL: "https://www.zhihu.com/api/v3/moments/test/activities"}
-	}
+	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test", RateLimit: 0.001})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
 
 	_, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20})
 	if err == nil {
@@ -1682,9 +1704,10 @@ func TestFetchIncludeCollectedAnswer(t *testing.T) {
 			"target": mkAnswerTarget("2", "20", "问题2")},
 	}
 	r := New(config.ResolvedRouteConfig{
-		Cookie: "d_c0=test",
+		Cookie:    "d_c0=test",
+		RateLimit: 0.001,
 	})
-	r.fetchActivitiesFn = mockFetchActivities(activities, nil)
+	serveActivities(t, activities)
 
 	result, err := r.Fetch([]string{"u"}, route.FetchOptions{Limit: 20, Include: []string{"collected_answer"}})
 	if err != nil {

@@ -89,7 +89,7 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 6. 删除假想接缝：统一两条路由的测试注入 【Worth exploring】
 
-状态：部分完成（2026-09-09）。`TestFetchWithMockServer` 已改走 `withTestHost` 并补上真实断言，`go test ./...` 不再发任何真实外网请求；函数字段的删除仍未做。
+状态：已完成（2026-09-09）。5 个函数字段与 `fetchActivitiesFunc` 类型已删除，两条路由的 27 个 Fetch 测试统一改走 `withTestHost` / `withZhihuTestHost` + httptest。
 
 涉及：`internal/route/afdian/afdian.go`（getAuthorIDFn、getPostListFn、getPostDetailFn、getPostCommentsFn 四个函数字段）、`internal/route/zhihu/zhihu.go`（fetchActivitiesFn）、`internal/route/afdian/afdian_test.go`（TestFetchWithMockServer）
 
@@ -98,6 +98,11 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 方向：统一 baseURL 可注入 + httptest；删 5 个函数字段，路由结构体回归纯数据。
 
 验收：路由结构体无函数字段。
+
+改后遗留的两处断言语义变化（因旧假接缝与真实实现行为不一致）：
+
+- `TestFetchStopsWhenLimitReached`：旧 mock 自行按 limit 截断，真实实现里 limit 只约束翻页循环、不截断单页条目。改为每页 1 条 + `paging.next` 驱动，断言 limit=2 时只请求 2 页。
+- `TestFetchPropagatesError`：改用「200 + 非法 JSON」触发解析失败，与仍断言 403 的 `TestFetchRaisesOnNon200` 区分（5xx 会触发 `fetchActivitiesPaged` 的重试 sleep，错误路径一律避开 5xx）。
 
 ### 7. afdian 详情抓取：删掉被限速锁串行化的伪并发 【Worth exploring】
 

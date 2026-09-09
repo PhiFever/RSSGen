@@ -96,9 +96,6 @@ func init() {
 	})
 }
 
-// fetchActivitiesFunc 是 fetchActivities 的函数签名，用于测试注入。
-type fetchActivitiesFunc func(userID string, limit int) ([]zhihuActivity, error)
-
 type activitiesResponse struct {
 	Data   []zhihuActivity `json:"data"`
 	Paging zhihuPaging     `json:"paging"`
@@ -203,8 +200,7 @@ type zhihuPinPlaylistItem struct {
 // Route 是知乎路由实现。
 type Route struct {
 	route.BaseRoute
-	cfg               config.ResolvedRouteConfig
-	fetchActivitiesFn fetchActivitiesFunc // 可替换的 fetchActivities（测试用）
+	cfg config.ResolvedRouteConfig
 }
 
 // New 创建知乎路由实例。
@@ -257,11 +253,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 	include := opts.Include
 	includeSelfInteraction := r.cfg.IncludeSelfInteraction
 
-	fetchFn := r.fetchActivities
-	if r.fetchActivitiesFn != nil {
-		fetchFn = r.fetchActivitiesFn
-	}
-	activities, err := fetchFn(userID, limit)
+	activities, err := r.fetchActivities(userID, limit)
 	if err != nil {
 		return route.FeedResult{}, fmt.Errorf("获取知乎动态失败: %w", err)
 	}
