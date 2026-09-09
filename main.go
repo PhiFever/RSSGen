@@ -188,9 +188,9 @@ var backfillSources = map[string]backfillSourceSpec{
 	},
 	"zhihu": {
 		cookieEnv: "ZHIHU_COOKIE",
-		ownFlags:  []string{"include", "include-self-interaction", "max-items", "start-before"},
+		ownFlags:  []string{"include", "include-self-interaction", "max-items", "start-before", "stop-after"},
 		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
-			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems, cfg.startBefore)
+			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems, cfg.startBefore, cfg.stopAfter)
 		},
 	},
 }
@@ -205,61 +205,28 @@ func backfillSourceNames() string {
 }
 
 func newBackfillCommand(deps commandDependencies) *cli.Command {
+	run := func(ctx context.Context, cmd *cli.Command) error {
+		if err := rejectPositionalArgs(cmd); err != nil {
+			return err
+		}
+		if err := deps.loadBackfillEnv(".env"); err != nil {
+			return fmt.Errorf("加载 backfill 环境变量: %w", err)
+		}
+		cfg, err := backfillConfigFromCommand(cmd, deps.getenv)
+		if err != nil {
+			return err
+		}
+		return deps.runBackfill(ctx, cfg, cmd.Root().Writer)
+	}
 	return &cli.Command{
 		Name:      "backfill",
-		Usage:     "将数据源完整历史回填到已有 Miniflux feed",
-		UsageText: "rssgen backfill [选项]",
+		Usage:     "列出订阅源、补齐历史或重刷已有条目",
+		UsageText: "rssgen backfill [公共选项] <list|execute|refresh> [选项]",
 		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:     "source",
-				Usage:    "数据源（可选：" + backfillSourceNames() + "）",
-				Required: true,
-			},
-			&cli.StringFlag{
-				Name:     "miniflux-url",
-				Usage:    "Miniflux 实例的根 URL",
-				Required: true,
-			},
-			&cli.Int64Flag{
-				Name:  "feed-id",
-				Usage: "目标 Miniflux feed 的 ID",
-			},
-			&cli.BoolFlag{
-				Name:  "list-feeds",
-				Usage: "列出该数据源下可回填的 feed",
-			},
-			&cli.BoolFlag{
-				Name:  "dry-run",
-				Usage: "只扫描并对账，不写入 Miniflux",
-			},
-			&cli.StringFlag{
-				Name: "include",
-				Usage: "覆盖 feed URL 中 include 的类别，逗号分隔（仅知乎）；可选值：" +
-					strings.Join(zhihu.KnownBackfillCategories(), ", "),
-			},
-			&cli.BoolFlag{
-				Name:  "include-self-interaction",
-				Usage: "保留作者对自己内容的赞同和收藏（仅知乎）",
-			},
-			&cli.StringFlag{
-				Name:  "start-before",
-				Usage: "起始毫秒游标或日期（YYYY-MM-DD / RFC3339，仅知乎）",
-			},
-			&cli.IntFlag{
-				Name:  "max-items",
-				Usage: "最多扫描的动态条数，0 表示不限（仅知乎）",
-				Value: defaultBackfillMaxItems,
-				Validator: func(value int) error {
-					if value < 0 {
-						return fmt.Errorf("--max-items 不能为负数")
-					}
-					return nil
-				},
-			},
+			&cli.StringFlag{Name: "source", Usage: "数据源（可选：" + backfillSourceNames() + "）", Required: true},
+			&cli.StringFlag{Name: "miniflux-url", Usage: "Miniflux 实例的根 URL", Required: true},
 			&cli.DurationFlag{
-				Name:  "request-interval",
-				Usage: "数据源请求之间的最小间隔",
-				Value: time.Second,
+				Name: "request-interval", Usage: "数据源请求之间的最小间隔", Value: time.Second,
 				Validator: func(value time.Duration) error {
 					if value < time.Second {
 						return fmt.Errorf("--request-interval 不能小于 1s")
@@ -268,18 +235,37 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 				},
 			},
 		},
+		Commands: []*cli.Command{
+			{Name: "list", Usage: "列出该数据源下可回填的 feed", Action: run},
+			{Name: "execute", Usage: "补齐 Miniflux 缺失的历史条目", Flags: backfillScanFlags(), Action: run},
+			{Name: "refresh", Usage: "重刷已有条目的标题与正文（仅知乎，必须指定扫描范围）", Flags: backfillScanFlags(), Action: run},
+		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := rejectPositionalArgs(cmd); err != nil {
 				return err
 			}
-			if err := deps.loadBackfillEnv(".env"); err != nil {
-				return fmt.Errorf("加载 backfill 环境变量: %w", err)
-			}
-			cfg, err := backfillConfigFromCommand(cmd, deps.getenv)
-			if err != nil {
-				return err
-			}
-			return deps.runBackfill(ctx, cfg, cmd.Root().Writer)
+			return cli.ShowSubcommandHelp(cmd)
+		},
+	}
+}
+
+// backfillScanFlags 为两种扫描操作分别创建参数，避免共享可变的 flag 状态。
+func backfillScanFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.Int64Flag{Name: "feed-id", Usage: "目标 Miniflux feed 的 ID", Required: true},
+		&cli.BoolFlag{Name: "dry-run", Usage: "只扫描并对账，不写入 Miniflux"},
+		&cli.StringFlag{Name: "include", Usage: "覆盖 feed URL 中 include 的类别，逗号分隔（仅知乎）；可选值：" + strings.Join(zhihu.KnownBackfillCategories(), ", ")},
+		&cli.BoolFlag{Name: "include-self-interaction", Usage: "保留作者对自己内容的赞同和收藏（仅知乎）"},
+		&cli.StringFlag{Name: "start-before", Usage: "扫描上界：毫秒游标或日期（YYYY-MM-DD / RFC3339，仅知乎）"},
+		&cli.StringFlag{Name: "stop-after", Usage: "扫描下界（包含）：毫秒游标或日期（YYYY-MM-DD / RFC3339，仅知乎）"},
+		&cli.IntFlag{
+			Name: "max-items", Usage: "最多扫描的动态条数，0 表示不限；重刷须指定下界或显式正整数上限（仅知乎）", Value: defaultBackfillMaxItems,
+			Validator: func(value int) error {
+				if value < 0 {
+					return fmt.Errorf("--max-items 不能为负数")
+				}
+				return nil
+			},
 		},
 	}
 }
@@ -509,6 +495,9 @@ type backfillCLIConfig struct {
 	includeSelfInteraction bool
 	maxItems               int
 	startBefore            int64
+	stopAfter              int64
+	dryRun                 bool
+	rangeConfirmed         bool
 	source                 string
 	action                 backfill.Action
 	minifluxURL            string
@@ -524,6 +513,8 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 		includeSelfInteraction: cmd.Bool("include-self-interaction"),
 		maxItems:               cmd.Int("max-items"),
 		source:                 cmd.String("source"),
+		action:                 backfill.Action(cmd.Name),
+		dryRun:                 cmd.Bool("dry-run"),
 		minifluxURL:            strings.TrimSpace(cmd.String("miniflux-url")),
 		feedID:                 cmd.Int64("feed-id"),
 		requestInterval:        cmd.Duration("request-interval"),
@@ -531,6 +522,15 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 	spec, ok := backfillSources[cfg.source]
 	if !ok {
 		return cfg, fmt.Errorf("未知数据源 %q，可用值: %s", cfg.source, backfillSourceNames())
+	}
+	if cfg.action == backfill.ActionRefresh {
+		source, err := spec.newSource(cfg)
+		if err != nil {
+			return cfg, err
+		}
+		if !source.SupportsRefresh() {
+			return cfg, fmt.Errorf("数据源 %s 不支持重刷", cfg.source)
+		}
 	}
 	for name, other := range backfillSources {
 		if name == cfg.source {
@@ -548,38 +548,29 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 	if cfg.requestInterval < time.Second {
 		return cfg, fmt.Errorf("--request-interval 不能小于 1s")
 	}
-	listFeeds := cmd.Bool("list-feeds")
-	dryRun := cmd.Bool("dry-run")
-	if listFeeds && dryRun {
-		return cfg, fmt.Errorf("--list-feeds 与 --dry-run 不能同时使用")
+	if cfg.action != backfill.ActionList && cfg.feedID <= 0 {
+		return cfg, fmt.Errorf("必须传入正整数 --feed-id")
 	}
-	if listFeeds {
-		if cmd.IsSet("feed-id") {
-			return cfg, fmt.Errorf("--list-feeds 不接受 --feed-id")
-		}
-		// --list-feeds 只枚举 Miniflux feed，不扫描数据源历史，数据源专属过滤参数在此无效。
-		for _, flag := range spec.ownFlags {
-			if cmd.IsSet(flag) {
-				return cfg, fmt.Errorf("--list-feeds 不接受 --%s", flag)
+	for _, bound := range []struct {
+		name   string
+		target *int64
+	}{
+		{"start-before", &cfg.startBefore}, {"stop-after", &cfg.stopAfter},
+	} {
+		if cmd.IsSet(bound.name) {
+			value, err := zhihu.ParseScanOffset(bound.name, cmd.String(bound.name))
+			if err != nil {
+				return cfg, err
 			}
-		}
-		cfg.action = backfill.ActionList
-	} else {
-		if cfg.feedID <= 0 {
-			return cfg, fmt.Errorf("必须传入正整数 --feed-id")
-		}
-		if dryRun {
-			cfg.action = backfill.ActionDryRun
-		} else {
-			cfg.action = backfill.ActionExecute
+			*bound.target = value
 		}
 	}
-	if cmd.IsSet("start-before") {
-		var err error
-		cfg.startBefore, err = zhihu.ParseStartBefore(cmd.String("start-before"))
-		if err != nil {
-			return cfg, err
-		}
+	if cmd.IsSet("start-before") && cmd.IsSet("stop-after") && cfg.startBefore < cfg.stopAfter {
+		return cfg, fmt.Errorf("--start-before 不能早于 --stop-after")
+	}
+	cfg.rangeConfirmed = (cmd.IsSet("stop-after") && cfg.stopAfter != 0) || (cmd.IsSet("max-items") && cfg.maxItems > 0)
+	if cfg.action == backfill.ActionRefresh && !cfg.rangeConfirmed {
+		return cfg, fmt.Errorf("重刷必须指定 --stop-after 或显式指定正整数 --max-items")
 	}
 	cfg.minifluxToken = strings.TrimSpace(getenv("MINIFLUX_API_TOKEN"))
 	if cfg.minifluxToken == "" {
@@ -609,14 +600,17 @@ func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) e
 	}
 	deps := backfill.Dependencies{Source: source, Destination: destination, Progress: slog.Info}
 	slog.Info("开始历史回填", "source", cfg.source, "action", cfg.action, "feed_id", cfg.feedID)
-	result, runErr := backfill.Run(ctx, backfill.Request{Action: cfg.action, FeedID: cfg.feedID, IncludeCategories: cfg.includeCategories}, deps)
+	result, runErr := backfill.Run(ctx, backfill.Request{
+		Action: cfg.action, DryRun: cfg.dryRun, RangeConfirmed: cfg.rangeConfirmed,
+		FeedID: cfg.feedID, IncludeCategories: cfg.includeCategories,
+	}, deps)
 	if runErr == nil || result.Feed.ID != 0 || result.Scanned != 0 || result.Imported != 0 {
-		printBackfillResult(output, cfg.action, result)
+		printBackfillResult(output, cfg.action, cfg.dryRun, result)
 	}
 	return runErr
 }
 
-func printBackfillResult(output io.Writer, action backfill.Action, result backfill.Result) {
+func printBackfillResult(output io.Writer, action backfill.Action, dryRun bool, result backfill.Result) {
 	if action == backfill.ActionList {
 		writer := tabwriter.NewWriter(output, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "ID\tTITLE\tFEED_URL")
@@ -626,30 +620,44 @@ func printBackfillResult(output io.Writer, action backfill.Action, result backfi
 		_ = writer.Flush()
 		return
 	}
-	_, _ = fmt.Fprintf(output, "feed_id=%d source_id=%s scanned=%d existing=%d missing=%d duplicates=%d imported=%d duplicate_imports=%d comment_failures=%d\n",
-		result.Feed.ID, result.SourceID, result.Scanned, result.Existing, result.Missing,
-		result.DuplicateCandidates, result.Imported, result.DuplicateImports, result.CommentFailures)
-	if len(result.MissingByCategory) > 0 {
-		categories := make([]string, 0, len(result.MissingByCategory))
-		for category := range result.MissingByCategory {
-			categories = append(categories, category)
+	if action == backfill.ActionRefresh {
+		_, _ = fmt.Fprintf(output, "feed_id=%d source_id=%s scanned=%d updated=%d failed=%d comment_failures=%d\n",
+			result.Feed.ID, result.SourceID, result.Scanned, result.Updated, len(result.UpdateFailures), result.CommentFailures)
+		if dryRun {
+			for _, target := range result.PendingUpdates {
+				_, _ = fmt.Fprintf(output, "pending_update entry_id=%d url=%s\n", target.EntryID, target.URL)
+			}
 		}
-		sort.Strings(categories)
-		counts := make([]string, 0, len(categories))
-		for _, category := range categories {
-			counts = append(counts, fmt.Sprintf("%s=%d", category, result.MissingByCategory[category]))
+		for _, failure := range result.UpdateFailures {
+			_, _ = fmt.Fprintf(output, "update_failed entry_id=%d post_id=%s url=%s operation=%s error=%v\n",
+				failure.EntryID, failure.CandidateID, failure.URL, failure.Operation, failure.Err)
 		}
-		_, _ = fmt.Fprintf(output, "missing_by_category=%s\n", strings.Join(counts, ","))
-	}
-	if result.MissingOldest != nil && result.MissingNewest != nil {
-		// 区间是导入前的对账结论，而这一行在导入之后才打印：execute 下叫 missing
-		// 会被读成"仍然缺失"，实际是本轮打算补的范围。
-		label := "missing_range"
-		if action == backfill.ActionExecute {
-			label = "planned_range"
+	} else {
+		_, _ = fmt.Fprintf(output, "feed_id=%d source_id=%s scanned=%d existing=%d missing=%d duplicates=%d imported=%d duplicate_imports=%d comment_failures=%d\n",
+			result.Feed.ID, result.SourceID, result.Scanned, result.Existing, result.Missing,
+			result.DuplicateCandidates, result.Imported, result.DuplicateImports, result.CommentFailures)
+		if len(result.MissingByCategory) > 0 {
+			categories := make([]string, 0, len(result.MissingByCategory))
+			for category := range result.MissingByCategory {
+				categories = append(categories, category)
+			}
+			sort.Strings(categories)
+			counts := make([]string, 0, len(categories))
+			for _, category := range categories {
+				counts = append(counts, fmt.Sprintf("%s=%d", category, result.MissingByCategory[category]))
+			}
+			_, _ = fmt.Fprintf(output, "missing_by_category=%s\n", strings.Join(counts, ","))
 		}
-		_, _ = fmt.Fprintf(output, "%s=%s..%s\n", label,
-			result.MissingOldest.UTC().Format(time.RFC3339), result.MissingNewest.UTC().Format(time.RFC3339))
+		if result.MissingOldest != nil && result.MissingNewest != nil {
+			// 区间是导入前的对账结论，而这一行在导入之后才打印：execute 下叫 missing
+			// 会被读成"仍然缺失"，实际是本轮打算补的范围。
+			label := "missing_range"
+			if !dryRun {
+				label = "planned_range"
+			}
+			_, _ = fmt.Fprintf(output, "%s=%s..%s\n", label,
+				result.MissingOldest.UTC().Format(time.RFC3339), result.MissingNewest.UTC().Format(time.RFC3339))
+		}
 	}
 	for _, warning := range result.Warnings {
 		_, _ = fmt.Fprintf(output, "warning post_id=%s operation=%s error=%v\n", warning.CandidateID, warning.Operation, warning.Err)
@@ -661,8 +669,11 @@ func printBackfillResult(output io.Writer, action backfill.Action, result backfi
 		if result.ScanInterrupted {
 			key = "scan_interrupted"
 			reason = "扫描被中断，已扫描部分已写入"
+			if action == backfill.ActionRefresh {
+				reason = "扫描被中断，已扫描部分的更新结果见上方统计"
+			}
 			// dry-run 一条都不写，"已写入"在这条路径上是假话。
-			if action == backfill.ActionDryRun {
+			if dryRun {
 				reason = "扫描被中断，以上仅为已扫描部分的对账结果"
 			}
 		}

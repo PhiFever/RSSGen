@@ -18,11 +18,12 @@ type BackfillSource struct {
 	includeSelfInteraction bool
 	maxItems               int
 	startOffset            int64
+	stopAfter              int64
 }
 
 // NewBackfillSource 创建串行且限速的知乎历史适配器。
 // maxItems 为 0 表示不限制；知乎动态流不会自然收敛，无上限扫描等于上千次上游请求。
-func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelfInteraction bool, maxItems int, startOffset int64) (*BackfillSource, error) {
+func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelfInteraction bool, maxItems int, startOffset, stopAfter int64) (*BackfillSource, error) {
 	if requestInterval < time.Second {
 		return nil, fmt.Errorf("知乎请求间隔不能小于 1s")
 	}
@@ -38,7 +39,7 @@ func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelf
 			return nil, err
 		}
 	}
-	return &BackfillSource{route: r, includeSelfInteraction: includeSelfInteraction, maxItems: maxItems, startOffset: startOffset}, nil
+	return &BackfillSource{route: r, includeSelfInteraction: includeSelfInteraction, maxItems: maxItems, startOffset: startOffset, stopAfter: stopAfter}, nil
 }
 
 // defaultBackfillCategories 是 feed URL 未带 include 时的回填默认类别：只要作者
@@ -76,12 +77,15 @@ func (s *BackfillSource) KnownCategories() []string {
 	return KnownBackfillCategories()
 }
 
+// SupportsRefresh 表示知乎正文可由当前渲染器完整重建。
+func (s *BackfillSource) SupportsRefresh() bool { return true }
+
 // Discover 扫描至多 maxItems 条动态，类别过滤由 backfill.Run 执行。
 func (s *BackfillSource) Discover(ctx context.Context, userID string, progress backfill.ProgressFunc) (backfill.Scan, error) {
 	if err := ctx.Err(); err != nil {
 		return backfill.Scan{}, err
 	}
-	activities, err := s.route.fetchActivitiesPaged(ctx, userID, s.maxItems, s.startOffset, func(page, pageItems, totalItems int, nextOffset string) {
+	activities, err := s.route.fetchActivitiesPaged(ctx, userID, s.maxItems, s.startOffset, s.stopAfter, func(page, pageItems, totalItems int, nextOffset string) {
 		if progress != nil {
 			progress("知乎历史扫描进度", "source_id", userID, "page", page, "page_items", pageItems, "scanned", totalItems, "next_offset", nextOffset)
 		}
@@ -133,13 +137,18 @@ func (s *BackfillSource) Comments(ctx context.Context, candidate backfill.Candid
 
 // ParseStartBefore 将毫秒游标或日期解析为知乎动态的起始游标。
 func ParseStartBefore(value string) (int64, error) {
+	return ParseScanOffset("start-before", value)
+}
+
+// ParseScanOffset 共用上下界解析规则，日期先取整秒再换算为毫秒游标。
+func ParseScanOffset(flagName, value string) (int64, error) {
 	if value != "" && strings.Trim(value, "0123456789") == "" {
 		offset, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
-			return 0, fmt.Errorf("--start-before 毫秒游标超出 int64 范围")
+			return 0, fmt.Errorf("--%s 毫秒游标超出 int64 范围", flagName)
 		}
 		if offset < 1_000_000_000_000 {
-			return 0, fmt.Errorf("--start-before 数字形态必须是 13 位起的毫秒游标")
+			return 0, fmt.Errorf("--%s 数字形态必须是 13 位起的毫秒游标", flagName)
 		}
 		return offset, nil
 	}
@@ -148,5 +157,5 @@ func ParseStartBefore(value string) (int64, error) {
 			return date.Unix() * 1000, nil
 		}
 	}
-	return 0, fmt.Errorf("--start-before 必须是 13 位起的毫秒游标或日期（YYYY-MM-DD / RFC3339）")
+	return 0, fmt.Errorf("--%s 必须是 13 位起的毫秒游标或日期（YYYY-MM-DD / RFC3339）", flagName)
 }

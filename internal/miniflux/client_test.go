@@ -45,7 +45,7 @@ func TestClientFeedsFeedAndPaginatedEntries(t *testing.T) {
 			}
 			if offset == "2" {
 				writeJSON(t, w, map[string]any{"total": 3, "entries": []map[string]any{
-					{"url": "https://afdian.com/p/3", "hash": "h3"},
+					{"id": 99, "url": "https://afdian.com/p/3", "hash": "h3"},
 				}})
 				return
 			}
@@ -71,7 +71,7 @@ func TestClientFeedsFeedAndPaginatedEntries(t *testing.T) {
 		t.Fatalf("Feed = %+v, %v", feed, err)
 	}
 	entries, err := client.Entries(context.Background(), 42)
-	if err != nil || len(entries) != 3 || entries[2].Hash != "h3" {
+	if err != nil || len(entries) != 3 || entries[2].Hash != "h3" || entries[2].ID != 99 {
 		t.Fatalf("Entries = %+v, %v", entries, err)
 	}
 	if len(paths) != 4 || paths[0] != "/v1/feeds" || paths[1] != "/v1/feeds/42" {
@@ -171,5 +171,49 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		t.Fatalf("encode response: %v", err)
+	}
+}
+
+func TestClientUpdate(t *testing.T) {
+	for _, status := range []int{http.StatusCreated, http.StatusNotFound} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || r.URL.Path != "/v1/entries/99" || r.Header.Get("X-Auth-Token") != "token" || r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("请求契约错误：%s %s %v", r.Method, r.URL.Path, r.Header)
+				}
+				var body map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				if len(body) != 2 || body["title"] != "新标题" || body["content"] != "<p>新正文</p>" {
+					t.Errorf("body=%v", body)
+				}
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			client, err := New(server.URL, "token")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.Update(context.Background(), 99, "新标题", "<p>新正文</p>")
+			if status == http.StatusCreated && err != nil {
+				t.Fatal(err)
+			}
+			if status == http.StatusNotFound && (err == nil || !strings.Contains(err.Error(), "404")) {
+				t.Fatalf("应返回 404 错误：%v", err)
+			}
+		})
+	}
+}
+
+func TestClientUpdateRejectsEmptyContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("空正文不应发送请求") }))
+	defer server.Close()
+	client, err := New(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Update(context.Background(), 99, "标题", ""); err == nil || !strings.Contains(err.Error(), "正文为空") {
+		t.Fatalf("空正文必须可察觉：%v", err)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ const (
 // PIN 内容 block 类型常量。
 const (
 	PinBlockImage    = "image"
+	PinBlockLink     = "link"
 	PinBlockLinkCard = "link_card"
 	PinBlockText     = "text"
 	PinBlockVideo    = "video"
@@ -173,6 +175,8 @@ func (id *zhihuID) UnmarshalJSON(data []byte) error {
 
 type zhihuPinBlock struct {
 	Type           string                 `json:"type"`
+	Title          string                 `json:"title"`
+	Subtype        string                 `json:"subtype"`
 	Content        string                 `json:"content"`
 	Text           string                 `json:"text"`
 	OriginalURL    string                 `json:"original_url"`
@@ -292,11 +296,12 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 // fetchActivities 请求知乎用户动态 API。
 func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, error) {
 	// RSS 路径没有 ctx 可供传递。
-	return r.fetchActivitiesPaged(context.Background(), userID, limit, 0, nil)
+	return r.fetchActivitiesPaged(context.Background(), userID, limit, 0, 0, nil)
 }
 
 // fetchActivitiesPaged 翻页拉取动态。limit <= 0 表示不设上限，翻到上游自然结束。
-func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit int, startOffset int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
+// stopAfter 为零时不设下界，否则保留动态游标大于等于下界的条目。
+func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit int, startOffset, stopAfter int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -359,6 +364,20 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 			return activities, fmt.Errorf("解析响应 JSON 失败: %w", err)
 		}
 
+		reachedLowerBound := false
+		if stopAfter != 0 {
+			for i, act := range data.Data {
+				offset, err := strconv.ParseInt(string(act.ID), 10, 64)
+				if err != nil || offset <= 0 {
+					return activities, fmt.Errorf("知乎第 %d 页第 %d 条动态游标无效: %q", page+1, i+1, act.ID)
+				}
+				if offset < stopAfter {
+					data.Data = data.Data[:i]
+					reachedLowerBound = true
+					break
+				}
+			}
+		}
 		activities = append(activities, data.Data...)
 		page++
 		if onPage != nil {
@@ -368,7 +387,7 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 			}
 			onPage(page, len(data.Data), len(activities), nextOffset)
 		}
-		if len(data.Data) == 0 {
+		if reachedLowerBound || len(data.Data) == 0 {
 			break
 		}
 
@@ -605,9 +624,15 @@ func renderPinContent(blocks []zhihuPinBlock, zhihuURL string) string {
 			if url != "" {
 				parts = append(parts, fmt.Sprintf(`<img src="%s" />`, html.EscapeString(url)))
 			}
-		case PinBlockLinkCard:
+		case PinBlockLinkCard, PinBlockLink:
 			url := block.URL
 			linkTitle := block.DataDraftTitle
+			if block.Type == PinBlockLink {
+				linkTitle = block.Title
+				if linkTitle != "" && block.Subtype != "" {
+					linkTitle = "[" + block.Subtype + "] " + linkTitle
+				}
+			}
 			if linkTitle == "" {
 				linkTitle = url
 			}

@@ -392,6 +392,9 @@ func (s *BackfillSource) FeedIdentity(feedURL string) (backfill.Identity, error)
 // KnownCategories 返回 nil：Afdian 没有 category 概念。
 func (s *BackfillSource) KnownCategories() []string { return nil }
 
+// SupportsRefresh 返回 false：历史适配器尚未保留配图与扫描范围。
+func (s *BackfillSource) SupportsRefresh() bool { return false }
+
 // NewBackfillSource 创建串行且限速的 Afdian 历史适配器。
 func NewBackfillSource(cookie string, requestInterval time.Duration) (*BackfillSource, error) {
 	if requestInterval < time.Second {

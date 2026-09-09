@@ -75,18 +75,17 @@ cp .env.example .env
 # 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE（知乎回填使用 ZHIHU_COOKIE）
 
 # 1. 查询可回填的 Afdian feed ID
-go run . backfill --source afdian \
-  --miniflux-url http://localhost:8080 \
-  --list-feeds
+go run . backfill list --source afdian \
+  --miniflux-url http://localhost:8080
 
 # 2. 完整扫描并预览缺失数量，不请求正文、评论或写入 Miniflux
-go run . backfill --source afdian \
+go run . backfill execute --source afdian \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
   --dry-run
 
 # 3. 按新到旧补齐全部缺失历史
-go run . backfill --source afdian \
+go run . backfill execute --source afdian \
   --miniflux-url http://localhost:8080 \
   --feed-id 42
 ```
@@ -99,45 +98,44 @@ go run . backfill --source afdian \
 
 ```bash
 # 1. 查询可回填的知乎 feed ID
-go run . backfill --source zhihu \
-  --miniflux-url http://localhost:8080 \
-  --list-feeds
+go run . backfill list --source zhihu \
+  --miniflux-url http://localhost:8080
 
 # 2. 扫描并预览缺失数量，不写入 Miniflux
-go run . backfill --source zhihu \
+go run . backfill execute --source zhihu \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
   --dry-run
 
 # 2b. 放开条数上限，翻到上游自然结束（大号可能是数千次请求）
-go run . backfill --source zhihu \
+go run . backfill execute --source zhihu \
   --miniflux-url http://localhost:8080 \
   --feed-id 42 \
   --max-items 0 \
   --dry-run
 
 # 3. 按新到旧补齐缺失历史
-go run . backfill --source zhihu \
+go run . backfill execute --source zhihu \
   --miniflux-url http://localhost:8080 \
   --feed-id 42
 ```
 
 默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`、`followed_collection`、`voteup_pin`、`asked_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时，知乎回落到作者本人创作的 `answer`、`article`、`pin`；要回填收藏、点赞、关注等类别必须用 `--include` 显式列出。该默认值与 `config.yml` 中 `default_include` 的取值相同但各自维护——命令不读取 server 配置，改了一处不会同步到另一处。非法类别会在历史扫描之前报错。未识别的动态类型其类别取上游的 `target.type`，不在默认类别内，因此默认不再回填；上游出现新类型时靠日志中的「未识别的知乎动态」告警发现，该告警在类别过滤之前触发。缺失数量按类别显示为 `missing_by_category`。
 
-`--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项、`--max-items` 和 `--start-before` 仅适用于知乎，且都不接受与 `--list-feeds` 同时使用——列出 feed 不扫描动态历史，过滤和条数上限在那一步无从生效。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
+`--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项、`--max-items`、`--start-before` 和 `--stop-after` 仅适用于知乎的 `execute` 与 `refresh`；`list` 不接受扫描参数。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
 
-`--start-before` 指定从哪个游标向更早的动态扫描，接受两种形态：纯数字毫秒游标（至少 `1000000000000`，例如 `1781935272669`），或日期（`2026-06-01` 按 UTC 零点解释，也接受 `2026-06-01T00:00:00Z` 这样的 RFC3339 时间）。日期按 Unix 秒乘以 1000 转为游标。不传时从最新一页开始。
+`--start-before` 指定从哪个游标向更早的动态扫描，接受两种形态：纯数字毫秒游标（至少 `1000000000000`，例如 `1781935272669`），或日期（`2026-06-01` 按 UTC 零点解释，也接受 `2026-06-01T00:00:00Z` 这样的 RFC3339 时间）。日期沿用既有解析：取整秒后乘以 1000 转为毫秒游标，不保留 RFC3339 小数秒。不传时从最新一页开始。
 
 每页「知乎历史扫描进度」日志包含 `next_offset=`。复制其中的非空值传回 `--start-before`，即可继续扫描更早的动态；与 `--max-items` 组合即为按窗口分批扫描：
 
 ```bash
 # 从指定日期向前扫描一个窗口并导入
-go run . backfill --source zhihu \
+go run . backfill execute --source zhihu \
   --miniflux-url http://localhost:8080 --feed-id 42 \
   --start-before 2026-07-01 --max-items 1000
 
 # 从上一窗口日志复制 next_offset 的值，扫描下一个窗口
-go run . backfill --source zhihu \
+go run . backfill execute --source zhihu \
   --miniflux-url http://localhost:8080 --feed-id 42 \
   --start-before 1781935272669 --max-items 1000
 ```
@@ -145,6 +143,28 @@ go run . backfill --source zhihu \
 扫描完成后才开始导入；中断扫描后直接使用最后的游标，会跳过本次已扫描但尚未导入的内容。要补齐这些内容，应重新执行该窗口原来的命令。`--max-items` 的上限落在一页中间时，该页剩余动态会被丢弃，此时应以「已达知乎历史扫描上限」那行的 `next_offset` 续扫——它取最后一条**被保留**的动态，不是整页末尾，因此被丢弃的条目会落进下一个窗口，不需要重叠补扫。系统不保存本地断点状态。
 
 单页遇到网络错误或 HTTP 5xx 最多尝试 3 次，失败后依次等待 1 秒、2 秒；HTTP 4xx 和 JSON 解析错误直接返回。4xx 通常涉及签名失效或风控，反复请求可能加重风控。
+
+### 知乎历史重刷
+
+`backfill refresh` 用当前渲染器覆盖已有条目的标题与正文，修复旧版想法引用链接等历史渲染问题；缺失条目不会导入。当前仅知乎支持重刷，爱发电会明确报错拒绝。
+
+重刷必须提供有效的 `--stop-after`，或显式指定正整数 `--max-items`。默认的 1000 条与显式 `--max-items 0` 都不算范围确认。`--stop-after` 也可用于 `execute`：扫描按动态游标由新到旧进行，保留等于下界的动态，遇到小于下界的动态就停止。上下界接受相同的毫秒游标或日期格式；上界不得早于下界，相等允许。仅给下界时仍保留默认 1000 条上限，确需扫描整个日期窗口可同时指定 `--max-items 0`。
+
+```bash
+# 先核对窗口内待更新的 Miniflux 条目 ID 与链接
+go run . backfill refresh --source zhihu \
+  --miniflux-url http://localhost:8080 --feed-id 59 \
+  --start-before 2022-01-01 --stop-after 2020-01-01 --max-items 0 \
+  --include pin --dry-run
+
+# 确认清单后，在同一窗口实际重刷
+go run . backfill refresh --source zhihu \
+  --miniflux-url http://localhost:8080 --feed-id 59 \
+  --start-before 2022-01-01 --stop-after 2020-01-01 --max-items 0 \
+  --include pin
+```
+
+重刷输出已确认成功的更新数与失败条目详情；评论抓取最终失败的条目跳过，不用缺失评论的正文覆盖旧内容。到达下界表示指定窗口扫描完成，不提示继续扫描更早历史。`list`、`execute`、`refresh` 共用 `--source`、`--miniflux-url` 和 `--request-interval`，公共参数可放在子命令前后；`list` 只需要 Miniflux token，不要求数据源 Cookie。
 
 ## 后台刷新
 

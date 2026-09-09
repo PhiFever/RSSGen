@@ -114,7 +114,7 @@ func TestBackfillDiscoverAllPages(t *testing.T) {
 	// 默认只回填创作类，12 条候选里那条 unknown_type 因此不计入。
 	requests = 0
 	destination := &backfillTestDestination{entries: []backfill.Entry{{URL: "https://zhuanlan.zhihu.com/p/0"}}}
-	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionDryRun, FeedID: 1}, backfill.Dependencies{
+	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionExecute, DryRun: true, FeedID: 1}, backfill.Dependencies{
 		Source: newBackfillTestSource(), Destination: destination,
 	})
 	if err != nil || requests != 3 || result.Scanned != 11 || result.Existing != 1 || result.Missing != 10 || !reflect.DeepEqual(result.MissingByCategory, map[string]int{"article": 10}) || len(destination.imported) != 0 {
@@ -221,17 +221,17 @@ func TestBackfillSelfInteraction(t *testing.T) {
 }
 
 func TestBackfillConstructionIdentityAndNoOpMethods(t *testing.T) {
-	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second-time.Millisecond, false, 0, 0); err == nil {
+	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second-time.Millisecond, false, 0, 0, 0); err == nil {
 		t.Fatal("interval below one second must fail")
 	}
-	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second, false, -1, 0); err == nil {
+	if _, err := NewBackfillSource(`d_c0="abc";`, time.Second, false, -1, 0, 0); err == nil {
 		t.Fatal("negative max items must fail")
 	}
-	if _, err := NewBackfillSource("other=secret", time.Second, false, 0, 0); err == nil || !strings.Contains(err.Error(), "d_c0") || strings.Contains(err.Error(), "secret") {
+	if _, err := NewBackfillSource("other=secret", time.Second, false, 0, 0, 0); err == nil || !strings.Contains(err.Error(), "d_c0") || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("missing d_c0 error=%v", err)
 	}
 	for _, cookie := range []string{"", `d_c0="abc";`} {
-		source, err := NewBackfillSource(cookie, time.Second, false, 0, 0)
+		source, err := NewBackfillSource(cookie, time.Second, false, 0, 0, 0)
 		if err != nil {
 			t.Fatalf("NewBackfillSource: %v", err)
 		}
@@ -259,8 +259,20 @@ func TestBackfillConstructionIdentityAndNoOpMethods(t *testing.T) {
 
 // backfillTestDestination 记录完整 Run 流程实际交给目的端的正文。
 type backfillTestDestination struct {
+	updated []struct {
+		EntryID        int64
+		Title, Content string
+	}
 	entries  []backfill.Entry
 	imported []backfill.Article
+}
+
+func (d *backfillTestDestination) Update(_ context.Context, entryID int64, title, content string) error {
+	d.updated = append(d.updated, struct {
+		EntryID        int64
+		Title, Content string
+	}{entryID, title, content})
+	return nil
 }
 
 func (d *backfillTestDestination) Feeds(context.Context) ([]backfill.Feed, error) {
@@ -373,5 +385,86 @@ func TestBackfillDiscoverInterrupted(t *testing.T) {
 	}
 	if scan.Candidates[0].ID != "99" || scan.Candidates[1].ID != "98" || scan.NextCursor != "98" {
 		t.Fatalf("Discover scan=%+v", scan)
+	}
+}
+
+func TestBackfillDiscoverStopAfter(t *testing.T) {
+	for _, tt := range []struct {
+		name                    string
+		stopAfter               int64
+		wantItems, wantRequests int
+	}{
+		{"页内裁剪并停止", 1781935272669, 2, 1},
+		{"零下界保持完整扫描", 0, 5, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := 0
+			var serverURL string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests++
+				var data []zhihuActivity
+				if requests == 1 {
+					for i, cursor := range []string{"1781935272670", "1781935272669", "1781935272668", "1781935272667"} {
+						act := backfillTestActivity(fmt.Sprint(i), "MEMBER_VOTEUP_ANSWER", "answer")
+						act.ID = zhihuID(cursor)
+						act.Target.CreatedTime = 1
+						data = append(data, act)
+					}
+				} else {
+					// 零下界时继续接纳没有动态游标的既有格式。
+					data = []zhihuActivity{backfillTestActivity("4", "MEMBER_CREATE_ARTICLE", "article")}
+				}
+				writeZhihuJSON(t, w, activitiesResponse{Data: data, Paging: zhihuPaging{
+					IsEnd: requests >= 2, Next: serverURL + "/page/2",
+				}})
+			}))
+			defer server.Close()
+			serverURL = server.URL
+			withZhihuTestHost(t, server.URL)
+			source, err := NewBackfillSource(`d_c0="abc";`, time.Second, false, 0, 0, tt.stopAfter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pageItems []int
+			scan, err := source.Discover(context.Background(), "alice", func(_ string, attrs ...any) {
+				pageItems = append(pageItems, attrs[5].(int))
+			})
+			if err != nil || requests != tt.wantRequests || len(scan.Candidates) != tt.wantItems {
+				t.Fatalf("候选数=%d 请求数=%d err=%v", len(scan.Candidates), requests, err)
+			}
+			if scan.Truncated || scan.NextCursor != "" {
+				t.Fatalf("正常完成扫描不应报告截断：%+v", scan)
+			}
+			if scan.Candidates[0].URL != serverURL+"/question/q/answer/0" || scan.Candidates[1].URL != serverURL+"/question/q/answer/1" {
+				t.Fatalf("应保留新动态和等于下界的动态：%+v", scan.Candidates)
+			}
+			if tt.stopAfter != 0 && !reflect.DeepEqual(pageItems, []int{2}) {
+				t.Fatalf("页内裁剪后的进度=%v", pageItems)
+			}
+		})
+	}
+}
+
+func TestBackfillDiscoverStopAfterMissingCursor(t *testing.T) {
+	requests := 0
+	var serverURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeZhihuBody(t, w, fmt.Sprintf(`{"data":[{"id":null,"target":{"id":"1781935272670","type":"article"}}],"paging":{"is_end":false,"next":%q}}`, serverURL+"/page/2"))
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	withZhihuTestHost(t, server.URL)
+	source := newBackfillTestSource()
+	source.stopAfter = 1781935272669
+	scan, err := source.Discover(context.Background(), "alice", nil)
+	if err == nil || !strings.Contains(err.Error(), "动态游标无效") || requests != 1 || len(scan.Candidates) != 0 {
+		t.Fatalf("缺失动态游标必须报错且停止：scan=%+v requests=%d err=%v", scan, requests, err)
+	}
+}
+
+func TestBackfillSupportsRefresh(t *testing.T) {
+	if !newBackfillTestSource().SupportsRefresh() {
+		t.Fatal("知乎应支持重刷")
 	}
 }

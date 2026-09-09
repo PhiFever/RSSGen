@@ -13,20 +13,23 @@ import (
 )
 
 type fakeSource struct {
-	knownCategories []string
-	emptyComments   bool
-	candidates      []Candidate
-	discoverErrs    []error
-	detailErrs      map[string][]error
-	commentErrs     map[string][]error
-	detailCalls     []string
-	commentCalls    []string
-	discoverCalls   int
-	reportPage      bool
-	scanNextCursor  string
-	discoverCancel  context.CancelFunc
-	scanTruncated   bool
-	scanInterrupted bool
+	refreshSupported bool
+	emptyDetail      bool
+	commentCancel    context.CancelFunc
+	knownCategories  []string
+	emptyComments    bool
+	candidates       []Candidate
+	discoverErrs     []error
+	detailErrs       map[string][]error
+	commentErrs      map[string][]error
+	detailCalls      []string
+	commentCalls     []string
+	discoverCalls    int
+	reportPage       bool
+	scanNextCursor   string
+	discoverCancel   context.CancelFunc
+	scanTruncated    bool
+	scanInterrupted  bool
 }
 
 func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
@@ -34,6 +37,8 @@ func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
 }
 
 func (s *fakeSource) KnownCategories() []string { return s.knownCategories }
+
+func (s *fakeSource) SupportsRefresh() bool { return s.refreshSupported }
 
 func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) (Scan, error) {
 	s.discoverCalls++
@@ -56,6 +61,9 @@ func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc
 
 func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, error) {
 	s.detailCalls = append(s.detailCalls, candidate.ID)
+	if s.emptyDetail {
+		return "", nil
+	}
 	errs := s.detailErrs[candidate.ID]
 	if err := popError(&errs); err != nil {
 		s.detailErrs[candidate.ID] = errs
@@ -67,6 +75,10 @@ func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, err
 
 func (s *fakeSource) Comments(_ context.Context, candidate Candidate) (string, error) {
 	s.commentCalls = append(s.commentCalls, candidate.ID)
+	if s.commentCancel != nil {
+		s.commentCancel()
+		return "", context.Canceled
+	}
 	if s.emptyComments {
 		return "", nil
 	}
@@ -80,6 +92,9 @@ func (s *fakeSource) Comments(_ context.Context, candidate Candidate) (string, e
 }
 
 type fakeDestination struct {
+	updates        []recordedUpdate
+	updateErrs     []error
+	updateCancel   context.CancelFunc
 	entriesCalls   int
 	feeds          []Feed
 	feed           Feed
@@ -87,6 +102,20 @@ type fakeDestination struct {
 	imported       []Article
 	importOutcomes map[string]ImportOutcome
 	importErrs     map[string][]error
+}
+
+type recordedUpdate struct {
+	EntryID        int64
+	Title, Content string
+}
+
+func (d *fakeDestination) Update(_ context.Context, entryID int64, title, content string) error {
+	d.updates = append(d.updates, recordedUpdate{entryID, title, content})
+	if d.updateCancel != nil {
+		d.updateCancel()
+		return context.Canceled
+	}
+	return popError(&d.updateErrs)
 }
 
 func (d *fakeDestination) Feeds(context.Context) ([]Feed, error) {
@@ -164,7 +193,7 @@ func TestRunCarriesScanTruncationIntoResult(t *testing.T) {
 	}
 	destination := &fakeDestination{feed: Feed{ID: 42, FeedURL: "http://rssgen:8000/feed/afdian/alice"}}
 
-	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 42}, Dependencies{
+	result, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 42}, Dependencies{
 		Source:      source,
 		Destination: destination,
 		Wait:        noWait,
@@ -216,7 +245,7 @@ func TestRunDryRunReconcilesAllEntriesAndArbitraryGap(t *testing.T) {
 		},
 	}
 
-	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 42}, Dependencies{
+	result, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 42}, Dependencies{
 		Source:      source,
 		Destination: destination,
 		Wait:        noWait,
@@ -350,7 +379,7 @@ func TestRunUsesConservativeExponentialRetryDelays(t *testing.T) {
 	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
 	var waits []time.Duration
 
-	_, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1}, Dependencies{
+	_, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 1}, Dependencies{
 		Source: source, Destination: destination,
 		MaxAttempts: 10,
 		Wait: func(_ context.Context, delay time.Duration) error {
@@ -385,6 +414,52 @@ func TestRunStopsAtDetailFailureAndDoesNotProcessOlderItems(t *testing.T) {
 	}
 	if !reflect.DeepEqual(source.detailCalls, []string{"new", "new", "new"}) || len(destination.imported) != 0 {
 		t.Fatalf("detail calls=%v imports=%v", source.detailCalls, destination.imported)
+	}
+}
+
+func TestRunRetriesClientTimeoutMistakenForContextDeadline(t *testing.T) {
+	source := &fakeSource{
+		candidates:  []Candidate{{ID: "post-1", URL: "https://afdian.com/p/post-1"}},
+		detailErrs:  map[string][]error{},
+		commentErrs: map[string][]error{},
+	}
+	destination := &fakeDestination{
+		feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"},
+		importErrs: map[string][]error{"post-1": {
+			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
+			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
+		}},
+	}
+
+	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var importIDs []string
+	for _, article := range destination.imported {
+		importIDs = append(importIDs, article.ExternalID)
+	}
+	if !reflect.DeepEqual(importIDs, []string{"post-1", "post-1", "post-1"}) || result.Imported != 1 {
+		t.Fatalf("import attempts=%v result=%+v", importIDs, result)
+	}
+}
+
+func TestRunStopsImmediatelyWhenCallerContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	source := &fakeSource{}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
+
+	_, err := Run(ctx, Request{Action: ActionExecute, FeedID: 1}, Dependencies{
+		Source: source, Destination: destination, Wait: noWait,
+	})
+	if !errors.Is(err, ctx.Err()) {
+		t.Fatalf("Run error=%v, want %v", err, ctx.Err())
+	}
+	if len(destination.imported) != 0 || source.discoverCalls != 0 {
+		t.Fatalf("imports=%v discoverCalls=%d", destination.imported, source.discoverCalls)
 	}
 }
 
@@ -494,7 +569,7 @@ func TestRunCategoryFiltersAndMissingCounts(t *testing.T) {
 				{ID: "a1", Category: "answer"}, {ID: "a2", Category: "answer"}, {ID: "p1", Category: "article"},
 			}}
 			destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice" + tt.query}}
-			result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: tt.include}, Dependencies{Source: source, Destination: destination})
+			result, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 1, IncludeCategories: tt.include}, Dependencies{Source: source, Destination: destination})
 			if err != nil || result.Scanned != tt.count || result.Missing != tt.count || !reflect.DeepEqual(result.MissingByCategory, tt.want) {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
@@ -509,7 +584,7 @@ func TestRunRejectsInvalidCategoriesBeforeReadingEntriesAndDiscovery(t *testing.
 	for _, fromURL := range []bool{false, true} {
 		source := &fakeSource{knownCategories: []string{"article", "answer"}}
 		destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
-		req := Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: []string{"invalid"}}
+		req := Request{Action: ActionExecute, DryRun: true, FeedID: 1, IncludeCategories: []string{"invalid"}}
 		if fromURL {
 			req.IncludeCategories = nil
 			destination.feed.FeedURL += "?include=invalid"
@@ -559,7 +634,7 @@ func TestRunExplicitIncludeStillExcludesUnknownCategory(t *testing.T) {
 		{ID: "unknown", Category: "unknown", Content: "<p>unknown</p>"},
 	}}
 	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
-	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1, IncludeCategories: []string{"answer"}},
+	result, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 1, IncludeCategories: []string{"answer"}},
 		Dependencies{Source: source, Destination: destination})
 	if err != nil || result.Scanned != 1 || result.Missing != 1 || !reflect.DeepEqual(result.MissingByCategory, map[string]int{"answer": 1}) {
 		t.Fatalf("result=%+v err=%v", result, err)
@@ -569,7 +644,7 @@ func TestRunExplicitIncludeStillExcludesUnknownCategory(t *testing.T) {
 func TestRunWithoutCategoriesIgnoresURLInclude(t *testing.T) {
 	source := &fakeSource{candidates: []Candidate{{ID: "a1"}}}
 	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice?include=xxx"}}
-	result, err := Run(context.Background(), Request{Action: ActionDryRun, FeedID: 1}, Dependencies{Source: source, Destination: destination})
+	result, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 1}, Dependencies{Source: source, Destination: destination})
 	if err != nil || result.Scanned != 1 || result.Missing != 1 || len(result.MissingByCategory) != 0 {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
@@ -585,48 +660,137 @@ func TestRunExistingURLSkipsDifferentCandidateID(t *testing.T) {
 	}
 }
 
-func TestRunRetriesClientTimeoutMistakenForContextDeadline(t *testing.T) {
-	source := &fakeSource{
-		candidates:  []Candidate{{ID: "post-1", URL: "https://afdian.com/p/post-1"}},
-		detailErrs:  map[string][]error{},
-		commentErrs: map[string][]error{},
-	}
-	destination := &fakeDestination{
-		feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"},
-		importErrs: map[string][]error{"post-1": {
-			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
-			fmt.Errorf("Miniflux 请求失败: %w", context.DeadlineExceeded),
-		}},
-	}
-
-	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{
-		Source: source, Destination: destination, Wait: noWait,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	var importIDs []string
-	for _, article := range destination.imported {
-		importIDs = append(importIDs, article.ExternalID)
-	}
-	if !reflect.DeepEqual(importIDs, []string{"post-1", "post-1", "post-1"}) || result.Imported != 1 {
-		t.Fatalf("import attempts=%v result=%+v", importIDs, result)
+func refreshTestDependencies() Dependencies {
+	return Dependencies{
+		Source: &fakeSource{
+			refreshSupported: true,
+			candidates:       []Candidate{{ID: "a", URL: "https://example.com/a", Title: "新标题", Content: "内联正文"}},
+			detailErrs:       map[string][]error{}, commentErrs: map[string][]error{},
+		},
+		Destination: &fakeDestination{
+			feed:    Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"},
+			entries: []Entry{{ID: 10, URL: "https://example.com/a"}},
+		},
+		Wait: noWait,
 	}
 }
 
-func TestRunStopsImmediatelyWhenCallerContextCanceled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	source := &fakeSource{}
-	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
-
-	_, err := Run(ctx, Request{Action: ActionExecute, FeedID: 1}, Dependencies{
-		Source: source, Destination: destination, Wait: noWait,
-	})
-	if !errors.Is(err, ctx.Err()) {
-		t.Fatalf("Run error=%v, want %v", err, ctx.Err())
+func TestRunRefreshMatchesAndDryRun(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		t.Run(fmt.Sprint(dryRun), func(t *testing.T) {
+			deps := refreshTestDependencies()
+			source := deps.Source.(*fakeSource)
+			destination := deps.Destination.(*fakeDestination)
+			source.candidates = append(source.candidates, Candidate{ID: "missing", URL: "https://example.com/missing"})
+			result, err := Run(context.Background(), Request{Action: ActionRefresh, DryRun: dryRun, RangeConfirmed: true, FeedID: 1}, deps)
+			if err != nil || len(destination.imported) != 0 || len(source.detailCalls) != 0 || result.Missing != 1 {
+				t.Fatalf("result=%+v err=%v imports=%v details=%v", result, err, destination.imported, source.detailCalls)
+			}
+			if dryRun {
+				if result.Updated != 0 || len(destination.updates) != 0 || len(source.commentCalls) != 0 || !reflect.DeepEqual(result.PendingUpdates, []UpdateTarget{{EntryID: 10, URL: "https://example.com/a"}}) {
+					t.Fatalf("试跑发生写入或缺少清单：result=%+v updates=%v", result, destination.updates)
+				}
+			} else if result.Updated != 1 || !reflect.DeepEqual(destination.updates, []recordedUpdate{{10, "新标题", "内联正文\n\ncomments-a"}}) || !reflect.DeepEqual(source.commentCalls, []string{"a"}) {
+				t.Fatalf("重刷正文或计数错误：result=%+v updates=%v comments=%v", result, destination.updates, source.commentCalls)
+			}
+		})
 	}
-	if len(destination.imported) != 0 || source.discoverCalls != 0 {
-		t.Fatalf("imports=%v discoverCalls=%d", destination.imported, source.discoverCalls)
+}
+
+func TestRunRefreshRejectsUnsupportedOrUnbounded(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		deps := refreshTestDependencies()
+		source := deps.Source.(*fakeSource)
+		source.refreshSupported = supported
+		result, err := Run(context.Background(), Request{Action: ActionRefresh, FeedID: 1, RangeConfirmed: !supported}, deps)
+		want := "不支持重刷"
+		if supported {
+			want = "扫描下界或正整数条数上限"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) || source.discoverCalls != 0 || deps.Destination.(*fakeDestination).entriesCalls != 0 || result.Updated != 0 {
+			t.Fatalf("应在读取与扫描前拒绝：result=%+v err=%v", result, err)
+		}
+	}
+}
+
+func TestRunRefreshHashPriorityAndUniqueEntry(t *testing.T) {
+	deps := refreshTestDependencies()
+	source := deps.Source.(*fakeSource)
+	destination := deps.Destination.(*fakeDestination)
+	source.emptyComments = true
+	source.candidates = []Candidate{
+		{ID: "older", URL: "shared", Title: "旧", Content: "旧正文", PublishedAt: time.Unix(1, 0)},
+		{ID: "a", URL: "conflicting", Title: "新", Content: "新正文", PublishedAt: time.Unix(2, 0)},
+	}
+	destination.entries = []Entry{{ID: 20, URL: "conflicting"}, {ID: 10, URL: "shared", Hash: externalIDHash("a")}}
+	result, err := Run(context.Background(), Request{Action: ActionRefresh, RangeConfirmed: true, FeedID: 1}, deps)
+	if err != nil || result.Updated != 1 || !reflect.DeepEqual(destination.updates, []recordedUpdate{{10, "新", "新正文"}}) {
+		t.Fatalf("必须哈希优先并按排序只更新一次：result=%+v updates=%v err=%v", result, destination.updates, err)
+	}
+}
+
+func TestRunRefreshCommentFailureSkipsEntry(t *testing.T) {
+	deps := refreshTestDependencies()
+	source := deps.Source.(*fakeSource)
+	destination := deps.Destination.(*fakeDestination)
+	source.commentErrs["a"] = []error{errors.New("评论失败"), errors.New("评论失败"), errors.New("评论失败")}
+	source.candidates = append(source.candidates, Candidate{ID: "b", URL: "b", Title: "详情标题"})
+	destination.entries = append(destination.entries, Entry{ID: 11, URL: "b"})
+	result, err := Run(context.Background(), Request{Action: ActionRefresh, RangeConfirmed: true, FeedID: 1}, deps)
+	if err != nil || result.Updated != 1 || result.CommentFailures != 1 || len(result.UpdateFailures) != 1 || result.UpdateFailures[0].EntryID != 10 || result.UpdateFailures[0].Operation != "comments" || len(result.Warnings) != 0 || !reflect.DeepEqual(destination.updates, []recordedUpdate{{11, "详情标题", "body-b\n\ncomments-b"}}) {
+		t.Fatalf("评论失败应跳过该条且继续：result=%+v updates=%v err=%v", result, destination.updates, err)
+	}
+}
+
+func TestRunRefreshEmptyContentAndUpdateRetry(t *testing.T) {
+	for _, empty := range []bool{true, false} {
+		deps := refreshTestDependencies()
+		source := deps.Source.(*fakeSource)
+		destination := deps.Destination.(*fakeDestination)
+		source.emptyComments = true
+		if empty {
+			source.candidates[0].Content = ""
+			source.emptyDetail = true
+		} else {
+			destination.updateErrs = []error{context.DeadlineExceeded, nil}
+		}
+		result, err := Run(context.Background(), Request{Action: ActionRefresh, RangeConfirmed: true, FeedID: 1}, deps)
+		if empty {
+			if err == nil || !strings.Contains(err.Error(), "正文为空") || result.Updated != 0 || len(destination.updates) != 0 || len(result.UpdateFailures) != 1 {
+				t.Fatalf("空正文不得计成功：result=%+v err=%v", result, err)
+			}
+		} else if err != nil || result.Updated != 1 || len(destination.updates) != 2 || len(result.UpdateFailures) != 0 {
+			t.Fatalf("单次超时应重试且只计一次成功：result=%+v err=%v", result, err)
+		}
+	}
+}
+
+func TestRunRefreshCancellation(t *testing.T) {
+	for _, phase := range []string{"scan", "comments", "update"} {
+		t.Run(phase, func(t *testing.T) {
+			deps := refreshTestDependencies()
+			source := deps.Source.(*fakeSource)
+			destination := deps.Destination.(*fakeDestination)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			switch phase {
+			case "scan":
+				source.discoverCancel = cancel
+				source.scanInterrupted = true
+				source.scanTruncated = true
+			case "comments":
+				source.commentCancel = cancel
+			case "update":
+				destination.updateCancel = cancel
+			}
+			result, err := Run(ctx, Request{Action: ActionRefresh, RangeConfirmed: true, FeedID: 1}, deps)
+			if phase == "scan" {
+				if err != nil || result.Updated != 1 || !result.ScanInterrupted {
+					t.Fatalf("扫描中断应写完已扫部分：%+v %v", result, err)
+				}
+			} else if !errors.Is(err, context.Canceled) || result.Updated != 0 || result.CommentFailures != 0 || len(result.Warnings) != 0 {
+				t.Fatalf("取消不能计作成功或评论告警：%+v %v", result, err)
+			}
+		})
 	}
 }

@@ -87,6 +87,7 @@ func (c *Client) Feed(ctx context.Context, feedID int64) (backfill.Feed, error) 
 type entriesResponse struct {
 	Total   int `json:"total"`
 	Entries []struct {
+		ID   int64  `json:"id"`
 		URL  string `json:"url"`
 		Hash string `json:"hash"`
 	} `json:"entries"`
@@ -110,7 +111,7 @@ func (c *Client) Entries(ctx context.Context, feedID int64) ([]backfill.Entry, e
 			return nil, err
 		}
 		for _, entry := range response.Entries {
-			entries = append(entries, backfill.Entry{URL: entry.URL, Hash: entry.Hash})
+			entries = append(entries, backfill.Entry{ID: entry.ID, URL: entry.URL, Hash: entry.Hash})
 		}
 		if len(response.Entries) < c.pageSize || response.Total > 0 && len(entries) >= response.Total {
 			break
@@ -163,6 +164,31 @@ func (c *Client) Import(ctx context.Context, feedID int64, article backfill.Arti
 	default:
 		return 0, responseError(resp, http.MethodPost, path)
 	}
+}
+
+// Update 只覆盖标题与正文；空正文会被服务端忽略，因此在发送前拒绝。
+func (c *Client) Update(ctx context.Context, entryID int64, title, content string) error {
+	if content == "" {
+		return fmt.Errorf("Miniflux 条目 %d 正文为空，无法覆盖", entryID)
+	}
+	body, err := json.Marshal(struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}{Title: title, Content: content})
+	if err != nil {
+		return fmt.Errorf("编码更新条目: %w", err)
+	}
+	path := fmt.Sprintf("/entries/%d", entryID)
+	resp, err := c.do(ctx, http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		return responseError(resp, http.MethodPut, path)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return nil
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, target any) error {

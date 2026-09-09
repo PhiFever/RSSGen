@@ -1776,7 +1776,7 @@ func TestFetchActivitiesPagedRetriesOn5xx(t *testing.T) {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	got, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, nil)
+	got, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, 0, nil)
 	if err != nil || len(got) != 1 || got[0].ID != "1781935272669" || requests != 2 {
 		t.Fatalf("activities=%v requests=%d err=%v", got, requests, err)
 	}
@@ -1813,7 +1813,7 @@ func firstActivitiesRequest(t *testing.T, offset int64) string {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	if _, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, offset, nil); err != nil {
+	if _, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, offset, 0, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(urls) != 1 {
@@ -1844,7 +1844,7 @@ func TestFetchActivitiesPagedDoesNotRetryOn4xx(t *testing.T) {
 	}))
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
-	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, nil)
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, 0, nil)
 	httpErr, ok := err.(*route.HTTPError)
 	if !ok || httpErr.StatusCode != 403 || requests != 1 {
 		t.Fatalf("requests=%d err=%v", requests, err)
@@ -1858,10 +1858,50 @@ func TestFetchActivitiesPagedProgressCarriesNextOffset(t *testing.T) {
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
 	var got string
-	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, func(page, pageItems, total int, nextOffset string) {
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, 0, func(page, pageItems, total int, nextOffset string) {
 		got = nextOffset
 	})
 	if err != nil || got != "1781935272669" {
 		t.Fatalf("nextOffset=%q err=%v", got, err)
+	}
+}
+
+func TestRenderPinContentLegacyLinkRealFixture(t *testing.T) {
+	const fixture = `[{"content":"迟飞有些观点真的还是蛮透彻的，问题是一旦回到性别其保守性就展露无余...","fold_type":"raw","own_text":"迟飞有些观点真的还是蛮透彻的，问题是一旦回到性别其保守性就展露无余...","text_link_type":"internal","title":"","type":"text"},{"card":"{\"card_type\":\"card_1\",\"display\":{\"card_open_url\":\"\",\"content\":\"\",\"desc\":\"抱歉，引用的原内容不存在\",\"title\":\"\"}}","image_height":0,"image_url":"","image_width":0,"link_type":"zhihu","subtype":"回答","title":"如何看待奶茶店女老板开色情直播还房租？","token":"1608739468","type":"link","url":"https://www.zhihu.com/question/432986590/answer/1608739468?utm_source=zhihu&utm_medium=social&utm_oi=871675140000342016"}]`
+	var blocks []zhihuPinBlock
+	if err := json.Unmarshal([]byte(fixture), &blocks); err != nil {
+		t.Fatal(err)
+	}
+	var logs strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(old)
+	got := renderPinContent(blocks, "https://www.zhihu.com/pin/1317853894450696192")
+	t.Log(got)
+	const want = `迟飞有些观点真的还是蛮透彻的，问题是一旦回到性别其保守性就展露无余...<br/><a href="https://www.zhihu.com/question/432986590/answer/1608739468?utm_source=zhihu&amp;utm_medium=social&amp;utm_oi=871675140000342016">[回答] 如何看待奶茶店女老板开色情直播还房租？</a>`
+	if got != want {
+		t.Errorf("渲染结果 = %q，期望 %q", got, want)
+	}
+	if strings.Contains(logs.String(), "未识别的知乎 pin block 类型") {
+		t.Errorf("旧版 link 不应告警：%s", logs.String())
+	}
+}
+
+func TestRenderPinContentLegacyLinkFallbacks(t *testing.T) {
+	for _, tt := range []struct {
+		name, title, subtype, want string
+	}{
+		{"无类型标注", "标题", "", "标题"},
+		{"无标题", "", "回答", "https://example.com/?a=1&amp;b=2"},
+		{"两者皆空", "", "", "https://example.com/?a=1&amp;b=2"},
+		{"转义文本", `<标题> & "引用"`, "<回答>", "[&lt;回答&gt;] &lt;标题&gt; &amp; &#34;引用&#34;"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderPinContent([]zhihuPinBlock{{Type: PinBlockLink, Title: tt.title, Subtype: tt.subtype, URL: "https://example.com/?a=1&b=2"}}, "")
+			want := `<a href="https://example.com/?a=1&amp;b=2">` + tt.want + `</a>`
+			if got != want {
+				t.Fatalf("渲染结果 = %q，期望 %q", got, want)
+			}
+		})
 	}
 }

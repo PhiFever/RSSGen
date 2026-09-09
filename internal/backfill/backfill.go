@@ -17,8 +17,8 @@ type Action string
 
 const (
 	ActionList    Action = "list"
-	ActionDryRun  Action = "dry-run"
 	ActionExecute Action = "execute"
+	ActionRefresh Action = "refresh"
 )
 
 // Request 是一次回填运行的完整调用参数。
@@ -26,6 +26,8 @@ type Request struct {
 	IncludeCategories []string
 	Action            Action
 	FeedID            int64
+	DryRun            bool
+	RangeConfirmed    bool // 调用方已确认扫描下界或正整数条数上限
 }
 
 // Feed 是对账所需的 Miniflux feed 身份信息。
@@ -37,6 +39,7 @@ type Feed struct {
 
 // Entry 是对账所需的现有 Miniflux 条目标识。
 type Entry struct {
+	ID   int64
 	URL  string
 	Hash string
 }
@@ -90,6 +93,7 @@ const (
 
 // Source 是历史内容源的内部接缝。
 type Source interface {
+	SupportsRefresh() bool
 	FeedIdentity(feedURL string) (Identity, error)
 	KnownCategories() []string
 	Discover(ctx context.Context, sourceID string, progress ProgressFunc) (Scan, error)
@@ -99,6 +103,7 @@ type Source interface {
 
 // Destination 是 Miniflux 对账与导入的内部接缝。
 type Destination interface {
+	Update(ctx context.Context, entryID int64, title, content string) error
 	Feeds(ctx context.Context) ([]Feed, error)
 	Feed(ctx context.Context, feedID int64) (Feed, error)
 	Entries(ctx context.Context, feedID int64) ([]Entry, error)
@@ -112,8 +117,25 @@ type Warning struct {
 	Err         error
 }
 
+// UpdateTarget 是已匹配的 Miniflux 条目，供试跑逐条核对。
+type UpdateTarget struct {
+	EntryID int64
+	URL     string
+}
+
+// UpdateFailure 记录未完成的重刷条目及失败阶段。
+type UpdateFailure struct {
+	UpdateTarget
+	CandidateID string
+	Operation   string
+	Err         error
+}
+
 // Result 报告 Run 执行的可观察结果。
 type Result struct {
+	Updated             int
+	PendingUpdates      []UpdateTarget
+	UpdateFailures      []UpdateFailure
 	MissingByCategory   map[string]int
 	Feeds               []Feed
 	Feed                Feed
@@ -173,12 +195,20 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		}
 		reportProgress(deps.Progress, "Miniflux feed 列表读取完成", "total", len(feeds), "eligible", len(result.Feeds))
 		return result, nil
-	case ActionDryRun, ActionExecute:
+	case ActionExecute, ActionRefresh:
 		if req.FeedID <= 0 {
 			return result, fmt.Errorf("feed ID 必须是正整数")
 		}
 	default:
 		return result, fmt.Errorf("不支持的回填操作 %q", req.Action)
+	}
+	if req.Action == ActionRefresh {
+		if !deps.Source.SupportsRefresh() {
+			return result, fmt.Errorf("当前数据源不支持重刷")
+		}
+		if !req.RangeConfirmed {
+			return result, fmt.Errorf("重刷必须确认扫描范围：给出扫描下界或正整数条数上限")
+		}
 	}
 
 	feed, err := retryValue(ctx, policy, func(ctx context.Context) (Feed, error) {
@@ -256,27 +286,58 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		candidates = filtered
 	}
 
-	missing, err := reconcile(candidates, entries, &result)
+	missing, matched, err := reconcile(candidates, entries, &result)
 	if err != nil {
 		return result, err
 	}
 	reportProgress(deps.Progress, "历史对账完成",
 		"scanned", result.Scanned, "existing", result.Existing, "missing", result.Missing,
 		"duplicates", result.DuplicateCandidates)
-	if req.Action == ActionDryRun {
+	work := make([]matchedCandidate, 0, len(missing))
+	if req.Action == ActionRefresh {
+		work = matched
+		for _, match := range matched {
+			if match.EntryID <= 0 {
+				return result, fmt.Errorf("重刷文章 %s 缺少有效的 Miniflux 条目 ID", match.Candidate.ID)
+			}
+			if req.DryRun {
+				result.PendingUpdates = append(result.PendingUpdates, UpdateTarget{EntryID: match.EntryID, URL: match.Candidate.URL})
+			}
+		}
+	} else {
+		for _, candidate := range missing {
+			work = append(work, matchedCandidate{Candidate: candidate})
+		}
+	}
+	if req.DryRun {
 		return result, nil
 	}
 
-	for index, candidate := range missing {
+	for index, match := range work {
+		candidate := match.Candidate
 		current := index + 1
-		reportProgress(deps.Progress, "开始处理缺失条目",
-			"current", current, "total", len(missing), "post_id", candidate.ID, "title", candidate.Title)
+		message := "开始处理缺失条目"
+		if req.Action == ActionRefresh {
+			message = "开始重刷条目"
+		}
+		reportProgress(deps.Progress, message,
+			"current", current, "total", len(work), "post_id", candidate.ID, "title", candidate.Title)
+		failUpdate := func(operation string, cause error) error {
+			result.UpdateFailures = append(result.UpdateFailures, UpdateFailure{
+				UpdateTarget: UpdateTarget{EntryID: match.EntryID, URL: candidate.URL},
+				CandidateID:  candidate.ID, Operation: operation, Err: cause,
+			})
+			return fmt.Errorf("重刷文章 %s（Miniflux 条目 %d）%s: %w", candidate.ID, match.EntryID, operation, cause)
+		}
 		content := candidate.Content
 		if content == "" {
 			content, err = retryValue(ctx, policy, func(ctx context.Context) (string, error) {
 				return deps.Source.Detail(ctx, candidate)
 			})
 			if err != nil {
+				if req.Action == ActionRefresh {
+					return result, failUpdate("detail", err)
+				}
 				return result, fmt.Errorf("获取文章 %s 详情: %w", candidate.ID, err)
 			}
 		}
@@ -285,7 +346,14 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 			return deps.Source.Comments(ctx, candidate)
 		})
 		if commentErr != nil {
+			if ctx.Err() != nil {
+				return result, fmt.Errorf("获取文章 %s 评论已取消: %w", candidate.ID, commentErr)
+			}
 			result.CommentFailures++
+			if req.Action == ActionRefresh {
+				_ = failUpdate("comments", commentErr)
+				continue
+			}
 			result.Warnings = append(result.Warnings, Warning{
 				CandidateID: candidate.ID,
 				Operation:   "comments",
@@ -293,6 +361,21 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 			})
 		} else {
 			content = appendContent(content, comments)
+		}
+		if req.Action == ActionRefresh {
+			if content == "" {
+				return result, failUpdate("content", fmt.Errorf("正文为空，Miniflux 不会覆盖空字符串字段"))
+			}
+			_, err := retryValue(ctx, policy, func(ctx context.Context) (struct{}, error) {
+				return struct{}{}, deps.Destination.Update(ctx, match.EntryID, candidate.Title, content)
+			})
+			if err != nil {
+				return result, failUpdate("update", err)
+			}
+			result.Updated++
+			reportProgress(deps.Progress, "条目重刷完成", "current", current, "total", len(work),
+				"post_id", candidate.ID, "entry_id", match.EntryID, "updated", result.Updated)
+			continue
 		}
 
 		article := Article{
@@ -336,15 +419,20 @@ func reportProgress(progress ProgressFunc, message string, attrs ...any) {
 	}
 }
 
-func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candidate, error) {
-	existingURLs := make(map[string]struct{}, len(entries))
-	existingHashes := make(map[string]struct{}, len(entries))
+type matchedCandidate struct {
+	Candidate Candidate
+	EntryID   int64
+}
+
+func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candidate, []matchedCandidate, error) {
+	existingURLs := make(map[string]int64, len(entries))
+	existingHashes := make(map[string]int64, len(entries))
 	for _, entry := range entries {
 		if entry.URL != "" {
-			existingURLs[entry.URL] = struct{}{}
+			existingURLs[entry.URL] = entry.ID
 		}
 		if entry.Hash != "" {
-			existingHashes[strings.ToLower(entry.Hash)] = struct{}{}
+			existingHashes[strings.ToLower(entry.Hash)] = entry.ID
 		}
 	}
 
@@ -352,7 +440,7 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 	seenIDs := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate.ID) == "" {
-			return nil, fmt.Errorf("数据源历史包含缺少稳定 ID 的条目")
+			return nil, nil, fmt.Errorf("数据源历史包含缺少稳定 ID 的条目")
 		}
 		if _, ok := seenIDs[candidate.ID]; ok {
 			result.DuplicateCandidates++
@@ -367,11 +455,20 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 
 	result.Scanned = len(unique)
 	missing := make([]Candidate, 0, len(unique))
+	var matched []matchedCandidate
+	seenEntries := make(map[int64]bool)
 	for _, candidate := range unique {
-		_, urlExists := existingURLs[candidate.URL]
-		_, hashExists := existingHashes[externalIDHash(candidate.ID)]
+		entryID, urlExists := existingURLs[candidate.URL]
+		hashID, hashExists := existingHashes[externalIDHash(candidate.ID)]
 		if urlExists || hashExists {
 			result.Existing++
+			if hashExists {
+				entryID = hashID
+			}
+			if !seenEntries[entryID] {
+				matched = append(matched, matchedCandidate{Candidate: candidate, EntryID: entryID})
+				seenEntries[entryID] = true
+			}
 			continue
 		}
 		missing = append(missing, candidate)
@@ -394,7 +491,7 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 			result.MissingNewest = &t
 		}
 	}
-	return missing, nil
+	return missing, matched, nil
 }
 
 // FeedIdentityFromURL 校验 RSSGen feed 路径并解码单段数据源 ID。

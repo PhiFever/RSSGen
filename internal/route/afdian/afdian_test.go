@@ -970,3 +970,9 @@ func TestBackfillDiscoverInterrupted(t *testing.T) {
 		t.Fatalf("Discover scan=%+v", scan)
 	}
 }
+
+func TestBackfillDoesNotSupportRefresh(t *testing.T) {
+	if (&BackfillSource{}).SupportsRefresh() {
+		t.Fatal("爱发电暂不支持重刷")
+	}
+}
