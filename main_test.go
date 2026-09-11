@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -1281,5 +1282,48 @@ func TestPrintBackfillRefreshResult(t *testing.T) {
 		if strings.Contains(got, "pending_update entry_id=11 url=https://example.com/pin") != dryRun {
 			t.Fatalf("试跑清单输出错误：%q", got)
 		}
+	}
+}
+
+// TestBrokenStdoutDoesNotKillProcess 回归：Ctrl+C 会同时打到管道下游（如 tee），
+// 下游先死后 stdout 变成断开的管道，收尾阶段的第一条日志曾让进程死于 SIGPIPE，
+// 已扫到的条目一条也落不了地。断开的 stdout 只能让写入失败，不能杀死进程。
+func TestBrokenStdoutDoesNotKillProcess(t *testing.T) {
+	const helperEnv = "RSSGEN_BROKEN_STDOUT_HELPER"
+	const helperExitCode = 7
+	if os.Getenv(helperEnv) == "1" {
+		ignoreSIGPIPE()
+		// 等父进程关掉读端，之后的写入必然落在断开的管道上。
+		time.Sleep(200 * time.Millisecond)
+		for i := 0; i < 100; i++ {
+			_, _ = os.Stdout.WriteString("收尾日志\n")
+		}
+		os.Exit(helperExitCode)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestBrokenStdoutDoesNotKillProcess$")
+	cmd.Env = append(os.Environ(), helperEnv+"=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// 关闭读端：子进程的 stdout 就此变成断开的管道。
+	if err := stdout.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = cmd.Wait()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("子进程退出状态 = %v，期望以退出码 %d 正常结束", err, helperExitCode)
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if ok && status.Signaled() {
+		t.Fatalf("子进程被信号 %v 杀死，期望以退出码 %d 正常结束", status.Signal(), helperExitCode)
+	}
+	if exitErr.ExitCode() != helperExitCode {
+		t.Fatalf("子进程退出码 = %d，期望 %d", exitErr.ExitCode(), helperExitCode)
 	}
 }

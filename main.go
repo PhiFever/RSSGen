@@ -55,6 +55,7 @@ func runCLI(args []string) int {
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+	ignoreSIGPIPE()
 
 	ctx, stop := notifyContextTwoStage(context.Background(), func() { os.Exit(130) }, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -69,6 +70,14 @@ func runCLI(args []string) int {
 		return commandExitCode(err)
 	}
 	return 0
+}
+
+// ignoreSIGPIPE 让写断开的 stdout/stderr 返回 EPIPE，而不是杀死进程。
+// Ctrl+C 打的是整个前台进程组，管道下游（如 tee）默认处置就是立刻死，
+// 下游一死 stdout 即断开；此时收尾阶段的第一条日志会让进程死于 SIGPIPE，
+// 中断后「写入已扫描部分」一条也落不了地。日志写不出去可以接受，收尾丢失不行。
+func ignoreSIGPIPE() {
+	signal.Ignore(syscall.SIGPIPE)
 }
 
 // notifyContextTwoStage 首个信号取消返回的 ctx，第二个信号调用 onSecond。
