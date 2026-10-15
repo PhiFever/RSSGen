@@ -536,11 +536,8 @@ func TestBuildRuntime(t *testing.T) {
 		Server: config.ServerConfig{Host: "127.0.0.1", Port: 0},
 		Cache:  config.CacheConfig{FeedTTL: 60},
 		Notifier: config.NotifierConfig{
-			Enabled: true,
-			Services: []config.NotifierServiceConfig{{
-				Type:       "feishu",
-				WebhookURL: "https://example.com/hook",
-			}},
+			Enabled:     true,
+			ServiceURLs: []string{"ntfy://ntfy.example.com/RSSGen?token=tk_test"},
 		},
 		Routes: map[string]config.RouteConfig{
 			"_disabled": {Enabled: false},
@@ -592,7 +589,7 @@ func TestBuildRuntimeStartsRefresherWhenRouteScheduled(t *testing.T) {
 func TestStatusHandlerIncludesFeeds(t *testing.T) {
 	ref := refresher.New(refresher.Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
@@ -958,9 +955,7 @@ func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
 	received := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received <- struct{}{}
-		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
-			t.Fatalf("写入响应失败: %v", err)
-		}
+		_, _ = w.Write([]byte(`{"id":"t","event":"message"}`))
 	}))
 	defer server.Close()
 
@@ -968,10 +963,13 @@ func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
 	feedHealth := health.New(health.Config{})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_biz_err": {Enabled: true}}}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
-	notif := notifier.New(notifier.Config{
-		Enabled:  true,
-		Services: []notifier.ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
+	notif, err := notifier.New(notifier.Config{
+		Enabled:     true,
+		ServiceURLs: []string{"ntfy://" + strings.TrimPrefix(server.URL, "http://") + "/RSSGen?scheme=http&token=tk_test"},
 	})
+	if err != nil {
+		t.Fatalf("创建通知器失败: %v", err)
+	}
 	r := chi.NewRouter()
 	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, nil, notif))
 

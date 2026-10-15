@@ -59,7 +59,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 - **refresher/** — 后台调度器，含 pending 去重、重试、熔断触发和错误状态统计（`/status` 端点数据源）
 - **health/** — feed 健康状态管理：业务错误状态码判定与进程内 feed 禁用状态（重启恢复）
 - **cache/** — 内存 TTL 缓存（存 feed XML）+ 基础 feed 键/变体缓存键构造
-- **notifier/** — 业务错误通知发送（飞书 webhook）；不持有 feed 熔断状态
+- **notifier/** — 业务错误通知发送（基于 shoutrrr URL，支持飞书、ntfy 等）；不持有 feed 熔断状态
 - **config/** — YAML 加载、默认值、`ResolveRoute` 合并全局 scraper 配置与路由级覆盖（同步/后台两条路径共用，保证行为一致）
 
 ### 新增路由的模式

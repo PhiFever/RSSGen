@@ -370,19 +370,13 @@ type feedNotifier interface {
 func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
 
-	var notifierServices []notifier.ServiceConfig
-	for _, svc := range cfg.Notifier.Services {
-		notifierServices = append(notifierServices, notifier.ServiceConfig{
-			Type:       svc.Type,
-			WebhookURL: svc.WebhookURL,
-			Secret:     svc.Secret,
-		})
-	}
-	notif := notifier.New(notifier.Config{
+	notif, err := notifier.New(notifier.Config{
 		Enabled:     cfg.Notifier.Enabled,
 		ServiceURLs: cfg.Notifier.ServiceURLs,
-		Services:    notifierServices,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("创建通知器: %w", err)
+	}
 	feedHealth := health.New(health.Config{
 		BusinessErrorCodes: cfg.Notifier.BusinessErrorCodes,
 	})

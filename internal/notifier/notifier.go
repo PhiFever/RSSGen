@@ -5,54 +5,38 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
-)
 
-// ServiceConfig 是单个通知服务的配置。
-type ServiceConfig struct {
-	Type       string // feishu, ...
-	WebhookURL string
-	Secret     string // 飞书签名密钥（可选）
-}
+	"github.com/nicholas-fedor/shoutrrr"
+	"github.com/nicholas-fedor/shoutrrr/pkg/router"
+	"github.com/nicholas-fedor/shoutrrr/pkg/types"
+)
 
 // Config 是通知器的配置。
 type Config struct {
 	Enabled     bool
-	ServiceURLs []string        // 兼容旧配置（仅打日志）
-	Services    []ServiceConfig // 通知服务列表
+	ServiceURLs []string // shoutrrr 通知 URL 列表
 }
 
-// sender 是通知发送接口。
-type sender interface {
-	Send(message string) error
-}
-
-// Notifier 是通知管理器。
+// Notifier 是通知管理器，零值表示不发送通知。
 type Notifier struct {
-	enabled bool
-	senders []sender
+	router *router.ServiceRouter
 }
 
-// New 创建一个新的通知器实例。
-func New(cfg Config) *Notifier {
-	var senders []sender
-	for _, svc := range cfg.Services {
-		switch svc.Type {
-		case "feishu":
-			senders = append(senders, newFeishuSender(svc.WebhookURL, svc.Secret))
-		default:
-			slog.Warn("未知的通知服务类型，已跳过", "type", svc.Type)
-		}
+// New 创建通知器，启用时校验通知 URL。
+func New(cfg Config) (*Notifier, error) {
+	if !cfg.Enabled || len(cfg.ServiceURLs) == 0 {
+		return &Notifier{}, nil
 	}
-
-	return &Notifier{
-		enabled: cfg.Enabled,
-		senders: senders,
+	serviceRouter, err := shoutrrr.CreateSenderWithOptions(types.SenderOptions{}, cfg.ServiceURLs...)
+	if err != nil {
+		return nil, fmt.Errorf("初始化通知服务失败: %w", err)
 	}
+	return &Notifier{router: serviceRouter}, nil
 }
 
 // Notify 发送通知。
 func (n *Notifier) Notify(feedKey string, statusCode int, errorMessage string) {
-	if !n.enabled || len(n.senders) == 0 {
+	if n.router == nil {
 		return
 	}
 
@@ -70,8 +54,8 @@ func (n *Notifier) Notify(feedKey string, statusCode int, errorMessage string) {
 
 func (n *Notifier) sendNotification(message string) {
 	slog.Info("发送通知", "message", message)
-	for _, s := range n.senders {
-		if err := s.Send(message); err != nil {
+	for _, err := range n.router.Send(message, nil) {
+		if err != nil {
 			slog.Error("通知发送失败", "error", err)
 		}
 	}

@@ -186,7 +186,7 @@ refresher:
 
 当后台刷新某个订阅源连续重试均失败、且为**业务错误**（默认 4xx：400/401/403/404/410/422/451）时，RSSGen 会：
 
-1. 通过已配置的通知服务发送一条通知（当前支持飞书机器人）；
+1. 通过已配置的通知服务发送一条通知（支持飞书、ntfy 等，基于 shoutrrr URL）；
 2. **禁用该订阅源**（feed 级，仅影响出错的那个 feed，同一路由下其他 feed 不受影响），后续 Miniflux 拉取该地址将返回 HTTP 502；
 3. 重启 RSSGen 后自动恢复（禁用状态仅存于内存）。
 
@@ -197,13 +197,16 @@ refresher:
 ```yaml
 notifier:
   enabled: true            # 是否启用通知
-  services:
-    - type: feishu
-      webhook_url: "https://open.feishu.cn/open-apis/bot/v2/hook/你的webhook_id"
-      # secret: "签名密钥"  # 可选，飞书机器人签名验证密钥
+  service_urls:   # shoutrrr 通知 URL，每行一个目标
+    # 飞书机器人：webhook 地址 /open-apis/bot/v2/hook/ 后面那段 ID；secret 可选（签名校验密钥）
+    - "lark://open.feishu.cn/你的webhook_id?secret=签名密钥"
+    # ntfy：title/priority/tags 写在 URL 里；自建且只开 HTTP 时加 scheme=http
+    - "ntfy://ntfy.example.com/RSSGen?token=tk_你的token&title=RSSGen%20订阅源获取失败&priority=4&tags=warning"
   # business_error_codes:  # 可选，自定义业务错误状态码（默认 [400, 401, 403, 404, 410, 422, 451]）
   #   - 403
 ```
+
+旧的 `services`（`type` / `webhook_url` / `secret`）写法已移除，飞书配置需改写为 `lark` URL；启用通知时 URL 写错会导致启动失败，错误提示对应条目的序号（从 0 开始）。ntfy 的 topic 在首次发布时自动创建，无需预建。
 
 `/status` 会返回后台刷新器是否启用，以及按路由和 feed 分组的最近刷新状态。
 

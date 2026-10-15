@@ -26,13 +26,13 @@ ntfy 的标题、优先级、标签全部写在 URL 里，代码只发送消息�
 6. 作为维护者，我希望只启用其中一个渠道也能正常工作，以便按需取舍。
 7. 作为维护者，我希望每个通知目标都用一条 URL 描述，以便增删渠道只改配置不改代码。
 8. 作为维护者，我希望访问自建 ntfy 时用 access token 鉴权，以便 topic 不对匿名用户开放。
-9. 作为维护者，我希望 RSSGen 通过 Docker 内部网络直连 ntfy 容器，以便告警不绕外网、不受宿主机代理影响。
+9. 作为维护者，我希望 RSSGen 通过公网域名访问 ntfy，以便部署不依赖 Docker 网络拓扑，ntfy 换机器也只改 URL。
 10. 作为维护者，我希望 `service_urls` 中有写错的 URL 时 RSSGen 启动直接失败并指出是哪一条，以便配置错误在部署时暴露，而不是等到真出故障、告警发不出去时才发现。
 11. 作为维护者，我希望某个渠道发送失败时日志里能看到失败原因，并且不影响其他渠道继续发送，以便排查且不丢告警。
 12. 作为维护者，我希望告警发送不阻塞 feed 请求和后台刷新，以便通知渠道慢或挂了不会拖垮主流程。
 13. 作为维护者，我希望关闭通知（`enabled: false`）时完全不发送，即使 `service_urls` 非空，以便临时静默告警。
 14. 作为维护者，我希望配置示例和 README 给出飞书与 ntfy 的完整 URL 写法，以便照抄就能用。
-15. 作为维护者，我希望 README 说明如何让 RSSGen 容器加入 ntfy 所在的 Docker 网络，以便不必自己摸索 compose 的 external network 写法。
+15. 作为维护者，我希望 README 说明 ntfy 只提供 HTTP 时如何在 URL 里切换协议，以便内网部署也能照抄。
 16. 作为维护者，我希望配置里不再残留不生效的字段，以便配置文件所写即所得。
 17. 作为维护者，我希望升级后旧的 `services` 写法不再被支持，并在升级说明中写明，以便我知道必须迁移配置。
 
@@ -54,7 +54,7 @@ ntfy 的标题、优先级、标签全部写在 URL 里，代码只发送消息�
 
 **对外接口不变。** 通知器对调用方暴露的「按 feed 键、状态码、错误信息发出告警」方法签名不变，熔断、健康状态、刷新器等调用方无需改动。
 
-**部署：RSSGen 加入 ntfy 所在网络。** ntfy 运行在同一台设备上的另一个 compose 项目中，容器名为 `ntfy`，容器内监听 80 端口（宿主机映射到 7921）。不同 compose 项目默认处于不同网络，RSSGen 无法按容器名解析到 ntfy。方案是在 RSSGen 的 compose 中把 ntfy 所在网络声明为 external 网络并让 rssgen 服务加入，URL 写 `ntfy://ntfy/RSSGen?scheme=http&...`。仓库内的 compose 文件不写死该网络，因为网络名随各自部署而变；只在 README 中给出示例。rssgen 容器未设置 HTTP 代理环境变量，因此不涉及 `NO_PROXY`。
+**部署：经公网域名访问 ntfy。** ntfy 虽与 RSSGen 同机，但运行在另一个 compose 项目中。曾考虑让 rssgen 加入 ntfy 所在的 external 网络、按容器名直连，最终改为走 ntfy 的公网 HTTPS 域名：URL 写 `ntfy://<ntfy 域名>/RSSGen?token=...`，scheme 默认即 https。这样 RSSGen 的部署不依赖 Docker 网络拓扑，配置示例对任何人通用。代价是告警依赖 DNS、TLS 与反向代理可用，若域名解析到本机公网 IP 还要求路由器支持 NAT 回环，部署后需从 rssgen 容器内实测一次。仅提供 HTTP 的 ntfy 可在 URL 中加 `scheme=http`。rssgen 容器未设置 HTTP 代理环境变量，请求直连。
 
 **ntfy 侧。** topic 在首次发布时由服务端自动创建，无需预建；topic 名大小写敏感。若服务端开启了 `auth-default-access: deny-all`，token 所属用户需要对 `RSSGen` 拥有写权限（`ntfy access <用户> RSSGen write`，或在 `auth-access` 中声明）。
 
@@ -86,7 +86,7 @@ ntfy 的标题、优先级、标签全部写在 URL 里，代码只发送消息�
 - 熔断与健康状态模块的重构：架构评审清单中已有独立条目。
 - `business_error_codes` 从 `notifier` 下迁出：它实际属于健康状态模块，但与本次无关，不动。
 - 除飞书与 ntfy 之外的渠道：shoutrrr 已支持，配置即可使用，但不在本次验证与文档范围内。
-- 在仓库 compose 文件中写死 ntfy 的网络。
+- 在仓库 compose 文件中为 ntfy 增加网络配置。
 - ntfy 服务端的部署、用户与 token 管理。
 
 ## 补充说明

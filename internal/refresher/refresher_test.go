@@ -18,7 +18,7 @@ import (
 
 func TestNew(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 
 	cfg := Config{
 		FeedCache:      feedCache,
@@ -64,7 +64,7 @@ func TestBuildCacheKey(t *testing.T) {
 
 func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
@@ -113,7 +113,7 @@ func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 func TestGetStatusEmpty(t *testing.T) {
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 	status := ref.GetStatus()
@@ -133,7 +133,7 @@ func TestGetStatusIncludesObservedDynamicFeeds(t *testing.T) {
 	}
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
 		RoutesConfig: map[string]config.RouteConfig{"zhihu": {Enabled: true, RefreshInterval: 60}},
 	})
@@ -160,7 +160,7 @@ func TestStartCreatesPerRouteTasks(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
@@ -191,7 +191,7 @@ func TestStartPreinitURL(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		PreinitURL:   server.URL,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -209,13 +209,13 @@ func TestStartPreinitURL(t *testing.T) {
 func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
 	New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		RoutesConfig: map[string]config.RouteConfig{},
 	}).preinitHTTPClient()
 
 	errorRef := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		PreinitURL:   "http://127.0.0.1:1",
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -227,7 +227,7 @@ func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
 	defer server.Close()
 	statusRef := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		PreinitURL:   server.URL,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -247,7 +247,7 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 	ref.refreshFeeds(refreshPhase{label: "test"}, "_test_refresh_feeds_skip", config.RouteConfig{})
@@ -264,7 +264,7 @@ func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
 	sleepCount := 0
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -292,7 +292,7 @@ func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -331,7 +331,7 @@ func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
 	sleepCount := 0
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -386,7 +386,7 @@ func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
 	}
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
@@ -438,7 +438,7 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 	}
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		FeedCatalog:  &staticFeedCatalog{refs: dynamicRefs},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
@@ -467,7 +467,7 @@ func TestStopCancelsAllTasks(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
@@ -495,7 +495,7 @@ func TestIdempotentStart(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_refresher3": {
@@ -520,7 +520,7 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat1": {
@@ -566,7 +566,7 @@ func TestRefreshOneSuccess(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
@@ -613,7 +613,7 @@ func TestRefreshOneFailure(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:      feedCache,
 		Notifier:       notif,
@@ -653,7 +653,7 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:      feedCache,
@@ -687,7 +687,7 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:      feedCache,
@@ -719,7 +719,7 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	feedHealth := health.New(health.Config{})
 	ref := New(Config{
 		FeedCache:    feedCache,
@@ -753,7 +753,7 @@ func TestPreheatRunsWheneverEnabled(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat_run": {
@@ -781,7 +781,7 @@ func TestZeroIntervalWithoutPreheatSkipsRoute(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_zero_iv": {
@@ -812,7 +812,7 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_zero_iv_preheat": {
@@ -842,7 +842,7 @@ func TestNullIntervalSkipsRoute(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_null_iv": {
@@ -874,7 +874,7 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := notifier.New(notifier.Config{Enabled: false})
+	notif := &notifier.Notifier{}
 	ref := New(Config{
 		FeedCache:    feedCache,
 		Notifier:     notif,
@@ -903,7 +903,7 @@ func TestRefreshFeedsPassesZhihuIncludeAndDefaultLimit(t *testing.T) {
 
 	ref := New(Config{
 		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     notifier.New(notifier.Config{}),
+		Notifier:     &notifier.Notifier{},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})

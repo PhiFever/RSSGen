@@ -1,122 +1,114 @@
-// Package notifier 测试 —— 迁移自 Python tests/core/test_notifier.py
 package notifier
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-// --- New / 初始化 ---
+func ntfyTestURL(server *httptest.Server) string {
+	return "ntfy://" + strings.TrimPrefix(server.URL, "http://") + "/RSSGen?scheme=http&token=tk_test"
+}
 
 func TestNewDefault(t *testing.T) {
-	n := New(Config{})
-	if n.enabled {
-		t.Error("默认 notifier 不应启用")
+	n, err := New(Config{})
+	if err != nil {
+		t.Fatalf("创建默认通知器失败: %v", err)
 	}
-	if len(n.senders) != 0 {
-		t.Errorf("默认 senders 长度应为 0，实际 %d", len(n.senders))
-	}
-}
-
-func TestNewWithConfig(t *testing.T) {
-	n := New(Config{
-		Enabled:  true,
-		Services: []ServiceConfig{{Type: "feishu", WebhookURL: "https://hooks.example.com"}},
-	})
-	if !n.enabled {
-		t.Error("Enabled=true 应生效")
-	}
-	if len(n.senders) != 1 {
-		t.Errorf("senders 长度应为 1，实际 %d", len(n.senders))
-	}
-}
-
-func TestNewWithUnknownServiceType(t *testing.T) {
-	n := New(Config{
-		Enabled:  true,
-		Services: []ServiceConfig{{Type: "unknown_type"}},
-	})
-	// 未知类型应被跳过，senders 为空
-	if len(n.senders) != 0 {
-		t.Errorf("未知类型应被跳过, senders 长度 = %d", len(n.senders))
-	}
-}
-
-// --- Notify ---
-
-func TestNotifyDisabled(t *testing.T) {
-	n := New(Config{Enabled: false, ServiceURLs: []string{"https://hooks.example.com"}})
-	// 不应 panic；enabled=false 时应静默跳过
 	n.Notify("key", 403, "业务错误")
 }
 
-func TestNotifyNoSenders(t *testing.T) {
-	n := New(Config{Enabled: true})
-	// 不应 panic；无 senders 时应静默跳过
-	n.Notify("key", 500, "服务器错误")
-}
-
-func TestNotifyWithFeishuService(t *testing.T) {
-	// 用 httptest 模拟飞书 Webhook，验证 Notify 能实际发送
-	received := make(chan struct{}, 1)
+func TestNotifyServiceURL(t *testing.T) {
+	type requestInfo struct {
+		method, path, authorization, body string
+		err                               error
+	}
+	received := make(chan requestInfo, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- struct{}{}
-		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
-			t.Fatalf("写入响应失败: %v", err)
-		}
+		body, err := io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"id":"t","event":"message"}`))
+		received <- requestInfo{r.Method, r.URL.Path, r.Header.Get("Authorization"), string(body), err}
 	}))
 	defer server.Close()
+	n, err := New(Config{Enabled: true, ServiceURLs: []string{ntfyTestURL(server)}})
+	if err != nil {
+		t.Fatalf("创建通知器失败: %v", err)
+	}
+	n.Notify("key", 403, "业务错误")
+	select {
+	case req := <-received:
+		if req.err != nil {
+			t.Fatalf("读取请求失败: %v", req.err)
+		}
+		if req.method != http.MethodPost || req.path != "/RSSGen" {
+			t.Errorf("请求 = %s %s，期望 POST /RSSGen", req.method, req.path)
+		}
+		if req.authorization != "Bearer tk_test" {
+			t.Errorf("Authorization = %q", req.authorization)
+		}
+		if !strings.Contains(req.body, "[RSSGen] 订阅源 key 获取失败\n状态码: 403\n错误: 业务错误\n时间: ") {
+			t.Errorf("通知正文 = %q", req.body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("service_urls 目标未收到通知")
+	}
+}
 
-	n := New(Config{
-		Enabled:  true,
-		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
-	})
-	n.Notify("key", 403, "错误")
+func TestNewInvalidURL(t *testing.T) {
+	_, err := New(Config{Enabled: true, ServiceURLs: []string{
+		"ntfy://ntfy.example.com/RSSGen?token=tk_test",
+		"unknownsvc://x?token=secret123",
+	}})
+	if err == nil {
+		t.Fatal("非法 URL 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "URL 1") || strings.Contains(err.Error(), "secret123") {
+		t.Errorf("错误应含 URL 序号且不泄露密钥: %v", err)
+	}
+}
+
+func TestNotifyDisabled(t *testing.T) {
+	if _, err := New(Config{Enabled: false, ServiceURLs: []string{"unknownsvc://x?token=secret123"}}); err != nil {
+		t.Fatalf("关闭通知时不应校验 URL: %v", err)
+	}
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"t","event":"message"}`))
+		received <- struct{}{}
+	}))
+	defer server.Close()
+	n, err := New(Config{Enabled: false, ServiceURLs: []string{ntfyTestURL(server)}})
+	if err != nil {
+		t.Fatalf("创建关闭的通知器失败: %v", err)
+	}
+	n.Notify("key", 403, "业务错误")
+	select {
+	case <-received:
+		t.Fatal("关闭通知时不应发送请求")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestSendNotificationExceptionHandled(t *testing.T) {
+	received := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		received <- struct{}{}
+	}))
+	defer server.Close()
+	n, err := New(Config{Enabled: true, ServiceURLs: []string{ntfyTestURL(server)}})
+	if err != nil {
+		t.Fatalf("创建通知器失败: %v", err)
+	}
+	// 远端返回错误时，异步通知不应 panic。
+	n.Notify("key", 403, "业务错误")
 	select {
 	case <-received:
 	case <-time.After(time.Second):
-		t.Error("飞书 Webhook 应收到请求")
+		t.Fatal("测试服务器未收到请求")
 	}
-}
-
-func TestNotifyMultipleMessagesSmoke(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := w.Write([]byte(`{"code":0,"msg":"success"}`)); err != nil {
-			t.Fatalf("写入响应失败: %v", err)
-		}
-	}))
-	defer server.Close()
-	n := New(Config{
-		Enabled:  true,
-		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
-	})
-
-	// 通知不应 panic
-	n.Notify("f1", 403, "错误")
-	n.Notify("f2", 500, "临时错误")
-}
-
-// --- 通知异常处理（迁移自 Python test_send_notification_exception_handled） ---
-
-func TestSendNotificationExceptionHandled(t *testing.T) {
-	// 模拟飞书 Webhook 返回错误
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		if _, err := w.Write([]byte(`{"code":1,"msg":"internal error"}`)); err != nil {
-			t.Fatalf("写入响应失败: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	n := New(Config{
-		Enabled:  true,
-		Services: []ServiceConfig{{Type: "feishu", WebhookURL: server.URL}},
-	})
-
-	// Notify 不应 panic，即使远端返回错误
-	n.Notify("key", 403, "业务错误")
 	time.Sleep(100 * time.Millisecond)
-	// 不 panic 即为通过；sendNotification 内部 slog.Error 处理错误
 }
