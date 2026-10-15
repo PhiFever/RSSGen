@@ -72,7 +72,7 @@ routes:
 ```bash
 # 创建本地凭证文件（.env 已被 Git 忽略）
 cp .env.example .env
-# 然后编辑 .env，填写 MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE（知乎回填使用 ZHIHU_COOKIE）
+# 然后编辑 .env，填写 MINIFLUX_URL、MINIFLUX_API_TOKEN 和 AFDIAN_COOKIE（知乎回填使用 ZHIHU_COOKIE）
 
 # 1. 查询可回填的 Afdian feed ID
 go run . backfill list --source afdian \
@@ -94,7 +94,7 @@ go run . backfill execute --source afdian \
 
 ### 知乎历史回填
 
-知乎回填从用户动态列表向前翻页，默认最多扫描 1000 条动态（`--max-items`，`0` 表示不限制）。动态流不会自然收敛——实测单个账号翻过 7674 条仍未出现结束标记——所以这个上限是必要的刹车，触发时会在日志中明确告知"已达知乎历史扫描上限"，而不是静默截断。命令同样尝试读取 `.env`；从 `.env.example` 复制后，在 `.env` 中填写 `MINIFLUX_API_TOKEN` 和 `ZHIHU_COOKIE`。执行与 dry-run 所用的 `ZHIHU_COOKIE` 必须含 `d_c0`，只列出 feed 时不需要 cookie。凭证仅通过环境变量或 `.env` 提供。
+知乎回填从用户动态列表向前翻页，默认最多扫描 1000 条动态（`--max-items`，`0` 表示不限制）。动态流不会自然收敛——实测单个账号翻过 7674 条仍未出现结束标记——所以这个上限是必要的刹车，触发时会在日志中明确告知"已达知乎历史扫描上限"，而不是静默截断。命令同样尝试读取 `.env`；从 `.env.example` 复制后，在 `.env` 中填写 `MINIFLUX_URL`、`MINIFLUX_API_TOKEN` 和 `ZHIHU_COOKIE`。执行与 dry-run 所用的 `ZHIHU_COOKIE` 必须含 `d_c0`，只列出 feed 时不需要 cookie。凭证仅通过环境变量或 `.env` 提供。
 
 ```bash
 # 1. 查询可回填的知乎 feed ID
@@ -164,7 +164,7 @@ go run . backfill refresh --source zhihu \
   --include pin
 ```
 
-重刷输出已确认成功的更新数与失败条目详情；评论抓取最终失败的条目跳过，不用缺失评论的正文覆盖旧内容。到达下界表示指定窗口扫描完成，不提示继续扫描更早历史。`list`、`execute`、`refresh` 共用 `--source`、`--miniflux-url` 和 `--request-interval`，公共参数可放在子命令前后；`list` 只需要 Miniflux token，不要求数据源 Cookie。
+重刷输出已确认成功的更新数与失败条目详情；评论抓取最终失败的条目跳过，不用缺失评论的正文覆盖旧内容。到达下界表示指定窗口扫描完成，不提示继续扫描更早历史。`list`、`execute`、`refresh` 共用 `--source`、`--miniflux-url` 和 `--request-interval`，公共参数可放在子命令前后；`list` 只需要 Miniflux token，不要求数据源 Cookie。`--miniflux-url` 未传时回落到环境变量或 `.env` 中的 `MINIFLUX_URL`，两者都没有才报错；显式传参优先，便于临时指向另一个实例。
 
 ## 后台刷新
 

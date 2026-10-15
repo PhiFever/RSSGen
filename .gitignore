@@ -28,3 +28,15 @@ __pycache__/
 .worktrees/
 .idea/
 .claude/settings.local.json
+
+# claude code沙箱挂载
+.bash_profile
+.bashrc
+.claude/
+.gitconfig
+.gitmodules
+.idea
+.profile
+.vscode
+.zprofile
+.zshrc

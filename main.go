@@ -233,7 +233,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 		UsageText: "rssgen backfill [公共选项] <list|execute|refresh> [选项]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "source", Usage: "数据源（可选：" + backfillSourceNames() + "）", Required: true},
-			&cli.StringFlag{Name: "miniflux-url", Usage: "Miniflux 实例的根 URL", Required: true},
+			&cli.StringFlag{Name: "miniflux-url", Usage: "Miniflux 实例的根 URL；未传时取环境变量 MINIFLUX_URL"},
 			&cli.DurationFlag{
 				Name: "request-interval", Usage: "数据源请求之间的最小间隔", Value: time.Second,
 				Validator: func(value time.Duration) error {
@@ -552,7 +552,10 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 		}
 	}
 	if cfg.minifluxURL == "" {
-		return cfg, fmt.Errorf("必须显式传入 --miniflux-url")
+		cfg.minifluxURL = strings.TrimSpace(getenv("MINIFLUX_URL"))
+	}
+	if cfg.minifluxURL == "" {
+		return cfg, fmt.Errorf("必须设置 MINIFLUX_URL 或传入 --miniflux-url")
 	}
 	if cfg.requestInterval < time.Second {
 		return cfg, fmt.Errorf("--request-interval 不能小于 1s")

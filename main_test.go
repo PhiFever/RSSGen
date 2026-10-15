@@ -296,6 +296,41 @@ func TestBackfillCommandBuildsConfig(t *testing.T) {
 	})
 }
 
+func TestBackfillCommandResolvesMinifluxURL(t *testing.T) {
+	env := func(values map[string]string) func(string) string {
+		return func(key string) string { return values[key] }
+	}
+
+	t.Run("falls back to MINIFLUX_URL", func(t *testing.T) {
+		cfg, err := runBackfillCommandForTest(t, []string{"list", "--source", "afdian"}, env(map[string]string{
+			"MINIFLUX_URL":       "https://env.example",
+			"MINIFLUX_API_TOKEN": "token",
+		}))
+		if err != nil || cfg.minifluxURL != "https://env.example" {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	})
+
+	t.Run("flag overrides MINIFLUX_URL", func(t *testing.T) {
+		cfg, err := runBackfillCommandForTest(t, []string{"list", "--source", "afdian", "--miniflux-url", "https://flag.example"}, env(map[string]string{
+			"MINIFLUX_URL":       "https://env.example",
+			"MINIFLUX_API_TOKEN": "token",
+		}))
+		if err != nil || cfg.minifluxURL != "https://flag.example" {
+			t.Fatalf("cfg=%+v err=%v", cfg, err)
+		}
+	})
+
+	t.Run("missing both fails", func(t *testing.T) {
+		_, err := runBackfillCommandForTest(t, []string{"list", "--source", "afdian"}, env(map[string]string{
+			"MINIFLUX_API_TOKEN": "token",
+		}))
+		if err == nil || !strings.Contains(err.Error(), "MINIFLUX_URL") {
+			t.Fatalf("缺 URL 应报错: %v", err)
+		}
+	})
+}
+
 func TestBackfillCommandRejectsUnsafeOrMissingInputs(t *testing.T) {
 	validEnv := func(key string) string { return "present" }
 	tests := [][]string{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -117,6 +118,15 @@ func (s *BackfillSource) Discover(ctx context.Context, userID string, progress b
 		}
 		if item.PubDate != nil {
 			candidate.PublishedAt = *item.PubDate
+		}
+		// 空 GUID 会让 backfill.Run 的对账整批失败，且失败点在任何导入之前，
+		// 报错本身不指向具体动态。只有裸 id 分支（answer/article/pin/voteup_pin）
+		// 才可能产出空 GUID，其中 pin 的 title 有兜底，缺 id 时全程静默——这里点名。
+		if strings.TrimSpace(candidate.ID) == "" {
+			slog.Warn("知乎动态缺少稳定 ID",
+				"activity_id", string(act.ID), "verb", act.Verb, "target_type", act.Target.Type,
+				"action_text", act.ActionText, "category", candidate.Category,
+				"title", candidate.Title, "url", candidate.URL)
 		}
 		candidates = append(candidates, candidate)
 	}
