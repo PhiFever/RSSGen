@@ -66,6 +66,13 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 - 响应体经过 `max_size + 1` 的限流读取，`max_size` 默认 20 MiB，可配置。
 - 只接受 JPEG、PNG、GIF、WebP、AVIF，以魔数检测为准，拒绝 SVG 及其他类型。`Content-Type` 与魔数冲突时记一条脱敏 warning，按魔数结果处理。
 
+### 模块边界
+
+- `internal/media` 分两层。
+  - 通用层：白名单、下载、魔数识别、HTML 改写、内存表、并发编排。它不知道 Immich 的存在，只通过存储的三个操作工作：`put`（存入，拒收文件时返回 `errRejected`）、`commit`（提交，使资源可以被访问）、`url`（取发布地址）。
+  - Immich 适配：全部 Immich 细节（接口路径、状态码含义、相册、分享 key、地址格式）都在 `immich.go` 的 `immichStore` 里。
+- 现在只有一个后端，`immichStore` 是具体类型，不是接口。将来加第二种后端时，配置里与 `media.immich` 并列增加一段，再从实际的两种实现中抽出接口。通用配置项（`allowed_hosts`、`max_size_mb`）留在 `media` 下，不需要迁移。
+
 ### Immich 交互
 
 - RSSGen 使用 Immich 专用用户的 API key（请求头 `x-api-key`）。该 key 只授予 `asset.upload` 和 `albumAsset.create` 权限。RSS 图片放在这个专用用户名下，不进入主用户的图库。
@@ -110,7 +117,7 @@ media:
 ### 日志与状态
 
 - 日志中的源 URL 去掉 query 值，Immich 地址不输出 `key` 参数，不输出 API key 和代理凭证。
-- `/status` 增加媒体段：上传成功数、Immich 去重命中数、单图失败数（按原因分类）、最近一次 Immich 侧错误。
+- `/status` 增加 `media` 段：`stored`（新存入数）、`deduplicated`（存储去重命中数）、`source_failures`（单图失败数，按原因分类）、`last_store_error` / `last_store_error_at`（最近一次存储侧错误）。字段名与后端无关。
 
 ### 部署
 
@@ -139,7 +146,7 @@ media:
 
 ### 部署冒烟（手工，启用前完成）
 
-1. 用专用用户上传一批（几十张）RSS 图片，观察树莓派上 Immich 机器学习任务（智能搜索、人脸识别等）的 CPU 负载和耗时，确认可以接受。
+1. 用专用用户上传一批（几十张）RSS 图片，观察树莓派上 Immich 生成缩略图的 CPU 负载，确认可以接受。线上 Immich 用的是远程机器学习服务，智能搜索、人脸识别的计算不在树莓派上，但每张新图仍会产生一次远程推理请求。
 2. ~~确认 `visibility=archive` 的资源能通过分享链接 `key` 访问 `/original`。~~ 2026-10-23 已验证，见 Further Notes。
 3. 确认 GIF 经 Miniflux 代理后仍是动图。（`/original` 返回的字节与上传文件一致，已验证；还差 Miniflux 代理这一段。）
 4. 完整链路：Miniflux 轮询 feed，Web 界面和通过 Fever API 接入的 app 都能经公网 Miniflux 看到图片；重启 RSSGen 后同一 feed 的 XML 不变。
@@ -165,7 +172,7 @@ media:
 - 已知代价：
   - 每次重启后，当前 feed 中的图片会被重新下载一次（上传会被去重）。
   - refresh 耗时增加，增加的部分是图片下载和上传的时间。
-  - 每张新图都会触发 Immich 的缩略图生成和机器学习任务，在树莓派上可能是主要的资源开销，见冒烟第 1 项。
+  - 每张新图都会触发 Immich 生成缩略图（在树莓派上）和机器学习任务（在远程机器学习服务上），见冒烟第 1 项。
   - 与 Immich API 耦合：Immich 的 API 历史上有过破坏性变更，当前运行版本为 v3.3.4，升级 Immich 后应重跑冒烟。
 - 分享 key 会出现在 feed XML 中，也会以 base64 形式出现在 Miniflux 代理地址里。它只能读取这一个相册，而且 Immich 不在公网，外部拿到 key 也无法直接使用；能拿到代理地址的人本来就能看到这张图。
 - Immich API 的行为（上传字段、200/201 的含义、`x-api-key` 与 `key` 鉴权、`asset.download` 需要分享链接允许下载、`albumAsset.create` 权限、visibility 取值）和 Miniflux media proxy 的配置项，于 2026-10-23 依据官方文档核对，并在线上 Immich v3.3.4 上实测：
