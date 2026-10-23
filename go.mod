@@ -22,7 +22,6 @@ require (
 	github.com/bogdanfinn/quic-go-utls v1.0.12-utls // indirect
 	github.com/bogdanfinn/utls v1.8.2-barnius // indirect
 	github.com/bogdanfinn/websocket v1.5.8-barnius // indirect
-	github.com/cloudflare/circl v1.6.5 // indirect
 	github.com/eclipse/paho.golang v0.23.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect

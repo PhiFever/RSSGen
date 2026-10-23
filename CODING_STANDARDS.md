@@ -1,6 +1,6 @@
 # 编码规范（审查用）
 
-审查 diff 时逐条核对。格式、vet、依赖整理由 CI（`.github/workflows/check.yml`）机械检查，这里只收需要判断的规则。CLAUDE.md 中已有的约定（中文注释、`*route.HTTPError`、函数字段注入、不用 testify）同样适用，不在此重复。
+审查 diff 时逐条核对。格式、vet、依赖整理由 CI（`.github/workflows/check.yml`）机械检查，这里只收需要判断的规则。AGENTS.md 中已有的约定（中文注释、`*route.HTTPError`、函数字段注入、不用 testify）同样适用，不在此重复。
 
 ## 结构体与配置
 

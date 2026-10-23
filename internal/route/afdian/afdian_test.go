@@ -205,7 +205,8 @@ func makePost(postID string) afdianPost {
 
 // newFetchTestServer 起一个覆盖 Fetch 全链路四个接口的 mock 服务，并把 hostURL 指向它。
 // detail/comments 回调返回 error 时对应接口回 403，用于模拟上游失败；comments 为 nil 表示返回空评论。
-func newFetchTestServer(t *testing.T, posts []afdianPost, detail func(string) (string, error), comments func(string) (afdianCommentList, error)) {
+// pics 按 post_id 提供详情接口返回的配图。
+func newFetchTestServer(t *testing.T, posts []afdianPost, detail func(string) (string, error), comments func(string) (afdianCommentList, error), pics map[string][]string) {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var data any
@@ -220,7 +221,7 @@ func newFetchTestServer(t *testing.T, posts []afdianPost, detail func(string) (s
 				w.WriteHeader(http.StatusForbidden)
 				return
 			}
-			data = map[string]any{"post": map[string]any{"content": content}}
+			data = map[string]any{"post": map[string]any{"content": content, "pics": pics[req.URL.Query().Get("post_id")]}}
 		case "/api/comment/get-list":
 			var list afdianCommentList
 			if comments != nil {
@@ -270,7 +271,7 @@ func TestFetchGetsDetailAndComments(t *testing.T) {
 		return "<p>detail</p>", nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug1"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -293,7 +294,7 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -332,7 +333,7 @@ func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -360,7 +361,7 @@ func TestFetchPartialDetailFailure(t *testing.T) {
 		return fmt.Sprintf("<p>%s</p>", postID), nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
 	if err != nil {
@@ -388,7 +389,7 @@ func TestFetchCommentFailureKeepsBody(t *testing.T) {
 		return afdianCommentList{}, fmt.Errorf("comment boom")
 	}
 
-	newFetchTestServer(t, posts, detail, comments)
+	newFetchTestServer(t, posts, detail, comments, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -410,7 +411,7 @@ func TestFetchDetailFailureUsesEmptyContent(t *testing.T) {
 		return "", fmt.Errorf("详情接口失败")
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -632,13 +633,16 @@ func TestBackfillSourceUsesSharedParsingAndRendering(t *testing.T) {
 			if r.URL.Query().Get("publish_sn") == "0" {
 				writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"list": []map[string]any{{
 					"post_id": "p1", "title": "Paid", "publish_time": 123, "publish_sn": 10,
-					"user": map[string]any{"name": "Alice"}, "pics": []string{"https://example.com/deferred.jpg"},
+					"user": map[string]any{"name": "Alice"},
 				}}}})
 				return
 			}
 			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"list": []any{}}})
 		case "/api/post/get-detail":
-			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"post": map[string]any{"content": "<p>paid</p>"}}})
+			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"post": map[string]any{
+				"content": "第一段\n第二段",
+				"pics":    []string{"https://example.com/first.jpg", "https://example.com/second.jpg"},
+			}}})
 		case "/api/comment/get-list":
 			writeJSON(t, w, map[string]any{"ec": 200, "data": map[string]any{"list": []map[string]any{{
 				"user": map[string]any{"name": "Reader"}, "publish_time": 124, "content": "Thanks",
@@ -668,7 +672,7 @@ func TestBackfillSourceUsesSharedParsingAndRendering(t *testing.T) {
 		t.Fatalf("candidate = %+v", candidate)
 	}
 	body, err := source.Detail(context.Background(), candidate)
-	if err != nil || body != "<p>paid</p>" {
+	if err != nil || body != `第一段<br>第二段<p><img src="https://example.com/first.jpg"></p><p><img src="https://example.com/second.jpg"></p>` {
 		t.Fatalf("Detail = %q, %v", body, err)
 	}
 	comments, err := source.Comments(context.Background(), candidate)
@@ -859,7 +863,7 @@ func TestParseAfdianResponseInvalidJSON(t *testing.T) {
 func TestFetchRendersPicsIntoContent(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
 	post := makePost("p1")
-	post.Pics = []string{
+	pics := []string{
 		"https://pic1.afdiancdn.com/user/uid/common/a_w980_h1536_s127.jpeg",
 		"",
 		"https://pic1.afdiancdn.com/user/uid/common/b_w1012_h1544_s132.jpeg",
@@ -872,7 +876,7 @@ func TestFetchRendersPicsIntoContent(t *testing.T) {
 		return sampleComments(), nil
 	}
 
-	newFetchTestServer(t, posts, detail, comments)
+	newFetchTestServer(t, posts, detail, comments, map[string][]string{"p1": pics})
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -897,13 +901,13 @@ func TestFetchRendersPicsIntoContent(t *testing.T) {
 func TestFetchRendersPicsWithEmptyContent(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
 	post := makePost("p1")
-	post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+	pics := []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
 	posts := []afdianPost{post}
 	detail := func(_ string) (string, error) {
 		return "", nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, map[string][]string{"p1": pics})
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -918,7 +922,7 @@ func TestFetchRendersPicsWithEmptyContent(t *testing.T) {
 func TestFetchConvertsPlainTextNewlines(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
 	post := makePost("p1")
-	post.Pics = []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
+	pics := []string{"https://pic1.afdiancdn.com/user/uid/common/a_w750_h1414_s88.png"}
 	posts := []afdianPost{post}
 	detail := func(_ string) (string, error) {
 		return "第一段\n\n第二段", nil
@@ -927,7 +931,7 @@ func TestFetchConvertsPlainTextNewlines(t *testing.T) {
 		return sampleComments(), nil
 	}
 
-	newFetchTestServer(t, posts, detail, comments)
+	newFetchTestServer(t, posts, detail, comments, map[string][]string{"p1": pics})
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {
@@ -954,7 +958,7 @@ func TestFetchLeavesHTMLContentNewlinesAlone(t *testing.T) {
 		return `<p>段落一</p><p><img src="https://pic1.afdiancdn.com/x.png?imageView2/2/w/1280"></p>`, nil
 	}
 
-	newFetchTestServer(t, posts, detail, nil)
+	newFetchTestServer(t, posts, detail, nil, nil)
 
 	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 5})
 	if err != nil {

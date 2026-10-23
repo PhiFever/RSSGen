@@ -35,7 +35,6 @@ type afdianPost struct {
 	PublishTime float64    `json:"publish_time"`
 	PublishSN   int64      `json:"publish_sn"`
 	Content     string     `json:"content"`
-	Pics        []string   `json:"pics"`
 	User        afdianUser `json:"user"`
 }
 
@@ -173,7 +172,6 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 	for idx := range posts {
 		idx := idx
 		postID := posts[idx].PostID
-		pics := posts[idx].Pics
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -183,11 +181,6 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
 				return
 			}
-			// 图片动态的正文是纯文本，换行要转成 <br> 才能在阅读器里保留分段；
-			// 文章类正文是单行 HTML（换行由 <p>/<br> 表达，不含字面换行符），此处为空操作。
-			// 必须在追加评论之前做，renderComments 生成的换行是有意的，不能一起转掉。
-			content = strings.ReplaceAll(content, "\n", "<br>")
-			content = appendPics(content, pics)
 			comments, err := r.getPostComments(sc, postID)
 			if err != nil {
 				slog.Warn("文章评论获取失败，省略评论", "post_id", postID, "error", err)
@@ -372,7 +365,7 @@ func (s *BackfillSource) FeedIdentity(feedURL string) (backfill.Identity, error)
 // KnownCategories 返回 nil：Afdian 没有 category 概念。
 func (s *BackfillSource) KnownCategories() []string { return nil }
 
-// SupportsRefresh 返回 false：历史适配器尚未保留配图与扫描范围。
+// SupportsRefresh 返回 false：历史适配器尚未接通扫描范围。
 func (s *BackfillSource) SupportsRefresh() bool { return false }
 
 // NewBackfillSource 创建串行且限速的 Afdian 历史适配器。
@@ -481,13 +474,17 @@ func (r *Route) getPostDetail(sc *scraper.Scraper, postID string) (string, error
 		return "", fmt.Errorf("解析帖子详情失败: data.post 不是对象")
 	}
 	content := post.Get("content")
-	if !content.Exists() || content.Type == gjson.Null {
-		return "", nil
-	}
-	if content.Type != gjson.String {
+	if content.Exists() && content.Type != gjson.Null && content.Type != gjson.String {
 		return "", fmt.Errorf("解析帖子详情失败: data.post.content 不是字符串")
 	}
-	return content.String(), nil
+	var pics []string
+	for _, pic := range post.Get("pics").Array() {
+		pics = append(pics, pic.String())
+	}
+	// 图片动态的正文是纯文本，换行要转成 <br> 才能在阅读器里保留分段；
+	// 文章类正文是单行 HTML（换行由 <p>/<br> 表达，不含字面换行符），此处为空操作。
+	// 在调用方追加评论之前转换，renderComments 生成的换行是有意的，不能一起转掉。
+	return appendPics(strings.ReplaceAll(content.String(), "\n", "<br>"), pics), nil
 }
 
 func (r *Route) getPostComments(sc *scraper.Scraper, postID string) (afdianCommentList, error) {
