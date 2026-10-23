@@ -51,7 +51,7 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 
 ### 处理位置与范围
 
-- 作用于两条写入路径：feed 生成，以及显式传入 `--config` 的 `backfill execute`、`backfill refresh`（见下文「backfill 接入」）。RSSGen 不会主动扫描或改写 Miniflux 中已有的条目，只有运维者对某个窗口显式执行 `backfill refresh` 时，才会用归档后的正文覆盖这些条目。
+- 作用于两条写入路径：feed 生成，以及配置中有 `media` 段时的 `backfill execute`、`backfill refresh`（见下文「backfill 接入」）。RSSGen 不会主动扫描或改写 Miniflux 中已有的条目，只有运维者对某个窗口显式执行 `backfill refresh` 时，才会用归档后的正文覆盖这些条目。
 - 所有 route 共用同一个与 route 无关的媒体步骤。route 不需要自己处理图片。知乎（`zhihu.go` 中拼出的 `<img>`）和爱发电（`appendPics` 追加的 `<img>`，以及文章正文自带的 `<img>`）的图片最终都在 `FeedItem.Content` 里。
 - pipeline 是编排边界，顺序为：`Route.Fetch` → 媒体步骤（改写 `FeedItem.Content`）→ `feed.Generate`（内含 bluemonday 消毒与序列化）→ 写 FeedCache。
   - 媒体步骤放在消毒之前，是因为当前消毒在 `generateAtom`/`generateRSS` 内部按条目执行。bluemonday 策略对 `img` 全局放行 `src`，所以消毒前后能找到的 `<img src>` 集合是一样的。改写后的 `http://` 地址在 `AllowURLSchemes("http", "https", "mailto")` 下能保留下来，消毒仍是最后一道防线。
@@ -90,7 +90,7 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
   - 不传 `visibility`，也能查到 `visibility=archive` 的资源。
   - 命中就直接使用该 id，跳过下载、上传和入册。未命中才走下载 → 上传 → 入册。查询失败（连接失败、401 分享 key 错误等）属于 Immich 侧失败。
   - 代价是每张新图多一次内网查询。换来的是：重启后的首次 refresh、以及反复执行的 backfill 不再重新下载已归档的图片。
-- 改写后的地址是 `{immich.public_url}/api/assets/{assetId}/original?key={shareKey}`。`public_url` 缺省等于 `url`。用原图而不是 `thumbnail?size=preview`，是为了保留 GIF 动画和原始格式。
+- 改写后的地址是 `{immich.url}/api/assets/{assetId}/original?key={shareKey}`。用原图而不是 `thumbnail?size=preview`，是为了保留 GIF 动画和原始格式。
 - 进程内维护「规范化源 URL → asset id」的内存表，只在资源确认入册后写入（存在性检验命中，或加入相册成功），同一进程内同一张图不再重复查询。这张表不持久化，重启后由存在性检验重建。表不设上限，按每天新增图片数估算，一年也只有几 MB。
 - URL 规范化：协议和主机转小写，去掉 fragment 和默认的 `:443`，路径和 query 原样保留。
 - refresher 与 HTTP 缓存未命中路径可能同时上传同一张图，不加锁，由 Immich 去重收敛到同一个 id。
@@ -108,8 +108,7 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 ```yaml
 media:
   immich:
-    url: "http://immich_server:2283"   # RSSGen 调用 Immich API 的地址
-    # public_url: "http://immich_server:2283"  # 改写进正文的地址，必须对 Miniflux 可达；缺省等于 url
+    url: "http://immich_server:2283"   # RSSGen 调用 Immich API 的地址，也是改写进正文的地址，必须对 Miniflux 可达
     api_key: "..."                     # Immich 专用用户的 API key
     album_id: "..."                    # 专用相册 UUID
     share_key: "..."                   # 该相册分享链接的 key（需允许下载）
@@ -121,11 +120,11 @@ media:
 
 - 没有 `media` 段时，媒体归档关闭，行为与现在完全一致。
 - 有 `media` 段时，`immich.url`（绝对 URL）、`api_key`、`album_id`、`share_key` 和至少一条 `allowed_hosts` 缺一不可，校验失败则启动失败。通配规则只允许 `*.` 前缀形式。
-- `public_url` 是可选项，同样必须是绝对 URL。Docker 部署中 RSSGen 和 Miniflux 用同一个容器名访问 Immich，不需要配置它。在宿主机上运行 backfill 时，RSSGen 只能通过 `http://localhost:2283` 访问 Immich，但写进正文的地址必须是 Miniflux 容器能访问的 `http://immich_server:2283`，这时就要把两者分开。
+- Docker 部署中 RSSGen 和 Miniflux 用同一个容器名访问 Immich，API 地址和正文地址相同。在宿主机上运行 backfill 时，RSSGen 只能通过 `http://localhost:2283` 访问 Immich，但写进正文的地址必须是 Miniflux 容器能访问的 `http://immich_server:2283`；这时在 `backfill.immich_url` 中写本机地址，只覆盖 backfill 调用 API 的地址，见「backfill 接入」。
 
 ### backfill 接入
 
-- `backfill execute` 和 `backfill refresh` 新增 `--config <path>`，读取 server 格式配置文件中的 `media` 段；指定的文件没有 `media` 段时，在请求 Miniflux 之前报错。不传 `--config` 时行为不变。
+- `backfill execute` 和 `backfill refresh` 读取的配置文件（`--config`，默认 `config.yml`，与 server 同一格式）中有 `media` 段时归档，没有则不归档。`backfill.immich_url` 非空时，backfill 调用 Immich API 用它，正文地址仍是 `media.immich.url`；写了 `immich_url` 却没有 `media` 段时报错。详见 `2026-10-23-backfill-config-file-design.md`。
   - 目的是支持不部署 Docker、只在宿主机上定期运行二进制的使用方式。配置复用 server 的格式，不另设一套环境变量。
   - 图片下载的指纹和代理取该配置中与 `--source` 同名 route 的 `ResolveRoute` 结果，与 server 下载同一个 route 的图片时一致。
 - 归档发生在每篇文章拼接好正文和评论之后、写入 Miniflux 之前，Referer 取文章 URL，上传时间取文章发布时间。
@@ -161,8 +160,8 @@ media:
   - 命中时，不请求源站、上传和入册接口，只用分享 key 鉴权；
   - 文件名包含主名但不完全相等时，按未命中处理；
   - 查询返回 401 时，归档返回错误，正文保持不变。
-- `public_url`：改写使用 `public_url`，API 请求仍发往 `url`。
-- backfill：`Archive` 依赖不为 nil 时，导入和重刷写入的都是归档后的正文；归档出错时中止。`--config` 指向的文件没有 `media` 段时报错。
+- API 地址覆盖：设置了 `APIURL` 时，API 请求发往 `APIURL`，改写进正文的仍是 `url`。
+- backfill：`Archive` 依赖不为 nil 时，导入和重刷写入的都是归档后的正文；归档出错时中止。`backfill.immich_url` 非空但没有 `media` 段时报错。
 - 源侧失败：CDN 返回 404 时该图保留原地址，归档不返回错误。
 - Immich 侧失败：假 Immich 返回 503 时归档返回错误，错误不是 `*route.HTTPError`；加入相册返回非 `duplicate` 的逐项错误时同样返回错误；加入相册失败的图不写进内存表。
 - 安全规则（需求明确要求）：重定向到白名单外主机被拒；超过 `max_size` 被拒；SVG 被拒；三种情况都保留原地址。
@@ -216,3 +215,5 @@ media:
 - 2026-10-23（二）：增加存在性检验、`public_url` 和 backfill 接入。
   - 存在性检验：原以为按文件名查询要给 API key 增加 `asset.read` 权限，所以当初只靠 Immich 内容去重，代价是重启后要把图片全部重新下载。实测发现分享 key 加相册过滤就能查询，不需要扩大 API key 的权限，于是改为先查。
   - backfill：历史导入和重刷原本不经过归档；按需求改为可选接入，并支持宿主机运行。
+- 2026-10-23（三）：删除 `public_url`，改由 `backfill.immich_url` 覆盖 backfill 调用 API 的地址；backfill 改为配置中有 `media` 段就归档。
+  - 原因：`public_url` 唯一的用途是宿主机上的 backfill，却让 server 与 backfill 无法共用同一份 `media` 段。backfill 改为只读配置文件后（见 `2026-10-23-backfill-config-file-design.md`），把宿主机地址放进 `backfill` 段，`media.immich.url` 就恢复为单一含义。

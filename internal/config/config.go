@@ -21,6 +21,14 @@ type Config struct {
 	Notifier  NotifierConfig         `yaml:"notifier"`
 	Routes    map[string]RouteConfig `yaml:"routes"`
 	Media     *MediaConfig           `yaml:"media"`
+	Backfill  BackfillConfig         `yaml:"backfill"`
+}
+
+// BackfillConfig 是仅供 backfill 命令使用的配置；server 不读取，由 backfill 入口校验。
+type BackfillConfig struct {
+	MinifluxURL      string `yaml:"miniflux_url"`
+	MinifluxAPIToken string `yaml:"miniflux_api_token"`
+	ImmichURL        string `yaml:"immich_url"`
 }
 
 // MediaConfig 是可选的图片归档配置。
@@ -32,11 +40,13 @@ type MediaConfig struct {
 
 // ImmichConfig 指定归档相册及访问凭据。
 type ImmichConfig struct {
-	URL       string `yaml:"url"`
-	PublicURL string `yaml:"public_url"`
-	APIKey    string `yaml:"api_key"`
-	AlbumID   string `yaml:"album_id"`
-	ShareKey  string `yaml:"share_key"`
+	URL string `yaml:"url"`
+	// APIURL 覆盖调用 Immich API 的地址，不来自 media 段；backfill 用 backfill.immich_url 填充。
+	// 写进正文的地址始终是 URL。
+	APIURL   string `yaml:"-"`
+	APIKey   string `yaml:"api_key"`
+	AlbumID  string `yaml:"album_id"`
+	ShareKey string `yaml:"share_key"`
 }
 
 // ServerConfig 是 HTTP 服务器配置。
@@ -200,15 +210,6 @@ func validateMedia(cfg *MediaConfig) error {
 		return fmt.Errorf("media.immich.url 必须是包含协议和主机的绝对 URL")
 	}
 	cfg.Immich.URL = strings.TrimRight(cfg.Immich.URL, "/")
-	if cfg.Immich.PublicURL == "" {
-		cfg.Immich.PublicURL = cfg.Immich.URL
-	} else {
-		u, err := url.Parse(cfg.Immich.PublicURL)
-		if err != nil || u.Scheme == "" || u.Hostname() == "" {
-			return fmt.Errorf("media.immich.public_url 必须是包含协议和主机的绝对 URL")
-		}
-		cfg.Immich.PublicURL = strings.TrimRight(cfg.Immich.PublicURL, "/")
-	}
 	if cfg.MaxSizeMB < 1 {
 		return fmt.Errorf("media.max_size_mb 必须为正数")
 	}

@@ -93,12 +93,10 @@ routes:
         #   - followed_question          # 关注了问题
 
 # 可选：归档白名单 CDN 图片到 Immich 专用相册。
-# 分享链接须允许下载。public_url 是写进正文、由 Miniflux 访问的地址，缺省等于 url；
-# 只有 RSSGen 与 Miniflux 访问 Immich 的地址不同时才需要配置（例如在宿主机上运行 backfill）。
+# 分享链接须允许下载。url 既是 RSSGen 调用 Immich API 的地址，也是写进正文、由 Miniflux 访问的地址。
 # media:
 #   immich:
 #     url: "http://immich_server:2283"
-#     # public_url: "http://immich_server:2283"
 #     api_key: "专用用户 API key"
 #     album_id: "专用相册 UUID"
 #     share_key: "相册分享 key"
@@ -106,3 +104,9 @@ routes:
 #     - "*.zhimg.com"
 #     - "pic1.afdiancdn.com"
 #   max_size_mb: 20
+
+# 可选：仅 backfill 命令使用，server 不读取。数据源 Cookie 取上方 routes.<source>.cookie。
+# backfill:
+#   miniflux_url: "http://localhost:8080"          # 运行 backfill 的机器访问 Miniflux 的地址
+#   miniflux_api_token: "your-miniflux-api-token"
+#   # immich_url: "http://localhost:2283"           # 可选：backfill 调用 Immich API 的地址，正文仍写 media.immich.url

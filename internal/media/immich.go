@@ -34,7 +34,11 @@ func newImmichStore(cfg config.ImmichConfig) *immichStore {
 
 // request 发起 Immich 请求；shared 为 true 时只用分享 key 鉴权，否则只用 API key。
 func (s *immichStore) request(method, path, contentType string, body io.Reader, shared bool) (*http.Response, error) {
-	req, err := http.NewRequest(method, s.cfg.URL+path, body)
+	apiURL := s.cfg.APIURL
+	if apiURL == "" {
+		apiURL = s.cfg.URL
+	}
+	req, err := http.NewRequest(method, apiURL+path, body)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Immich 请求失败")
 	}
@@ -146,7 +150,7 @@ func (s *immichStore) commit(ids []string) error {
 
 // url 返回经分享链接访问资源原图的地址。
 func (s *immichStore) url(id string) string {
-	return s.cfg.PublicURL + "/api/assets/" + url.PathEscape(id) + "/original?key=" + url.QueryEscape(s.cfg.ShareKey)
+	return s.cfg.URL + "/api/assets/" + url.PathEscape(id) + "/original?key=" + url.QueryEscape(s.cfg.ShareKey)
 }
 
 // find 按文件主名查找分享相册中的资源，并排除包含匹配的误命中。

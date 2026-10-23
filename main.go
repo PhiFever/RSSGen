@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sort"
@@ -20,7 +21,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/joho/godotenv"
 	"github.com/urfave/cli/v3"
 
 	"github.com/PhiFever/RSSGen/internal/backfill"
@@ -45,10 +45,8 @@ func main() {
 }
 
 type commandDependencies struct {
-	runServer       func(context.Context) error
-	runBackfill     func(context.Context, backfillCLIConfig, io.Writer) error
-	loadBackfillEnv func(string) error
-	getenv          func(string) string
+	runServer   func(context.Context) error
+	runBackfill func(context.Context, backfillCLIConfig, io.Writer) error
 }
 
 func runCLI(args []string) int {
@@ -61,10 +59,8 @@ func runCLI(args []string) int {
 	ctx, stop := notifyContextTwoStage(context.Background(), func() { os.Exit(130) }, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	cmd := newCommand(commandDependencies{
-		runServer:       runServer,
-		runBackfill:     runBackfill,
-		loadBackfillEnv: loadBackfillEnv,
-		getenv:          os.Getenv,
+		runServer:   runServer,
+		runBackfill: runBackfill,
 	})
 	if err := cmd.Run(ctx, args); err != nil {
 		slog.Error("命令执行失败", "error", err)
@@ -184,21 +180,18 @@ func newCommand(deps commandDependencies) *cli.Command {
 }
 
 type backfillSourceSpec struct {
-	cookieEnv string
 	ownFlags  []string
 	newSource func(cfg backfillCLIConfig) (backfill.Source, error)
 }
 
 var backfillSources = map[string]backfillSourceSpec{
 	"afdian": {
-		cookieEnv: "AFDIAN_COOKIE",
 		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
 			return afdian.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval)
 		},
 	},
 	"zhihu": {
-		cookieEnv: "ZHIHU_COOKIE",
-		ownFlags:  []string{"include", "include-self-interaction", "max-items", "start-before", "stop-after"},
+		ownFlags: []string{"include", "include-self-interaction", "max-items", "start-before", "stop-after"},
 		newSource: func(cfg backfillCLIConfig) (backfill.Source, error) {
 			return zhihu.NewBackfillSource(cfg.sourceCookie, cfg.requestInterval, cfg.includeSelfInteraction, cfg.maxItems, cfg.startBefore, cfg.stopAfter)
 		},
@@ -219,10 +212,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 		if err := rejectPositionalArgs(cmd); err != nil {
 			return err
 		}
-		if err := deps.loadBackfillEnv(".env"); err != nil {
-			return fmt.Errorf("加载 backfill 环境变量: %w", err)
-		}
-		cfg, err := backfillConfigFromCommand(cmd, deps.getenv)
+		cfg, err := backfillConfigFromCommand(cmd)
 		if err != nil {
 			return err
 		}
@@ -234,7 +224,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 		UsageText: "rssgen backfill [公共选项] <list|execute|refresh> [选项]",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "source", Usage: "数据源（可选：" + backfillSourceNames() + "）", Required: true},
-			&cli.StringFlag{Name: "miniflux-url", Usage: "Miniflux 实例的根 URL；未传时取环境变量 MINIFLUX_URL"},
+			&cli.StringFlag{Name: "config", Value: "config.yml", Usage: "配置文件路径；读取 backfill 段、路由 cookie 和可选 media 段"},
 			&cli.DurationFlag{
 				Name: "request-interval", Usage: "数据源请求之间的最小间隔", Value: time.Second,
 				Validator: func(value time.Duration) error {
@@ -262,7 +252,6 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 // backfillScanFlags 为两种扫描操作分别创建参数，避免共享可变的 flag 状态。
 func backfillScanFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "config", Usage: "server 配置文件路径；读取其中的 media 段，在写入 Miniflux 前归档图片"},
 		&cli.Int64Flag{Name: "feed-id", Usage: "目标 Miniflux feed 的 ID", Required: true},
 		&cli.BoolFlag{Name: "dry-run", Usage: "只扫描并对账，不写入 Miniflux"},
 		&cli.StringFlag{Name: "include", Usage: "覆盖 feed URL 中 include 的类别，逗号分隔（仅知乎）；可选值：" + strings.Join(zhihu.KnownBackfillCategories(), ", ")},
@@ -342,17 +331,6 @@ func serveRuntime(ctx context.Context, app *runtimeApp) error {
 		return fmt.Errorf("HTTP 服务异常: %w", err)
 	}
 	slog.Info("RSSGen 已停止")
-	return nil
-}
-
-// loadBackfillEnv 加载可选的 dotenv 文件，进程环境变量保持更高优先级。
-func loadBackfillEnv(filename string) error {
-	if err := godotenv.Load(filename); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("加载 %s: %w", filename, err)
-	}
 	return nil
 }
 
@@ -502,6 +480,8 @@ const defaultBackfillMaxItems = 1000
 
 type backfillCLIConfig struct {
 	configPath             string
+	mediaConfig            *config.MediaConfig
+	archiveRoute           config.ResolvedRouteConfig
 	includeCategories      []string
 	includeSelfInteraction bool
 	maxItems               int
@@ -518,7 +498,7 @@ type backfillCLIConfig struct {
 	sourceCookie           string
 }
 
-func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (backfillCLIConfig, error) {
+func backfillConfigFromCommand(cmd *cli.Command) (backfillCLIConfig, error) {
 	cfg := backfillCLIConfig{
 		configPath:             cmd.String("config"),
 		includeCategories:      backfill.ParseCategories(cmd.String("include")),
@@ -527,7 +507,6 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 		source:                 cmd.String("source"),
 		action:                 backfill.Action(cmd.Name),
 		dryRun:                 cmd.Bool("dry-run"),
-		minifluxURL:            strings.TrimSpace(cmd.String("miniflux-url")),
 		feedID:                 cmd.Int64("feed-id"),
 		requestInterval:        cmd.Duration("request-interval"),
 	}
@@ -553,12 +532,6 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 				return cfg, fmt.Errorf("--%s 只适用于数据源 %s", flag, name)
 			}
 		}
-	}
-	if cfg.minifluxURL == "" {
-		cfg.minifluxURL = strings.TrimSpace(getenv("MINIFLUX_URL"))
-	}
-	if cfg.minifluxURL == "" {
-		return cfg, fmt.Errorf("必须设置 MINIFLUX_URL 或传入 --miniflux-url")
 	}
 	if cfg.requestInterval < time.Second {
 		return cfg, fmt.Errorf("--request-interval 不能小于 1s")
@@ -587,34 +560,48 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 	if cfg.action == backfill.ActionRefresh && !cfg.rangeConfirmed {
 		return cfg, fmt.Errorf("重刷必须指定 --stop-after 或显式指定正整数 --max-items")
 	}
-	cfg.minifluxToken = strings.TrimSpace(getenv("MINIFLUX_API_TOKEN"))
-	if cfg.minifluxToken == "" {
-		return cfg, fmt.Errorf("必须设置 MINIFLUX_API_TOKEN")
+	c, err := config.Load(cfg.configPath)
+	if err != nil {
+		return cfg, err
 	}
-	if cfg.action != backfill.ActionList {
-		cfg.sourceCookie = strings.TrimSpace(getenv(spec.cookieEnv))
-		if cfg.sourceCookie == "" {
-			return cfg, fmt.Errorf("必须设置 %s", spec.cookieEnv)
+	cfg.minifluxURL = strings.TrimSpace(c.Backfill.MinifluxURL)
+	cfg.minifluxToken = strings.TrimSpace(c.Backfill.MinifluxAPIToken)
+	for _, field := range []struct{ name, value string }{
+		{"backfill.miniflux_url", cfg.minifluxURL},
+		{"backfill.miniflux_api_token", cfg.minifluxToken},
+	} {
+		if field.value == "" {
+			return cfg, fmt.Errorf("配置文件 %s: %s 不能为空", cfg.configPath, field.name)
 		}
 	}
+	if cfg.action != backfill.ActionList {
+		cfg.sourceCookie = strings.TrimSpace(c.Routes[cfg.source].Cookie)
+		if cfg.sourceCookie == "" {
+			return cfg, fmt.Errorf("配置文件 %s: routes.%s.cookie 不能为空", cfg.configPath, cfg.source)
+		}
+	}
+	if apiURL := strings.TrimSpace(c.Backfill.ImmichURL); apiURL != "" {
+		if c.Media == nil {
+			return cfg, fmt.Errorf("配置文件 %s: backfill.immich_url 需要 media 段", cfg.configPath)
+		}
+		u, err := url.Parse(apiURL)
+		if err != nil || u.Scheme == "" || u.Hostname() == "" {
+			return cfg, fmt.Errorf("配置文件 %s: backfill.immich_url 必须是包含协议和主机的绝对 URL", cfg.configPath)
+		}
+		c.Media.Immich.APIURL = strings.TrimRight(apiURL, "/")
+	}
+	cfg.mediaConfig = c.Media
+	cfg.archiveRoute = config.ResolveRoute(c.Scraper, c.Routes[cfg.source])
 	return cfg, nil
 }
 
 func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) error {
 	deps := backfill.Dependencies{Progress: slog.Info}
-	if cfg.configPath != "" {
-		c, err := config.Load(cfg.configPath)
-		if err != nil {
-			return err
-		}
-		if c.Media == nil {
-			return fmt.Errorf("配置文件 %s 没有 media 段", cfg.configPath)
-		}
-		archiver := media.New(*c.Media)
-		rc := config.ResolveRoute(c.Scraper, c.Routes[cfg.source])
+	if cfg.mediaConfig != nil && cfg.action != backfill.ActionList {
+		archiver := media.New(*cfg.mediaConfig)
 		deps.Archive = func(content, link string, published time.Time) (string, error) {
 			items := []route.FeedItem{{Content: content, Link: link, PubDate: &published}}
-			err := archiver.Archive(rc, items)
+			err := archiver.Archive(cfg.archiveRoute, items)
 			return items[0].Content, err
 		}
 		defer func() {

@@ -6,7 +6,6 @@ require (
 	github.com/bogdanfinn/fhttp v0.6.9
 	github.com/bogdanfinn/tls-client v1.16.0
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/joho/godotenv v1.5.1
 	github.com/microcosm-cc/bluemonday v1.0.27
 	github.com/nicholas-fedor/shoutrrr v0.22.0
 	github.com/tidwall/gjson v1.19.0

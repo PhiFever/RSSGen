@@ -46,7 +46,7 @@ func newTestArchiverWithSearch(t *testing.T, handler http.HandlerFunc, source fa
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	a := New(config.MediaConfig{Immich: config.ImmichConfig{URL: server.URL, PublicURL: server.URL, APIKey: "secret", AlbumID: "album", ShareKey: "k"}, AllowedHosts: []string{"*.zhimg.com"}, MaxSizeMB: 1})
+	a := New(config.MediaConfig{Immich: config.ImmichConfig{URL: server.URL, APIKey: "secret", AlbumID: "album", ShareKey: "k"}, AllowedHosts: []string{"*.zhimg.com"}, MaxSizeMB: 1})
 	a.newSourceClient = func(impersonate, proxy string) (sourceClient, error) { return source, nil }
 	return a
 }
@@ -299,8 +299,9 @@ func TestArchiveFind(t *testing.T) {
 				sources.Add(1)
 				return sourceResponse(200, png, ""), nil
 			})
-			// 发布路径不处理 API；误用发布地址只会访问本地假服务并失败。
-			a.store.cfg.PublicURL = a.cfg.Immich.URL + "/public"
+			// API 请求发往 APIURL，正文写 URL；误把 URL 当 API 地址只会访问本地假服务并失败。
+			a.store.cfg.APIURL = a.cfg.Immich.URL
+			a.store.cfg.URL = a.cfg.Immich.URL + "/public"
 			items := imageItems()
 			original := items[0].Content
 			err := a.Archive(config.ResolvedRouteConfig{}, items)
@@ -316,7 +317,7 @@ func TestArchiveFind(t *testing.T) {
 				if tc.found {
 					id = "found"
 				}
-				if items[0].Content != `<img src="`+a.store.cfg.PublicURL+`/api/assets/`+id+`/original?key=k">` {
+				if items[0].Content != `<img src="`+a.store.cfg.URL+`/api/assets/`+id+`/original?key=k">` {
 					t.Fatalf("发布地址错误：%s", items[0].Content)
 				}
 			}
