@@ -69,10 +69,11 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 ### Immich 交互
 
 - RSSGen 使用 Immich 专用用户的 API key（请求头 `x-api-key`）。该 key 只授予 `asset.upload` 和 `albumAsset.create` 权限。RSS 图片放在这个专用用户名下，不进入主用户的图库。
-- 相册和相册分享链接由运维者在 Immich 中手工创建，分享链接必须开启「允许下载」：`/api/assets/{id}/original` 走分享链接鉴权时需要 `asset.download` 权限。RSSGen 不自动创建相册或分享链接。
+- 相册和相册分享链接由运维者在 Immich 中手工创建，分享链接必须开启「允许下载」：`/api/assets/{id}/original` 走分享链接鉴权时需要 `asset.download` 权限。RSSGen 不自动创建相册或分享链接。实测（v3.3.4）：创建分享链接时 `showMetadata=false` 会让 Immich 把 `allowDownload` 强制设成 false，因此两项都要设为 true。
 - 上传调用 `POST /api/assets`，multipart 字段为 `assetData`、`fileCreatedAt`、`fileModifiedAt`（两个时间都取条目发布时间，缺失时取当前时间）、`filename`、`visibility=archive`。设为 archive 是为了不进专用用户的时间线。
+  - Immich 按 `filename` 的扩展名判断文件类型（实测：扩展名不支持时返回 400 `Unsupported file type`），而知乎、爱发电的图片 URL 不一定带正确扩展名。`filename` 必须用魔数检测出的类型拼扩展名（`.jpg`/`.png`/`.gif`/`.webp`/`.avif`），主名可取源 URL 规范化后的哈希。
   - 响应 201 表示新建，200 表示 Immich 按校验和判定为重复。两种情况都取响应中的 asset id。
-- 每次 refresh 结束前，把本次新得到的 asset id 一次性 `PUT /api/albums/{albumId}/assets` 加入相册。对已在相册中的 id，Immich 返回的 `duplicate` 错误视为成功。
+- 每次 refresh 结束前，把本次新得到的 asset id 一次性 `PUT /api/albums/{albumId}/assets` 加入相册。该接口对逐个 id 返回结果，HTTP 状态码是 200：`success=true` 或 `error="duplicate"`（已在相册中）都视为成功；其他错误（如 `no_permission`、`not_found`）属于 Immich 侧失败。相册不存在时整体返回 400 `Album not found`。资源加入相册之前，用分享 key 访问 `/original` 返回 404，所以必须在加入相册成功之后才能发布改写后的地址。
 - 改写后的地址是 `{immich.url}/api/assets/{assetId}/original?key={shareKey}`。用原图而不是 `thumbnail?size=preview`，是为了保留 GIF 动画和原始格式。
 - 进程内维护「规范化源 URL → asset id」的内存表，只在加入相册成功后写入，避免同一进程反复下载同一张图。这张表不持久化：重启后第一次 refresh 会重新下载当前 feed 里的图，由 Immich 去重得到相同的 id。表不设上限，按每天新增图片数估算，一年也只有几 MB。
 - URL 规范化：协议和主机转小写，去掉 fragment 和默认的 `:443`，路径和 query 原样保留。
@@ -81,8 +82,8 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 
 ### 失败处理
 
-- **源侧失败只影响单张图**：下载网络错误或超时、CDN 返回非 2xx、重定向不合规、超限、类型不安全，以及 Immich 对该文件返回 400（文件本身被拒）时，这张图保留原地址，refresh 继续，记一条脱敏 warning 并计入 `/status`。下次 feed 重新生成时自然会再试一次，不另设重试机制。
-- **Immich 侧失败让整次 refresh 失败**：连接失败、超时、5xx、401/403、相册不存在、加入相册失败、响应无法解析时，`pipeline.Refresh` 返回错误，不写 FeedCache，旧缓存保留，由 refresher 已有的重试和退避接手。目的是避免 Immich 故障期间把一批条目以 CDN 原地址写进 Miniflux。
+- **源侧失败只影响单张图**：下载网络错误或超时、CDN 返回非 2xx、重定向不合规、超限、类型不安全，以及上传接口 `POST /api/assets` 对该文件返回 400（文件本身被拒）时，这张图保留原地址，refresh 继续，记一条脱敏 warning 并计入 `/status`。下次 feed 重新生成时自然会再试一次，不另设重试机制。
+- **Immich 侧失败让整次 refresh 失败**：连接失败、超时、5xx、401/403、相册接口的 400（相册不存在）、加入相册返回除 `duplicate` 以外的逐项错误、响应无法解析时，`pipeline.Refresh` 返回错误，不写 FeedCache，旧缓存保留，由 refresher 已有的重试和退避接手。目的是避免 Immich 故障期间把一批条目以 CDN 原地址写进 Miniflux。
 - Immich 侧错误必须是普通 error，**不能**是 `*route.HTTPError`。否则 `health.RecordFailure` 会把 Immich 的 403 等状态码当成上游业务错误，禁用 feed 并发送告警。
 - 不新增通知类型。Immich 故障通过 refresh 错误统计和日志体现；单图失败只记日志并计数。
 
@@ -118,6 +119,8 @@ media:
 - Miniflux 增加稳定的 `MEDIA_PROXY_PRIVATE_KEY`（默认每次启动随机生成，重启后旧代理链接会失效），并显式写出 `MEDIA_PROXY_MODE=http-only` 和 `MEDIA_PROXY_RESOURCE_TYPES=image`（都是默认值，写出来是为了表明部署依赖它们）。保留 `FETCHER_ALLOW_PRIVATE_NETWORKS=1`。
 - 必须把 Miniflux 的 `BASE_URL` 设为公网地址（线上已于 2026-10-23 设置；默认值是 `http://localhost`）。读者通过 Fever API 接第三方 app，Fever 接口返回的正文用 `mediaproxy.RewriteDocumentWithAbsoluteProxyURL` 改写，代理地址以 `BASE_URL` 为前缀（见 miniflux/v2 `internal/fever/handler.go`、`internal/mediaproxy/url.go`）。不设置的话，app 拿到的图片地址是 `http://localhost/proxy/...`，打不开。Web 界面使用相对代理地址，不受影响。
 - Immich 侧准备：创建专用用户 → 用该用户创建 API key（只授予 `asset.upload`、`albumAsset.create`）→ 创建相册 → 为相册创建允许下载的分享链接。
+  - 2026-10-23 已完成：专用用户 `rssgen`（非管理员），相册「RSSGen 图床」（`album_id` 为 `45630f4a-1459-4dd5-afdd-2a20a10df8ee`），以及该相册允许下载的分享链接。相册里有 3 张测试图。
+  - 测试用的是全权限 key（放在仓库根目录 `.env`，已被 gitignore）。上线前要另建一个只有两项权限的 key 写进 `config.yml`。
 
 ## Testing Decisions
 
@@ -134,8 +137,8 @@ media:
 ### 部署冒烟（手工，启用前完成）
 
 1. 用专用用户上传一批（几十张）RSS 图片，观察树莓派上 Immich 机器学习任务（智能搜索、人脸识别等）的 CPU 负载和耗时，确认可以接受。
-2. 确认 `visibility=archive` 的资源能通过分享链接 `key` 访问 `/original`。
-3. 确认 GIF 经 `/original` 和 Miniflux 代理后仍是动图。
+2. ~~确认 `visibility=archive` 的资源能通过分享链接 `key` 访问 `/original`。~~ 2026-10-23 已验证，见 Further Notes。
+3. 确认 GIF 经 Miniflux 代理后仍是动图。（`/original` 返回的字节与上传文件一致，已验证；还差 Miniflux 代理这一段。）
 4. 完整链路：Miniflux 轮询 feed，Web 界面和通过 Fever API 接入的 app 都能经公网 Miniflux 看到图片；重启 RSSGen 后同一 feed 的 XML 不变。
 5. 观察 RSSGen 重启后首次 HTTP 缓存未命中时的耗时。如果超过 Miniflux 的抓取超时（线上 `HTTP_CLIENT_TIMEOUT=120` 秒），确认 refresh 在后台完成并写入缓存，下次轮询能命中缓存。
 
@@ -162,7 +165,11 @@ media:
   - 每张新图都会触发 Immich 的缩略图生成和机器学习任务，在树莓派上可能是主要的资源开销，见冒烟第 1 项。
   - 与 Immich API 耦合：Immich 的 API 历史上有过破坏性变更，当前运行版本为 v3.3.4，升级 Immich 后应重跑冒烟。
 - 分享 key 会出现在 feed XML 中，也会以 base64 形式出现在 Miniflux 代理地址里。它只能读取这一个相册，而且 Immich 不在公网，外部拿到 key 也无法直接使用；能拿到代理地址的人本来就能看到这张图。
-- Immich API 的行为（上传字段、200/201 的含义、`x-api-key` 与 `key` 鉴权、`asset.download` 需要分享链接允许下载、`albumAsset.create` 权限、visibility 取值）和 Miniflux media proxy 的配置项，于 2026-10-23 依据官方文档核对。下列几点只在文档层面确认，需要冒烟验证：archive 资源能否通过分享链接访问、Immich 对重复上传返回 200 并带已有 id、相册重复添加返回 `duplicate`。
+- Immich API 的行为（上传字段、200/201 的含义、`x-api-key` 与 `key` 鉴权、`asset.download` 需要分享链接允许下载、`albumAsset.create` 权限、visibility 取值）和 Miniflux media proxy 的配置项，于 2026-10-23 依据官方文档核对，并在线上 Immich v3.3.4 上实测：
+  - 新上传返回 201 `{"id","status":"created"}`；内容相同的再次上传返回 200 `{"status":"duplicate","id":<已有 id>}`。
+  - 只有 `asset.upload` 和 `albumAsset.create` 两项权限的 key，上传、重复上传、加入相册都能成功；用它读 asset 详情返回 403。
+  - `visibility=archive` 的资源不出现在时间线里，加入相册后可以只凭分享 key 访问 `/original`。返回的字节与上传的文件一致，PNG 和 GIF 都验证过。响应头为 `Content-Disposition: inline`、`Cache-Control: private, max-age=86400`。
+  - 分享 key 错误时返回 401，资源未加入相册时返回 404。
 
 ### 修订记录
 
