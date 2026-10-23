@@ -124,14 +124,17 @@ media:
 
 ## Testing Decisions
 
-- 最高、也是主要的测试接缝是一次 `pipeline.Refresh`。沿用现有 pipeline 测试的做法：注册假 route，用 `httptest` 起假 CDN 和假 Immich，观察返回的 XML 和 FeedCache。断言外部可观察结果，不断言内部函数调用。
-- 主路径：白名单内的图片在 Atom 和 RSS 输出中都被改写为 `{immich.url}/api/assets/{id}/original?key=...`，假 Immich 收到了上传和加入相册请求；白名单外的图片和其余 HTML 原样保留。
+- 主要的测试接缝是 `media` 包对一次 feed 结果做归档的导出入口，断言外部可观察的结果：改写后的 `Content`、假 Immich 收到的请求、返回的错误。不断言内部函数调用。
+  - 源站：白名单规则要求 HTTPS 和默认端口，httptest 起不了这样的服务器，所以源站请求通过包内一个不导出的源客户端字段替换成假实现（按 URL 返回状态码、响应头和响应体）。这是本功能唯一的测试替身。
+  - Immich：用 `httptest` 起真实的 HTTP 服务器。
+- pipeline 只多了一处接线，沿用现有的 pipeline 测试：未配置媒体归档时行为不变。归档出错时 `Refresh` 不写缓存，由 `Refresh` 的错误分支保证，与其他步骤出错时走的是同一个分支。
+- 主路径：白名单内的图片被改写为 `{immich.url}/api/assets/{id}/original?key=...`，假 Immich 收到了上传请求（`filename` 扩展名与魔数类型一致）和加入相册请求；白名单外的图片和其余 HTML 原样保留。另有一条 feed 级测试，确认改写后的 `http://` 地址经过 `feed.Generate` 的消毒后在 Atom 和 RSS 中都还在。
 - 去重：假 Immich 对同一内容返回 200 和已有 id 时，生成的地址与首次相同（模拟重启后的情形）。
-- 源侧失败：CDN 返回 404 时该图保留原地址，refresh 成功并写入缓存。
-- Immich 侧失败：假 Immich 返回 503 时 refresh 返回错误，旧缓存值不被替换，错误不是 `*route.HTTPError`。
+- 源侧失败：CDN 返回 404 时该图保留原地址，归档不返回错误。
+- Immich 侧失败：假 Immich 返回 503 时归档返回错误，错误不是 `*route.HTTPError`；加入相册返回非 `duplicate` 的逐项错误时同样返回错误；加入相册失败的图不写进内存表。
 - 安全规则（需求明确要求）：重定向到白名单外主机被拒；超过 `max_size` 被拒；SVG 被拒；三种情况都保留原地址。
 - Immich 客户端设置 `HTTP_PROXY` 指向一个不可达地址时，仍能直连假 Immich。
-- 配置：没有 `media` 段时 refresh 输出与现在一致；`media` 段缺字段时加载报错。沿用现有 YAML 加载测试。
+- 配置：`media` 段缺字段时加载报错。沿用现有 YAML 加载测试。
 - 常规测试不访问真实 CDN、Immich、Miniflux 和代理。
 
 ### 部署冒烟（手工，启用前完成）
