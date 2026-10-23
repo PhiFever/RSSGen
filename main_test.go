@@ -488,6 +488,7 @@ func TestIndexEndpoint(t *testing.T) {
 		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
 		nil,
 		nil,
+		nil,
 	)
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
@@ -595,7 +596,7 @@ func TestStatusHandlerIncludesFeeds(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()
-	makeStatusHandler(ref).ServeHTTP(w, req)
+	makeStatusHandler(ref, nil).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want %d", w.Code, http.StatusOK)
@@ -1023,7 +1024,7 @@ func TestFeedHandlerClientDisconnectWriteErrorNotLoggedAsError(t *testing.T) {
 func TestStatusHandlerDisabled(t *testing.T) {
 	req := httptest.NewRequest("GET", "/status", nil)
 	w := httptest.NewRecorder()
-	makeStatusHandler(nil).ServeHTTP(w, req)
+	makeStatusHandler(nil, nil).ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", w.Code)

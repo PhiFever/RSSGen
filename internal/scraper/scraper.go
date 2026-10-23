@@ -17,6 +17,9 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 )
 
+// DefaultUserAgent 是 Chrome 131 的默认 User-Agent。
+const DefaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
 // chromeDefaultHeaders 是 Chrome 131 (Windows) 的默认请求头集合。
 //
 // tls-client 只伪装 TLS/JA3 与 HTTP2 指纹，不会自动补全浏览器头——不设头时
@@ -26,7 +29,7 @@ var chromeDefaultHeaders = map[string]string{
 	"sec-ch-ua":          `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
 	"sec-ch-ua-mobile":   "?0",
 	"sec-ch-ua-platform": `"Windows"`,
-	"user-agent":         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+	"user-agent":         DefaultUserAgent,
 	"accept":             "*/*",
 	"accept-language":    "zh-CN,zh;q=0.9,en;q=0.8",
 	"accept-encoding":    "gzip, deflate, br, zstd",
@@ -137,7 +140,7 @@ func New(cfg Config) (*Scraper, error) {
 		rateLimit = 1.0
 	}
 
-	client, err := newHTTPClient(imp, cfg.Proxy)
+	client, err := NewHTTPClient(imp, cfg.Proxy)
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +161,8 @@ func New(cfg Config) (*Scraper, error) {
 	return s, nil
 }
 
-func newHTTPClient(impersonate, proxy string) (httpclient.HttpClient, error) {
+// NewHTTPClient 创建不携带 Cookie、禁止自动重定向的 TLS 客户端。
+func NewHTTPClient(impersonate, proxy string) (httpclient.HttpClient, error) {
 	profile, ok := impersonateProfile[impersonate]
 	if !ok {
 		profile = profiles.Chrome_131
@@ -268,7 +272,7 @@ func (s *Scraper) currentClient() httpclient.HttpClient {
 }
 
 func (s *Scraper) replaceClient() error {
-	client, err := newHTTPClient(s.impersonate, s.proxy)
+	client, err := NewHTTPClient(s.impersonate, s.proxy)
 	if err != nil {
 		return err
 	}

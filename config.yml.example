@@ -91,3 +91,16 @@ routes:
         #   - voteup_article             # 赞同了文章
         #   # === 关注 ===
         #   - followed_question          # 关注了问题
+
+# 可选：归档白名单 CDN 图片到 Immich 专用相册。
+# 分享链接须允许下载；内网地址必须对 RSSGen 和 Miniflux 都可达。
+# media:
+#   immich:
+#     url: "http://immich_server:2283"
+#     api_key: "专用用户 API key"
+#     album_id: "专用相册 UUID"
+#     share_key: "相册分享 key"
+#   allowed_hosts:
+#     - "*.zhimg.com"
+#     - "pic1.afdiancdn.com"
+#   max_size_mb: 20

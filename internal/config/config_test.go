@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -144,5 +145,72 @@ func TestLoadErrors(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil {
 		t.Fatal("无效 YAML 应返回错误")
+	}
+}
+
+func TestLoadMedia(t *testing.T) {
+	valid := `media:
+  immich:
+    url: "http://immich_server:2283/"
+    api_key: "secret"
+    album_id: "album"
+    share_key: "share"
+  allowed_hosts: ["*.zhimg.com"]
+`
+	tests := []struct {
+		name, data      string
+		wantErr, absent bool
+	}{
+		{"完整配置与默认大小", valid, false, false},
+		{"未启用", "routes: {}", false, true},
+	}
+	for _, field := range []string{"url", "api_key", "album_id", "share_key"} {
+		lines := strings.Split(valid, "\n")
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), field+":") {
+				lines[i] = ""
+			}
+		}
+		tests = append(tests, struct {
+			name, data      string
+			wantErr, absent bool
+		}{"缺少" + field, strings.Join(lines, "\n"), true, false})
+	}
+	tests = append(tests,
+		struct {
+			name, data      string
+			wantErr, absent bool
+		}{"空白名单", strings.Replace(valid, `["*.zhimg.com"]`, `[]`, 1), true, false},
+		struct {
+			name, data      string
+			wantErr, absent bool
+		}{"非法通配规则", strings.Replace(valid, "*.zhimg.com", "foo*.com", 1), true, false},
+	)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yml")
+			if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("应拒绝无效媒体配置")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.absent {
+				if cfg.Media != nil {
+					t.Fatal("未配置时 Media 应为 nil")
+				}
+				return
+			}
+			if cfg.Media == nil || cfg.Media.MaxSizeMB != 20 || cfg.Media.Immich.URL != "http://immich_server:2283" {
+				t.Fatalf("媒体默认值或 URL 规范化错误：%+v", cfg.Media)
+			}
+		})
 	}
 }

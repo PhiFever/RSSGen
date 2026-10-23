@@ -28,6 +28,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/feedcatalog"
 	"github.com/PhiFever/RSSGen/internal/health"
+	"github.com/PhiFever/RSSGen/internal/media"
 	"github.com/PhiFever/RSSGen/internal/miniflux"
 	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
@@ -381,10 +382,15 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		BusinessErrorCodes: cfg.Notifier.BusinessErrorCodes,
 	})
 
+	var archiver *media.Archiver
+	if cfg.Media != nil {
+		archiver = media.New(*cfg.Media)
+	}
 	pipe := pipeline.New(pipeline.Config{
 		FeedCache:     feedCache,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
+		Media:         archiver,
 	})
 	dynamicFeedLimit := config.DefaultDynamicFeedLimit
 	if cfg.Refresher.DynamicFeedLimit != nil {
@@ -411,7 +417,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(feedHealth, feedCache, ref, cfg, pipe, feedCatalog, notif)
+	router := makeRouter(feedHealth, feedCache, ref, cfg, pipe, feedCatalog, notif, archiver)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -432,18 +438,17 @@ func anyRouteEnabled(cfg *config.Config) bool {
 	return false
 }
 
-func makeStatusHandler(ref *refresher.Refresher) http.HandlerFunc {
+func makeStatusHandler(ref *refresher.Refresher, archiver *media.Archiver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]any{"enabled": ref != nil}
 		if ref == nil {
-			if _, err := w.Write([]byte(`{"enabled":false,"message":"后台刷新未启用"}`)); err != nil {
-				logResponseWriteError("写入状态响应失败", err)
-			}
-			return
+			resp["message"] = "后台刷新未启用"
+		} else {
+			resp["feeds"] = ref.GetStatus()
 		}
-		resp := map[string]any{
-			"enabled": true,
-			"feeds":   ref.GetStatus(),
+		if archiver != nil {
+			resp["media"] = archiver.Stats()
 		}
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			logResponseWriteError("编码状态响应失败", err)
@@ -459,6 +464,7 @@ func makeRouter(
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
 	feedNotifier feedNotifier,
+	archiver *media.Archiver,
 ) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -484,7 +490,7 @@ func makeRouter(
 	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, feedCatalog, feedNotifier))
 
 	// 状态接口
-	r.Get("/status", makeStatusHandler(ref))
+	r.Get("/status", makeStatusHandler(ref, archiver))
 
 	return r
 }

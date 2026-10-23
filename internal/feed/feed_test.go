@@ -328,3 +328,20 @@ func TestGenerateRSSDescription(t *testing.T) {
 		t.Errorf("RSS 输出应包含 <description>, 实得:\n%s", out)
 	}
 }
+
+func TestGeneratePreservesImmichImage(t *testing.T) {
+	const src = "http://immich_server:2283/api/assets/x/original?key=k"
+	info := &route.FeedInfo{Title: "归档图片", Link: "https://example.com"}
+	items := []route.FeedItem{{Title: "图片", Link: "https://example.com/post", Content: `<img src="` + src + `">`}}
+	for _, format := range []string{"atom", "rss"} {
+		t.Run(format, func(t *testing.T) {
+			out, err := Generate(info, items, format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out, src) {
+				t.Fatalf("输出未保留 Immich 图片地址：%s", out)
+			}
+		})
+	}
+}

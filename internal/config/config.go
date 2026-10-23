@@ -3,7 +3,9 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +20,22 @@ type Config struct {
 	Refresher RefresherConfig        `yaml:"refresher"`
 	Notifier  NotifierConfig         `yaml:"notifier"`
 	Routes    map[string]RouteConfig `yaml:"routes"`
+	Media     *MediaConfig           `yaml:"media"`
+}
+
+// MediaConfig 是可选的图片归档配置。
+type MediaConfig struct {
+	Immich       ImmichConfig `yaml:"immich"`
+	AllowedHosts []string     `yaml:"allowed_hosts"`
+	MaxSizeMB    int          `yaml:"max_size_mb"`
+}
+
+// ImmichConfig 指定归档相册及访问凭据。
+type ImmichConfig struct {
+	URL      string `yaml:"url"`
+	APIKey   string `yaml:"api_key"`
+	AlbumID  string `yaml:"album_id"`
+	ShareKey string `yaml:"share_key"`
 }
 
 // ServerConfig 是 HTTP 服务器配置。
@@ -128,11 +146,19 @@ func Load(path string) (*Config, error) {
 
 	// 设置默认值
 	setDefaults(&cfg)
+	if cfg.Media != nil {
+		if err := validateMedia(cfg.Media); err != nil {
+			return nil, err
+		}
+	}
 
 	return &cfg, nil
 }
 
 func setDefaults(cfg *Config) {
+	if cfg.Media != nil && cfg.Media.MaxSizeMB == 0 {
+		cfg.Media.MaxSizeMB = 20
+	}
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "0.0.0.0"
 	}
@@ -157,4 +183,33 @@ func setDefaults(cfg *Config) {
 	if cfg.Refresher.RetryBaseDelay == 0 {
 		cfg.Refresher.RetryBaseDelay = 5
 	}
+}
+
+func validateMedia(cfg *MediaConfig) error {
+	for _, field := range []struct{ name, value string }{
+		{"url", cfg.Immich.URL}, {"api_key", cfg.Immich.APIKey},
+		{"album_id", cfg.Immich.AlbumID}, {"share_key", cfg.Immich.ShareKey},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("media.immich.%s 不能为空", field.name)
+		}
+	}
+	u, err := url.Parse(cfg.Immich.URL)
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fmt.Errorf("media.immich.url 必须是包含协议和主机的绝对 URL")
+	}
+	cfg.Immich.URL = strings.TrimRight(cfg.Immich.URL, "/")
+	if cfg.MaxSizeMB < 1 {
+		return fmt.Errorf("media.max_size_mb 必须为正数")
+	}
+	if len(cfg.AllowedHosts) == 0 {
+		return fmt.Errorf("media.allowed_hosts 不能为空")
+	}
+	for _, host := range cfg.AllowedHosts {
+		name := strings.TrimPrefix(host, "*.")
+		if name == "" || strings.ContainsAny(name, "*/:@?# ") {
+			return fmt.Errorf("media.allowed_hosts 必须为主机名或 *. 前缀通配主机名")
+		}
+	}
+	return nil
 }

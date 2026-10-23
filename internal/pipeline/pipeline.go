@@ -11,6 +11,7 @@ import (
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/feed"
+	"github.com/PhiFever/RSSGen/internal/media"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
@@ -19,6 +20,7 @@ type Config struct {
 	FeedCache     *cache.TTLCache
 	ScraperConfig config.ScraperConfig
 	RoutesConfig  map[string]config.RouteConfig
+	Media         *media.Archiver
 }
 
 // FeedVariant 是一次 feed 输出请求的规范化变体。
@@ -50,6 +52,7 @@ type Pipeline struct {
 	feedCache     *cache.TTLCache
 	scraperConfig config.ScraperConfig
 	routesConfig  map[string]config.RouteConfig
+	media         *media.Archiver
 
 	routesMu sync.Mutex
 	routes   map[string]route.Route
@@ -61,6 +64,7 @@ func New(cfg Config) *Pipeline {
 		feedCache:     cfg.FeedCache,
 		scraperConfig: cfg.ScraperConfig,
 		routesConfig:  cfg.RoutesConfig,
+		media:         cfg.Media,
 		routes:        make(map[string]route.Route),
 	}
 }
@@ -131,6 +135,12 @@ func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.Fet
 	result, err := rt.Fetch(pathParams, opts)
 	if err != nil {
 		return RefreshResult{Ref: ref}, err
+	}
+
+	if p.media != nil {
+		if err := p.media.Archive(config.ResolveRoute(p.scraperConfig, p.routesConfig[routeName]), result.Items); err != nil {
+			return RefreshResult{Ref: ref, ItemCount: len(result.Items)}, err
+		}
 	}
 
 	xml, err := feed.Generate(&result.Info, result.Items, opts.Format)
