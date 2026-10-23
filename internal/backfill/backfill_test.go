@@ -794,3 +794,61 @@ func TestRunRefreshCancellation(t *testing.T) {
 		})
 	}
 }
+
+func TestRunArchivesBeforeWrite(t *testing.T) {
+	for _, action := range []Action{ActionExecute, ActionRefresh} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/失败=%v", action, fail), func(t *testing.T) {
+				deps := refreshTestDependencies()
+				source := deps.Source.(*fakeSource)
+				destination := deps.Destination.(*fakeDestination)
+				destination.importErrs = map[string][]error{}
+				published := time.Date(2026, 10, 23, 1, 2, 3, 0, time.UTC)
+				source.candidates[0].PublishedAt = published
+				source.candidates = append(source.candidates, Candidate{ID: "b", URL: "https://example.com/b", Content: "较早正文", PublishedAt: published.Add(-time.Hour)})
+				if action == ActionExecute {
+					destination.entries = nil
+				} else {
+					destination.entries = append(destination.entries, Entry{ID: 11, URL: "https://example.com/b"})
+				}
+				archiveErr := errors.New("归档失败")
+				var calls []string
+				deps.Archive = func(content, link string, date time.Time) (string, error) {
+					calls = append(calls, link)
+					candidate := source.candidates[len(calls)-1]
+					if content != candidate.Content+"\n\ncomments-"+candidate.ID || link != candidate.URL || !date.Equal(candidate.PublishedAt) {
+						t.Errorf("归档入参不符：%q %q %v", content, link, date)
+					}
+					if fail {
+						return "", archiveErr
+					}
+					return "归档后-" + candidate.ID, nil
+				}
+				result, err := Run(context.Background(), Request{Action: action, RangeConfirmed: true, FeedID: 1}, deps)
+				if fail {
+					if !errors.Is(err, archiveErr) || len(calls) != 1 || len(destination.imported) != 0 || len(destination.updates) != 0 || len(source.commentCalls) != 1 {
+						t.Fatalf("失败未立即中止：%+v err=%v calls=%v", result, err, calls)
+					}
+					if action == ActionRefresh {
+						if len(result.UpdateFailures) != 1 || result.UpdateFailures[0].Operation != "media" || result.UpdateFailures[0].CandidateID != "a" || !errors.Is(result.UpdateFailures[0].Err, archiveErr) {
+							t.Fatalf("失败记录错误：%+v", result.UpdateFailures)
+						}
+					} else if !strings.Contains(err.Error(), "归档文章 a 的图片") {
+						t.Fatalf("错误上下文缺失：%v", err)
+					}
+					return
+				}
+				if err != nil || len(calls) != 2 {
+					t.Fatalf("归档失败：%v calls=%v", err, calls)
+				}
+				if action == ActionExecute {
+					if len(destination.imported) != 2 || destination.imported[0].Content != "归档后-a" || destination.imported[1].Content != "归档后-b" {
+						t.Fatalf("导入正文错误：%+v", destination.imported)
+					}
+				} else if len(destination.updates) != 2 || destination.updates[0].Content != "归档后-a" || destination.updates[1].Content != "归档后-b" {
+					t.Fatalf("更新正文错误：%+v", destination.updates)
+				}
+			})
+		}
+	}
+}

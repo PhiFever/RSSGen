@@ -23,7 +23,7 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 
 改写后的地址形如 `http://immich_server:2283/api/assets/{assetId}/original?key={shareKey}`，读者浏览器无法直接访问。Miniflux 在显示文章时用 media proxy 把这类 http 图片改写成自己公网域名下的签名代理地址，由 Miniflux 服务端经内网向 Immich 取图。Immich 是持久存储，Miniflux 只负责访问。
 
-同步上传使 asset id 在 feed 发布前就已确定，因此不再需要原方案的 Redis/Asynq 任务队列、"先改写后下载"的 503 窗口、冷却重激活和 RSSGen 自有媒体 HTTP 服务。重启后的 URL 稳定性由 Immich 按内容校验和去重保证：同一图片重新上传时，Immich 返回已有 asset 的 id，生成的 URL 与重启前一致，不需要持久化 URL → asset 映射。
+同步上传使 asset id 在 feed 发布前就已确定，因此不再需要原方案的 Redis/Asynq 任务队列、"先改写后下载"的 503 窗口、冷却重激活和 RSSGen 自有媒体 HTTP 服务。重启后的 URL 稳定性由确定性文件名保证：上传时文件名取源 URL 的哈希，归档前先按这个文件名在相册里查找，查到就直接复用已有 asset，不下载也不上传。没查到时（例如同一张图换了 URL）才上传，此时 Immich 按内容校验和去重，返回已有 asset 的 id。两者都不需要在 RSSGen 本地持久化 URL → asset 映射。
 
 ## User Stories
 
@@ -44,12 +44,14 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 15. 作为 RSSGen 运维者，我希望配置不完整时启动失败，而不是静默改变 URL 策略。
 16. 作为 RSSGen 运维者，我希望日志不泄露 API key、分享 key、源 URL 中的敏感 query 和代理凭证。
 17. 作为 RSSGen 运维者，我希望在 `/status` 中看到图片归档的成功与失败计数，不必翻日志排查。
+18. 作为 RSSGen 运维者，我希望 RSSGen 重启后不必把当前 feed 里的图片重新下载一遍。
+19. 作为 backfill 使用者，我希望历史回填导入和重刷的文章也归档图片，并且能在不部署 Docker、只在宿主机上定期运行二进制的情况下使用。
 
 ## Implementation Decisions
 
 ### 处理位置与范围
 
-- 只作用于未来的 feed 生成，不扫描、不改写 Miniflux 中已存的历史条目。
+- 作用于两条写入路径：feed 生成，以及显式传入 `--config` 的 `backfill execute`、`backfill refresh`（见下文「backfill 接入」）。RSSGen 不会主动扫描或改写 Miniflux 中已有的条目，只有运维者对某个窗口显式执行 `backfill refresh` 时，才会用归档后的正文覆盖这些条目。
 - 所有 route 共用同一个与 route 无关的媒体步骤。route 不需要自己处理图片。知乎（`zhihu.go` 中拼出的 `<img>`）和爱发电（`appendPics` 追加的 `<img>`，以及文章正文自带的 `<img>`）的图片最终都在 `FeedItem.Content` 里。
 - pipeline 是编排边界，顺序为：`Route.Fetch` → 媒体步骤（改写 `FeedItem.Content`）→ `feed.Generate`（内含 bluemonday 消毒与序列化）→ 写 FeedCache。
   - 媒体步骤放在消毒之前，是因为当前消毒在 `generateAtom`/`generateRSS` 内部按条目执行。bluemonday 策略对 `img` 全局放行 `src`，所以消毒前后能找到的 `<img src>` 集合是一样的。改写后的 `http://` 地址在 `AllowURLSchemes("http", "https", "mailto")` 下能保留下来，消毒仍是最后一道防线。
@@ -69,20 +71,27 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 ### 模块边界
 
 - `internal/media` 分两层。
-  - 通用层：白名单、下载、魔数识别、HTML 改写、内存表、并发编排。它不知道 Immich 的存在，只通过存储的三个操作工作：`put`（存入，拒收文件时返回 `errRejected`）、`commit`（提交，使资源可以被访问）、`url`（取发布地址）。
+  - 通用层：白名单、下载、魔数识别、HTML 改写、内存表、并发编排。它不知道 Immich 的存在，只通过存储的四个操作工作：`find`（按文件名主名查找已提交的资源）、`put`（存入，拒收文件时返回 `errRejected`）、`commit`（提交，使资源可以被访问）、`url`（取发布地址）。
   - Immich 适配：全部 Immich 细节（接口路径、状态码含义、相册、分享 key、地址格式）都在 `immich.go` 的 `immichStore` 里。
 - 现在只有一个后端，`immichStore` 是具体类型，不是接口。将来加第二种后端时，配置里与 `media.immich` 并列增加一段，再从实际的两种实现中抽出接口。通用配置项（`allowed_hosts`、`max_size_mb`）留在 `media` 下，不需要迁移。
 
 ### Immich 交互
 
 - RSSGen 使用 Immich 专用用户的 API key（请求头 `x-api-key`）。该 key 只授予 `asset.upload` 和 `albumAsset.create` 权限。RSS 图片放在这个专用用户名下，不进入主用户的图库。
+- 存在性检验用相册分享 key 鉴权（请求头 `x-immich-share-key`），不需要给 API key 增加 `asset.read`。每个请求只带一种鉴权头。分享 key 不放进 URL：Go 的请求错误会带上完整 URL，而错误文本会出现在日志和 `/status` 里。
 - 相册和相册分享链接由运维者在 Immich 中手工创建，分享链接必须开启「允许下载」：`/api/assets/{id}/original` 走分享链接鉴权时需要 `asset.download` 权限。RSSGen 不自动创建相册或分享链接。实测（v3.3.4）：创建分享链接时 `showMetadata=false` 会让 Immich 把 `allowDownload` 强制设成 false，因此两项都要设为 true。
 - 上传调用 `POST /api/assets`，multipart 字段为 `assetData`、`fileCreatedAt`、`fileModifiedAt`（两个时间都取条目发布时间，缺失时取当前时间）、`filename`、`visibility=archive`。设为 archive 是为了不进专用用户的时间线。
-  - Immich 按 `filename` 的扩展名判断文件类型（实测：扩展名不支持时返回 400 `Unsupported file type`），而知乎、爱发电的图片 URL 不一定带正确扩展名。`filename` 必须用魔数检测出的类型拼扩展名（`.jpg`/`.png`/`.gif`/`.webp`/`.avif`），主名可取源 URL 规范化后的哈希。
+  - Immich 按 `filename` 的扩展名判断文件类型（实测：扩展名不支持时返回 400 `Unsupported file type`），而知乎、爱发电的图片 URL 不一定带正确扩展名。`filename` 必须用魔数检测出的类型拼扩展名（`.jpg`/`.png`/`.gif`/`.webp`/`.avif`）。主名取规范化源 URL 的 sha256 前 8 字节（16 位 hex），存在性检验依赖这个主名可以在下载前算出来。
   - 响应 201 表示新建，200 表示 Immich 按校验和判定为重复。两种情况都取响应中的 asset id。
 - 每次 refresh 结束前，把本次新得到的 asset id 一次性 `PUT /api/albums/{albumId}/assets` 加入相册。该接口对逐个 id 返回结果，HTTP 状态码是 200：`success=true` 或 `error="duplicate"`（已在相册中）都视为成功；其他错误（如 `no_permission`、`not_found`）属于 Immich 侧失败。相册不存在时整体返回 400 `Album not found`。资源加入相册之前，用分享 key 访问 `/original` 返回 404，所以必须在加入相册成功之后才能发布改写后的地址。
-- 改写后的地址是 `{immich.url}/api/assets/{assetId}/original?key={shareKey}`。用原图而不是 `thumbnail?size=preview`，是为了保留 GIF 动画和原始格式。
-- 进程内维护「规范化源 URL → asset id」的内存表，只在加入相册成功后写入，避免同一进程反复下载同一张图。这张表不持久化：重启后第一次 refresh 会重新下载当前 feed 里的图，由 Immich 去重得到相同的 id。表不设上限，按每天新增图片数估算，一年也只有几 MB。
+- 存在性检验：内存表未命中的图片，下载前先调用 `POST /api/search/metadata`，请求体为 `{"albumIds":["<album_id>"],"originalFileName":"<主名>"}`。
+  - 用分享 key 鉴权时必须带 `albumIds`，否则 Immich 返回 400。结果限定在这个相册内，能查到就说明资源已经入册，不再调用入册接口。
+  - `originalFileName` 是包含匹配（实测传中间片段也能命中），所以客户端要比对：结果文件名去掉扩展名后必须与主名完全相等。下载前还不知道扩展名，只能按主名查。
+  - 不传 `visibility`，也能查到 `visibility=archive` 的资源。
+  - 命中就直接使用该 id，跳过下载、上传和入册。未命中才走下载 → 上传 → 入册。查询失败（连接失败、401 分享 key 错误等）属于 Immich 侧失败。
+  - 代价是每张新图多一次内网查询。换来的是：重启后的首次 refresh、以及反复执行的 backfill 不再重新下载已归档的图片。
+- 改写后的地址是 `{immich.public_url}/api/assets/{assetId}/original?key={shareKey}`。`public_url` 缺省等于 `url`。用原图而不是 `thumbnail?size=preview`，是为了保留 GIF 动画和原始格式。
+- 进程内维护「规范化源 URL → asset id」的内存表，只在资源确认入册后写入（存在性检验命中，或加入相册成功），同一进程内同一张图不再重复查询。这张表不持久化，重启后由存在性检验重建。表不设上限，按每天新增图片数估算，一年也只有几 MB。
 - URL 规范化：协议和主机转小写，去掉 fragment 和默认的 `:443`，路径和 query 原样保留。
 - refresher 与 HTTP 缓存未命中路径可能同时上传同一张图，不加锁，由 Immich 去重收敛到同一个 id。
 - Immich 客户端用标准库 `net/http` 直连，显式设置 `Proxy: nil`。RSSGen 容器从 Docker 继承了 `HTTP_PROXY=http://host.docker.internal:10801`，而 `NO_PROXY` 里没有 `immich_server`，用默认 Transport 会把内网请求发给宿主机代理。
@@ -99,7 +108,8 @@ RSSGen 保持现有产品边界：route 抓取上游内容，pipeline 生成并�
 ```yaml
 media:
   immich:
-    url: "http://immich_server:2283"   # 上传与改写共用的内网地址，必须对 RSSGen 和 Miniflux 都可达
+    url: "http://immich_server:2283"   # RSSGen 调用 Immich API 的地址
+    # public_url: "http://immich_server:2283"  # 改写进正文的地址，必须对 Miniflux 可达；缺省等于 url
     api_key: "..."                     # Immich 专用用户的 API key
     album_id: "..."                    # 专用相册 UUID
     share_key: "..."                   # 该相册分享链接的 key（需允许下载）
@@ -111,13 +121,23 @@ media:
 
 - 没有 `media` 段时，媒体归档关闭，行为与现在完全一致。
 - 有 `media` 段时，`immich.url`（绝对 URL）、`api_key`、`album_id`、`share_key` 和至少一条 `allowed_hosts` 缺一不可，校验失败则启动失败。通配规则只允许 `*.` 前缀形式。
+- `public_url` 是可选项，同样必须是绝对 URL。Docker 部署中 RSSGen 和 Miniflux 用同一个容器名访问 Immich，不需要配置它。在宿主机上运行 backfill 时，RSSGen 只能通过 `http://localhost:2283` 访问 Immich，但写进正文的地址必须是 Miniflux 容器能访问的 `http://immich_server:2283`，这时就要把两者分开。
+
+### backfill 接入
+
+- `backfill execute` 和 `backfill refresh` 新增 `--config <path>`，读取 server 格式配置文件中的 `media` 段；指定的文件没有 `media` 段时，在请求 Miniflux 之前报错。不传 `--config` 时行为不变。
+  - 目的是支持不部署 Docker、只在宿主机上定期运行二进制的使用方式。配置复用 server 的格式，不另设一套环境变量。
+  - 图片下载的指纹和代理取该配置中与 `--source` 同名 route 的 `ResolveRoute` 结果，与 server 下载同一个 route 的图片时一致。
+- 归档发生在每篇文章拼接好正文和评论之后、写入 Miniflux 之前，Referer 取文章 URL，上传时间取文章发布时间。
+- Immich 侧失败时，backfill 立即中止：`execute` 不导入当前及后续条目；`refresh` 记录 operation 为 `media` 的失败。backfill 本身可以安全重跑，这里不另设重试。源侧失败与 feed 路径相同，只影响单张图。
+- dry-run 不归档。backfill 结束时在日志中输出一次归档计数。
 - 密钥写在 `config.yml` 中，与现有的 Cookie 和 shoutrrr URL 同等对待（文件已被 gitignore），不另引入环境变量。
 - 启动时**不**检查 Immich 是否可达。RSSGen 与 Immich 属于不同 Compose 项目，主机重启时启动顺序不确定；Immich 未就绪的影响由上面「Immich 侧失败」的规则承担。
 
 ### 日志与状态
 
 - 日志中的源 URL 去掉 query 值，Immich 地址不输出 `key` 参数，不输出 API key 和代理凭证。
-- `/status` 增加 `media` 段：`stored`（新存入数）、`deduplicated`（存储去重命中数）、`source_failures`（单图失败数，按原因分类）、`last_store_error` / `last_store_error_at`（最近一次存储侧错误）。字段名与后端无关。
+- `/status` 增加 `media` 段：`stored`（新存入数）、`deduplicated`（存储去重命中数）、`found`（存在性检验命中数）、`source_failures`（单图失败数，按原因分类）、`last_store_error` / `last_store_error_at`（最近一次存储侧错误）。字段名与后端无关。
 
 ### 部署
 
@@ -136,7 +156,13 @@ media:
   - Immich：用 `httptest` 起真实的 HTTP 服务器。
 - pipeline 只多了一处接线，沿用现有的 pipeline 测试：未配置媒体归档时行为不变。归档出错时 `Refresh` 不写缓存，由 `Refresh` 的错误分支保证，与其他步骤出错时走的是同一个分支。
 - 主路径：白名单内的图片被改写为 `{immich.url}/api/assets/{id}/original?key=...`，假 Immich 收到了上传请求（`filename` 扩展名与魔数类型一致）和加入相册请求；白名单外的图片和其余 HTML 原样保留。另有一条 feed 级测试，确认改写后的 `http://` 地址经过 `feed.Generate` 的消毒后在 Atom 和 RSS 中都还在。
-- 去重：假 Immich 对同一内容返回 200 和已有 id 时，生成的地址与首次相同（模拟重启后的情形）。
+- 去重：假 Immich 对同一内容返回 200 和已有 id 时，生成的地址与首次相同（模拟换了 URL 的同一张图）。
+- 存在性检验：
+  - 命中时，不请求源站、上传和入册接口，只用分享 key 鉴权；
+  - 文件名包含主名但不完全相等时，按未命中处理；
+  - 查询返回 401 时，归档返回错误，正文保持不变。
+- `public_url`：改写使用 `public_url`，API 请求仍发往 `url`。
+- backfill：`Archive` 依赖不为 nil 时，导入和重刷写入的都是归档后的正文；归档出错时中止。`--config` 指向的文件没有 `media` 段时报错。
 - 源侧失败：CDN 返回 404 时该图保留原地址，归档不返回错误。
 - Immich 侧失败：假 Immich 返回 503 时归档返回错误，错误不是 `*route.HTTPError`；加入相册返回非 `duplicate` 的逐项错误时同样返回错误；加入相册失败的图不写进内存表。
 - 安全规则（需求明确要求）：重定向到白名单外主机被拒；超过 `max_size` 被拒；SVG 被拒；三种情况都保留原地址。
@@ -155,7 +181,7 @@ media:
 ## Out of Scope
 
 - 用 Miniflux-only collector 或守护进程取代 RSS/Atom 轮询；把新条目直接导入 Miniflux。
-- 改写或回填 Miniflux 中的历史条目。
+- 主动扫描或改写 Miniflux 中已有的条目。只有运维者显式执行 `backfill refresh` 时才会覆盖已有条目，见「backfill 接入」。
 - 归档白名单 CDN 以外的任意 URL。
 - 归档 CSS 背景、`srcset`、RSS/Atom enclosure、视频、音频、SVG 或 data URI。
 - 由 RSSGen 自动创建或维护 Immich 用户、相册、分享链接。
@@ -168,9 +194,9 @@ media:
 ## Further Notes
 
 - 核心不变量：**RSSGen 发布的 feed 中，每个被改写的图片地址都指向一个已上传、并已加入分享相册的 Immich 资源。** 同步上传让这一点在发布前就能确认。
-- 第二个不变量：**同一张图片在重启前后得到同一个地址**，由 Immich 按内容去重保证，不依赖 RSSGen 的本地状态。
+- 第二个不变量：**同一张图片在重启前后得到同一个地址**。这由确定性文件名加存在性检验保证，Immich 按内容去重兜底，不依赖 RSSGen 的本地状态。
 - 已知代价：
-  - 每次重启后，当前 feed 中的图片会被重新下载一次（上传会被去重）。
+  - 每次重启后，当前 feed 中的每张图要做一次内网存在性查询，不再重新下载。
   - refresh 耗时增加，增加的部分是图片下载和上传的时间。
   - 每张新图都会触发 Immich 生成缩略图（在树莓派上）和机器学习任务（在远程机器学习服务上），见冒烟第 1 项。
   - 与 Immich API 耦合：Immich 的 API 历史上有过破坏性变更，当前运行版本为 v3.3.4，升级 Immich 后应重跑冒烟。
@@ -187,3 +213,6 @@ media:
 - 2026-10-23：存储后端改为 Immich 专用相册，下载改为在 pipeline 内同步完成。
   - 删除：Redis/Asynq、持久化任务、503 未就绪窗口、24 小时冷却重激活、媒体文件卷与分片目录、`/media/v1` handler、三种配置模式、`REDIS_PASSWORD`、媒体失败通知、DNS 地址类别校验、按主机的媒体限速。
   - 原因：Immich 的 asset id 要上传后才能拿到，套不进原方案"先改写后下载"的模型；改为同步后，持久化任务和就绪窗口都不再需要。Immich 本身负责持久存储和文件服务，并通过内容去重保证 URL 跨重启稳定。
+- 2026-10-23（二）：增加存在性检验、`public_url` 和 backfill 接入。
+  - 存在性检验：原以为按文件名查询要给 API key 增加 `asset.read` 权限，所以当初只靠 Immich 内容去重，代价是重启后要把图片全部重新下载。实测发现分享 key 加相册过滤就能查询，不需要扩大 API key 的权限，于是改为先查。
+  - backfill：历史导入和重刷原本不经过归档；按需求改为可选接入，并支持宿主机运行。

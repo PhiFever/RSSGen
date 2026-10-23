@@ -262,6 +262,7 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 // backfillScanFlags 为两种扫描操作分别创建参数，避免共享可变的 flag 状态。
 func backfillScanFlags() []cli.Flag {
 	return []cli.Flag{
+		&cli.StringFlag{Name: "config", Usage: "server 配置文件路径；读取其中的 media 段，在写入 Miniflux 前归档图片"},
 		&cli.Int64Flag{Name: "feed-id", Usage: "目标 Miniflux feed 的 ID", Required: true},
 		&cli.BoolFlag{Name: "dry-run", Usage: "只扫描并对账，不写入 Miniflux"},
 		&cli.StringFlag{Name: "include", Usage: "覆盖 feed URL 中 include 的类别，逗号分隔（仅知乎）；可选值：" + strings.Join(zhihu.KnownBackfillCategories(), ", ")},
@@ -500,6 +501,7 @@ func makeRouter(
 const defaultBackfillMaxItems = 1000
 
 type backfillCLIConfig struct {
+	configPath             string
 	includeCategories      []string
 	includeSelfInteraction bool
 	maxItems               int
@@ -518,6 +520,7 @@ type backfillCLIConfig struct {
 
 func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (backfillCLIConfig, error) {
 	cfg := backfillCLIConfig{
+		configPath:             cmd.String("config"),
 		includeCategories:      backfill.ParseCategories(cmd.String("include")),
 		includeSelfInteraction: cmd.Bool("include-self-interaction"),
 		maxItems:               cmd.Int("max-items"),
@@ -598,6 +601,28 @@ func backfillConfigFromCommand(cmd *cli.Command, getenv func(string) string) (ba
 }
 
 func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) error {
+	deps := backfill.Dependencies{Progress: slog.Info}
+	if cfg.configPath != "" {
+		c, err := config.Load(cfg.configPath)
+		if err != nil {
+			return err
+		}
+		if c.Media == nil {
+			return fmt.Errorf("配置文件 %s 没有 media 段", cfg.configPath)
+		}
+		archiver := media.New(*c.Media)
+		rc := config.ResolveRoute(c.Scraper, c.Routes[cfg.source])
+		deps.Archive = func(content, link string, published time.Time) (string, error) {
+			items := []route.FeedItem{{Content: content, Link: link, PubDate: &published}}
+			err := archiver.Archive(rc, items)
+			return items[0].Content, err
+		}
+		defer func() {
+			stats := archiver.Stats()
+			slog.Info("图片归档统计", "stored", stats.Stored, "deduplicated", stats.Deduplicated,
+				"found", stats.Found, "source_failures", stats.SourceFailures)
+		}()
+	}
 	destination, err := miniflux.New(cfg.minifluxURL, cfg.minifluxToken)
 	if err != nil {
 		return err
@@ -610,7 +635,8 @@ func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) e
 	if err != nil {
 		return err
 	}
-	deps := backfill.Dependencies{Source: source, Destination: destination, Progress: slog.Info}
+	deps.Source = source
+	deps.Destination = destination
 	slog.Info("开始历史回填", "source", cfg.source, "action", cfg.action, "feed_id", cfg.feedID)
 	result, runErr := backfill.Run(ctx, backfill.Request{
 		Action: cfg.action, DryRun: cfg.dryRun, RangeConfirmed: cfg.rangeConfirmed,

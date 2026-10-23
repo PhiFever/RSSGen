@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/config"
@@ -31,15 +32,20 @@ func newImmichStore(cfg config.ImmichConfig) *immichStore {
 	}
 }
 
-func (s *immichStore) request(method, path, contentType string, body io.Reader) (*http.Response, error) {
+// request 发起 Immich 请求；shared 为 true 时只用分享 key 鉴权，否则只用 API key。
+func (s *immichStore) request(method, path, contentType string, body io.Reader, shared bool) (*http.Response, error) {
 	req, err := http.NewRequest(method, s.cfg.URL+path, body)
 	if err != nil {
 		return nil, fmt.Errorf("创建 Immich 请求失败")
 	}
-	req.Header.Set("x-api-key", s.cfg.APIKey)
+	if shared {
+		req.Header.Set("x-immich-share-key", s.cfg.ShareKey)
+	} else {
+		req.Header.Set("x-api-key", s.cfg.APIKey)
+	}
 	req.Header.Set("Content-Type", contentType)
 	resp, err := s.client.Do(req)
-	// 请求地址不含凭据（API key 在请求头），底层错误可以原样带上。
+	// 请求地址不含凭据（API key 和分享 key 都在请求头），底层错误可以原样带上。
 	if err != nil {
 		return nil, fmt.Errorf("Immich 请求失败: %w", err)
 	}
@@ -69,7 +75,7 @@ func (s *immichStore) put(data []byte, filename string, published time.Time) (id
 	if err := writer.Close(); err != nil {
 		return "", false, fmt.Errorf("结束 Immich 上传表单失败")
 	}
-	resp, err := s.request("POST", "/api/assets", writer.FormDataContentType(), &body)
+	resp, err := s.request("POST", "/api/assets", writer.FormDataContentType(), &body, false)
 	if err != nil {
 		return "", false, err
 	}
@@ -106,7 +112,7 @@ func (s *immichStore) commit(ids []string) error {
 	if err != nil {
 		return fmt.Errorf("构建 Immich 入册请求失败")
 	}
-	resp, err := s.request("PUT", "/api/albums/"+url.PathEscape(s.cfg.AlbumID)+"/assets", "application/json", bytes.NewReader(body))
+	resp, err := s.request("PUT", "/api/albums/"+url.PathEscape(s.cfg.AlbumID)+"/assets", "application/json", bytes.NewReader(body), false)
 	if err != nil {
 		return err
 	}
@@ -140,5 +146,42 @@ func (s *immichStore) commit(ids []string) error {
 
 // url 返回经分享链接访问资源原图的地址。
 func (s *immichStore) url(id string) string {
-	return s.cfg.URL + "/api/assets/" + url.PathEscape(id) + "/original?key=" + url.QueryEscape(s.cfg.ShareKey)
+	return s.cfg.PublicURL + "/api/assets/" + url.PathEscape(id) + "/original?key=" + url.QueryEscape(s.cfg.ShareKey)
+}
+
+// find 按文件主名查找分享相册中的资源，并排除包含匹配的误命中。
+func (s *immichStore) find(name string) (string, error) {
+	body, err := json.Marshal(struct {
+		AlbumIDs         []string `json:"albumIds"`
+		OriginalFileName string   `json:"originalFileName"`
+	}{[]string{s.cfg.AlbumID}, name})
+	if err != nil {
+		return "", fmt.Errorf("构建 Immich 查找请求失败")
+	}
+	resp, err := s.request("POST", "/api/search/metadata", "application/json", bytes.NewReader(body), true)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("Immich 查找失败：HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Assets struct {
+			Items []struct {
+				ID               string `json:"id"`
+				OriginalFileName string `json:"originalFileName"`
+			} `json:"items"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("Immich 查找响应解析失败")
+	}
+	for _, item := range result.Assets.Items {
+		base, _, _ := strings.Cut(item.OriginalFileName, ".")
+		if base == name {
+			return item.ID, nil
+		}
+	}
+	return "", nil
 }

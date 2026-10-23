@@ -25,6 +25,7 @@ type clientKey struct{ impersonate, proxy string }
 type stats struct {
 	Stored           uint64            `json:"stored"`
 	Deduplicated     uint64            `json:"deduplicated"`
+	Found            uint64            `json:"found"`
 	SourceFailures   map[string]uint64 `json:"source_failures"`
 	LastStoreError   string            `json:"last_store_error,omitempty"`
 	LastStoreErrorAt *time.Time        `json:"last_store_error_at,omitempty"`
@@ -96,6 +97,7 @@ func (a *Archiver) Archive(rc config.ResolvedRouteConfig, items []route.FeedItem
 	var workMu sync.Mutex
 	var firstErr error
 	fresh := make(map[string]string)
+	var ids []string
 	jobs := make([]imageJob, 0, len(pending))
 	for _, job := range pending {
 		jobs = append(jobs, job)
@@ -115,15 +117,19 @@ func (a *Archiver) Archive(rc config.ResolvedRouteConfig, items []route.FeedItem
 				job := jobs[0]
 				jobs = jobs[1:]
 				workMu.Unlock()
-				data, ext, reason := a.download(rc, job)
-				if reason != "" {
-					a.sourceFailure(job.source, reason)
-					continue
-				}
-				id, err := a.put(job, data, ext)
-				if errors.Is(err, errRejected) {
-					a.sourceFailure(job.source, "rejected")
-					continue
+				id, err := a.store.find(imageBaseName(job.source))
+				found := id != ""
+				if err == nil && !found {
+					data, ext, reason := a.download(rc, job)
+					if reason != "" {
+						a.sourceFailure(job.source, reason)
+						continue
+					}
+					id, err = a.put(job, data, ext)
+					if errors.Is(err, errRejected) {
+						a.sourceFailure(job.source, "rejected")
+						continue
+					}
 				}
 				workMu.Lock()
 				if err != nil {
@@ -132,17 +138,20 @@ func (a *Archiver) Archive(rc config.ResolvedRouteConfig, items []route.FeedItem
 					}
 				} else {
 					fresh[job.source] = id
+					if found {
+						a.mu.Lock()
+						a.stats.Found++
+						a.mu.Unlock()
+					} else {
+						ids = append(ids, id)
+					}
 				}
 				workMu.Unlock()
 			}
 		}()
 	}
 	wg.Wait()
-	if firstErr == nil && len(fresh) > 0 {
-		ids := make([]string, 0, len(fresh))
-		for _, id := range fresh {
-			ids = append(ids, id)
-		}
+	if firstErr == nil && len(ids) > 0 {
 		firstErr = a.store.commit(ids)
 	}
 	if firstErr != nil {
@@ -168,14 +177,18 @@ func (a *Archiver) Archive(rc config.ResolvedRouteConfig, items []route.FeedItem
 	return nil
 }
 
+func imageBaseName(source string) string {
+	digest := sha256.Sum256([]byte(source))
+	return fmt.Sprintf("%x", digest[:8])
+}
+
 // put 把图片交给存储并更新计数；文件名用源 URL 哈希加魔数扩展名。
 func (a *Archiver) put(job imageJob, data []byte, ext string) (string, error) {
-	digest := sha256.Sum256([]byte(job.source))
 	published := time.Now()
 	if job.published != nil && !job.published.IsZero() {
 		published = *job.published
 	}
-	id, duplicate, err := a.store.put(data, fmt.Sprintf("%x.%s", digest[:8], ext), published)
+	id, duplicate, err := a.store.put(data, imageBaseName(job.source)+"."+ext, published)
 	if err != nil {
 		return "", err
 	}

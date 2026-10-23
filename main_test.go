@@ -1361,3 +1361,23 @@ func TestBrokenStdoutDoesNotKillProcess(t *testing.T) {
 		t.Fatalf("子进程退出码 = %d，期望 %d", exitErr.ExitCode(), helperExitCode)
 	}
 }
+
+func TestBackfillCommandMediaConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte("routes: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(500) }))
+	defer server.Close()
+	cfg, err := runBackfillCommandForTest(t, []string{"execute", "--source", "afdian", "--miniflux-url", server.URL, "--feed-id", "42", "--config", path}, func(key string) string {
+		return map[string]string{"MINIFLUX_API_TOKEN": "token", "AFDIAN_COOKIE": "cookie"}[key]
+	})
+	if err != nil || cfg.configPath != path {
+		t.Fatalf("配置参数解析失败：%+v %v", cfg, err)
+	}
+	err = runBackfill(context.Background(), cfg, io.Discard)
+	if err == nil || err.Error() != "配置文件 "+path+" 没有 media 段" || calls != 0 {
+		t.Fatalf("应在请求前拒绝无 media 配置：err=%v calls=%d", err, calls)
+	}
+}

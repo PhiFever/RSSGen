@@ -2,8 +2,10 @@ package media
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,11 +30,23 @@ func (f fakeSource) Do(r *fhttp.Request) (*fhttp.Response, error) { return f(r) 
 func sourceResponse(status int, body []byte, location string) *fhttp.Response {
 	return &fhttp.Response{StatusCode: status, Header: fhttp.Header{"Location": []string{location}}, Body: io.NopCloser(bytes.NewReader(body))}
 }
+
+// newTestArchiver 的假 Immich 对存在性检验恒返回未命中。
 func newTestArchiver(t *testing.T, handler http.HandlerFunc, source fakeSource) *Archiver {
+	t.Helper()
+	return newTestArchiverWithSearch(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/search/metadata" {
+			_, _ = io.WriteString(w, `{"assets":{"items":[]}}`)
+			return
+		}
+		handler(w, r)
+	}, source)
+}
+func newTestArchiverWithSearch(t *testing.T, handler http.HandlerFunc, source fakeSource) *Archiver {
 	t.Helper()
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
-	a := New(config.MediaConfig{Immich: config.ImmichConfig{URL: server.URL, APIKey: "secret", AlbumID: "album", ShareKey: "k"}, AllowedHosts: []string{"*.zhimg.com"}, MaxSizeMB: 1})
+	a := New(config.MediaConfig{Immich: config.ImmichConfig{URL: server.URL, PublicURL: server.URL, APIKey: "secret", AlbumID: "album", ShareKey: "k"}, AllowedHosts: []string{"*.zhimg.com"}, MaxSizeMB: 1})
 	a.newSourceClient = func(impersonate, proxy string) (sourceClient, error) { return source, nil }
 	return a
 }
@@ -230,6 +244,95 @@ func TestHostMatching(t *testing.T) {
 			_, got := a.normalize(tc.url)
 			if got != tc.want {
 				t.Errorf("匹配=%v，期望 %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestArchiveFind(t *testing.T) {
+	digest := sha256.Sum256([]byte(sourceURL))
+	name := fmt.Sprintf("%x", digest[:8])
+	for _, tc := range []struct {
+		name, filename string
+		status         int
+		found          bool
+	}{
+		{"相册命中", name + ".jpg", 200, true},
+		{"包含误命中", "x" + name + ".jpg", 200, false},
+		{"分享鉴权失败", "", 401, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var searches, sources, uploads, albums atomic.Int32
+			a := newTestArchiverWithSearch(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.RawQuery != "" {
+					t.Error("API 地址不应含分享 key")
+				}
+				if r.URL.Path == "/api/search/metadata" {
+					searches.Add(1)
+					if r.Method != "POST" || r.Header.Get("x-immich-share-key") != "k" || r.Header.Get("x-api-key") != "" || r.Header.Get("Content-Type") != "application/json" {
+						t.Error("查找方法或鉴权头错误")
+					}
+					body, _ := io.ReadAll(r.Body)
+					if string(body) != `{"albumIds":["album"],"originalFileName":"`+name+`"}` {
+						t.Errorf("查找请求体=%s", body)
+					}
+					w.WriteHeader(tc.status)
+					_ = json.NewEncoder(w).Encode(map[string]any{"assets": map[string]any{"items": []map[string]string{{"id": "found", "originalFileName": tc.filename}}}})
+					return
+				}
+				if r.Header.Get("x-api-key") != "secret" || r.Header.Get("x-immich-share-key") != "" {
+					t.Error("上传和入册鉴权头错误")
+				}
+				switch r.Method + " " + r.URL.Path {
+				case "POST /api/assets":
+					uploads.Add(1)
+					w.WriteHeader(201)
+					_, _ = io.WriteString(w, `{"id":"uploaded"}`)
+				case "PUT /api/albums/album/assets":
+					albums.Add(1)
+					_, _ = io.WriteString(w, `[{"id":"uploaded","success":true}]`)
+				default:
+					t.Errorf("意外 API 请求：%s", r.URL)
+					w.WriteHeader(500)
+				}
+			}, func(r *fhttp.Request) (*fhttp.Response, error) {
+				sources.Add(1)
+				return sourceResponse(200, png, ""), nil
+			})
+			// 发布路径不处理 API；误用发布地址只会访问本地假服务并失败。
+			a.store.cfg.PublicURL = a.cfg.Immich.URL + "/public"
+			items := imageItems()
+			original := items[0].Content
+			err := a.Archive(config.ResolvedRouteConfig{}, items)
+			if tc.status == 401 {
+				if err == nil || !strings.Contains(err.Error(), "401") || items[0].Content != original {
+					t.Fatalf("鉴权失败未保留原文：%v %s", err, items[0].Content)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				id := "uploaded"
+				if tc.found {
+					id = "found"
+				}
+				if items[0].Content != `<img src="`+a.store.cfg.PublicURL+`/api/assets/`+id+`/original?key=k">` {
+					t.Fatalf("发布地址错误：%s", items[0].Content)
+				}
+			}
+			var wantCalls int32
+			if tc.status == 200 && !tc.found {
+				wantCalls = 1
+			}
+			if searches.Load() != 1 || sources.Load() != wantCalls || uploads.Load() != wantCalls || albums.Load() != wantCalls {
+				t.Fatalf("请求计数：查找=%d 源=%d 上传=%d 入册=%d", searches.Load(), sources.Load(), uploads.Load(), albums.Load())
+			}
+			var wantFound uint64
+			if tc.found {
+				wantFound = 1
+			}
+			if a.Stats().Found != wantFound {
+				t.Fatalf("Found=%d", a.Stats().Found)
 			}
 		})
 	}

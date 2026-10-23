@@ -93,10 +93,12 @@ routes:
         #   - followed_question          # 关注了问题
 
 # 可选：归档白名单 CDN 图片到 Immich 专用相册。
-# 分享链接须允许下载；内网地址必须对 RSSGen 和 Miniflux 都可达。
+# 分享链接须允许下载。public_url 是写进正文、由 Miniflux 访问的地址，缺省等于 url；
+# 只有 RSSGen 与 Miniflux 访问 Immich 的地址不同时才需要配置（例如在宿主机上运行 backfill）。
 # media:
 #   immich:
 #     url: "http://immich_server:2283"
+#     # public_url: "http://immich_server:2283"
 #     api_key: "专用用户 API key"
 #     album_id: "专用相册 UUID"
 #     share_key: "相册分享 key"

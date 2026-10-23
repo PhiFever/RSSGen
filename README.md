@@ -67,7 +67,7 @@ routes:
 
 ### Afdian 历史回填
 
-使用 `server` 子命令启动 RSS server，feed 默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令；该命令不读取 `config.yml`，但会自动尝试加载当前工作目录下的 `.env`。
+使用 `server` 子命令启动 RSS server，feed 默认返回最新 20 篇。付费后需要把完整历史补进已有 Miniflux feed 时，显式运行一次性前台命令。该命令默认不读取 `config.yml`（归档图片时用 `--config` 显式指定，见「回填时归档图片」），但会自动尝试加载当前工作目录下的 `.env`。
 
 ```bash
 # 创建本地凭证文件（.env 已被 Git 忽略）
@@ -120,7 +120,7 @@ go run . backfill execute --source zhihu \
   --feed-id 42
 ```
 
-默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`、`followed_collection`、`voteup_pin`、`asked_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时，知乎回落到作者本人创作的 `answer`、`article`、`pin`；要回填收藏、点赞、关注等类别必须用 `--include` 显式列出。该默认值与 `config.yml` 中 `default_include` 的取值相同但各自维护——命令不读取 server 配置，改了一处不会同步到另一处。非法类别会在历史扫描之前报错。未识别的动态类型其类别取上游的 `target.type`，不在默认类别内，因此默认不再回填；上游出现新类型时靠日志中的「未识别的知乎动态」告警发现，该告警在类别过滤之前触发。缺失数量按类别显示为 `missing_by_category`。
+默认按目标 feed URL 上的 `include` 过滤；`--include answer,article,pin` 可覆盖 URL 中的类别列表。合法取值为 `answer`、`article`、`pin`、`collected_answer`、`collected_article`、`collected_pin`、`voteup_answer`、`voteup_article`、`followed_question`、`followed_collection`、`voteup_pin`、`asked_question`，逗号分隔并自动去空白、去重和排序。两处均未指定类别时，知乎回落到作者本人创作的 `answer`、`article`、`pin`；要回填收藏、点赞、关注等类别必须用 `--include` 显式列出。该默认值与 `config.yml` 中 `default_include` 的取值相同但各自维护——命令不读取 server 配置中的路由设置，改了一处不会同步到另一处。非法类别会在历史扫描之前报错。未识别的动态类型其类别取上游的 `target.type`，不在默认类别内，因此默认不再回填；上游出现新类型时靠日志中的「未识别的知乎动态」告警发现，该告警在类别过滤之前触发。缺失数量按类别显示为 `missing_by_category`。
 
 `--include-self-interaction` 默认关闭，默认跳过作者对自己内容的赞同和收藏；显式传入可保留这些互动。这两个选项、`--max-items`、`--start-before` 和 `--stop-after` 仅适用于知乎的 `execute` 与 `refresh`；`list` 不接受扫描参数。正文直接复用动态列表与 RSS 的渲染结果，空正文保持为空，不另行抓取正文或评论。请求串行且默认至少间隔 1 秒，可用 `--request-interval 2s` 调慢。建议先 dry-run 检查上游动态流实际保留的历史范围，再执行导入；已存在的 URL 或 GUID 会被跳过。
 
@@ -165,6 +165,38 @@ go run . backfill refresh --source zhihu \
 ```
 
 重刷输出已确认成功的更新数与失败条目详情；评论抓取最终失败的条目跳过，不用缺失评论的正文覆盖旧内容。到达下界表示指定窗口扫描完成，不提示继续扫描更早历史。`list`、`execute`、`refresh` 共用 `--source`、`--miniflux-url` 和 `--request-interval`，公共参数可放在子命令前后；`list` 只需要 Miniflux token，不要求数据源 Cookie。`--miniflux-url` 未传时回落到环境变量或 `.env` 中的 `MINIFLUX_URL`，两者都没有才报错；显式传参优先，便于临时指向另一个实例。
+
+### 回填时归档图片
+
+`execute` 和 `refresh` 传入 `--config <path>` 时，会读取该文件中的 `media` 段。每篇文章在写入 Miniflux 前，正文里白名单 CDN 的图片会先归档到 Immich 相册，规则与 server 生成 feed 时相同。指定的文件没有 `media` 段时，命令会直接报错。不传 `--config` 时行为不变。
+
+在宿主机上运行时，Immich 要通过映射到宿主机的端口访问，但写进正文的地址必须是 Miniflux 容器能访问的地址。这时用 `public_url` 把两者分开：
+
+```yaml
+# backfill-media.yml（含 API key 与分享 key，注意文件权限）
+media:
+  immich:
+    url: "http://localhost:2283"              # 本机调用 Immich API 的地址
+    public_url: "http://immich_server:2283"   # 写进正文、由 Miniflux 访问的地址
+    api_key: "..."
+    album_id: "..."
+    share_key: "..."
+  allowed_hosts:
+    - "*.zhimg.com"
+    - "pic1.afdiancdn.com"
+```
+
+```bash
+go run . backfill execute --source zhihu \
+  --miniflux-url http://localhost:8080 --feed-id 42 \
+  --config backfill-media.yml
+```
+
+- 图片下载使用该文件中与 `--source` 同名路由的指纹和代理设置。
+- Immich 不可用时命令会立即中止；重跑是安全的，已导入的条目会被跳过。
+- 单张源图下载失败时，这张图保留原地址，导入继续。
+- 已经归档过的图片按文件名在相册里查到后会直接复用，所以对同一窗口反复执行 `refresh` 不会重新下载。
+- dry-run 不归档。
 
 ## 后台刷新
 

@@ -32,10 +32,11 @@ type MediaConfig struct {
 
 // ImmichConfig 指定归档相册及访问凭据。
 type ImmichConfig struct {
-	URL      string `yaml:"url"`
-	APIKey   string `yaml:"api_key"`
-	AlbumID  string `yaml:"album_id"`
-	ShareKey string `yaml:"share_key"`
+	URL       string `yaml:"url"`
+	PublicURL string `yaml:"public_url"`
+	APIKey    string `yaml:"api_key"`
+	AlbumID   string `yaml:"album_id"`
+	ShareKey  string `yaml:"share_key"`
 }
 
 // ServerConfig 是 HTTP 服务器配置。
@@ -199,6 +200,15 @@ func validateMedia(cfg *MediaConfig) error {
 		return fmt.Errorf("media.immich.url 必须是包含协议和主机的绝对 URL")
 	}
 	cfg.Immich.URL = strings.TrimRight(cfg.Immich.URL, "/")
+	if cfg.Immich.PublicURL == "" {
+		cfg.Immich.PublicURL = cfg.Immich.URL
+	} else {
+		u, err := url.Parse(cfg.Immich.PublicURL)
+		if err != nil || u.Scheme == "" || u.Hostname() == "" {
+			return fmt.Errorf("media.immich.public_url 必须是包含协议和主机的绝对 URL")
+		}
+		cfg.Immich.PublicURL = strings.TrimRight(cfg.Immich.PublicURL, "/")
+	}
 	if cfg.MaxSizeMB < 1 {
 		return fmt.Errorf("media.max_size_mb 必须为正数")
 	}

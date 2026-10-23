@@ -169,6 +169,8 @@ type Dependencies struct {
 	MaxAttempts    int
 	RetryBaseDelay time.Duration
 	Wait           WaitFunc
+	// Archive 在写入 Miniflux 前归档正文中的图片并返回改写后的正文；nil 表示不归档。
+	Archive func(content, link string, published time.Time) (string, error)
 }
 
 // Run 列出可用 feed，或将指定 feed 与数据源完整历史对账。
@@ -361,6 +363,15 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 			})
 		} else {
 			content = appendContent(content, comments)
+		}
+		if deps.Archive != nil && content != "" {
+			content, err = deps.Archive(content, candidate.URL, candidate.PublishedAt)
+			if err != nil {
+				if req.Action == ActionRefresh {
+					return result, failUpdate("media", err)
+				}
+				return result, fmt.Errorf("归档文章 %s 的图片: %w", candidate.ID, err)
+			}
 		}
 		if req.Action == ActionRefresh {
 			if content == "" {
