@@ -107,11 +107,38 @@ RSSGen 保留两种且仅有两种产品运行方式：
 
 - Discovery is a separate phase from detail fetching and importing. The command must reach a natural upstream end before it begins fetching details. A list request or parse error after retries aborts without starting the import phase.
 
+  > **修订（2026-10-25，推翻本条，改为边扫边导入）**：本条对爱发电、知乎两个数据源同时失效，下列规则取代它。
+  >
+  > **触发事件**：2026-10-25 对 feed 95（知乎 `wan-dian-latepost`）全量回填，906 页 / 6333 条扫了约 15 分钟。扫描结束后对账发现 9 条想法动态的 `target` 缺 `type` 与 `id`，整轮以「数据源历史包含缺少稳定 ID 的条目」中止，`imported=0`。事后用同样的 URL 重新请求这两页，返回完整（`type=pin`、id 正常），说明是上游对想法服务的临时降级，不是解析问题。残缺形态的特征是：一页里只有想法残缺，同页的文章、回答、问题都正常。
+  >
+  > **推翻理由**：「扫到尽头才导入」让任意一条坏数据、或任意一次末段失败都作废整轮扫描。它换来的「不留半成品」其实并不存在——下文 execute 条早已接受「先导入的条目在后续失败时保留，重跑重建存在集合并跳过」。逐条考察这条规则可能的动机：dry-run 需要先看到总量，只约束 dry-run 本身；跨页去重靠运行期的已见集合即可；新到旧顺序由翻页方向天然满足。没有一条要求 execute 先全扫。
+  >
+  > **新规则**：
+  >
+  > 1. **范围**：execute、refresh、dry-run 共用一套逐页循环。dry-run 逐页对账但不写入，最终输出的内容与格式不变。
+  > 2. **粒度**：`Source.Discover` 不再一次性返回整段 `Scan`，改为每翻一页回调一次，回调内容是这一页的候选和这一页的请求游标。`Run` 对这一页依次做类别过滤、对账、导入/重刷，处理完才让数据源请求下一页。全程严格串行，不引入并发，与 `docs/architecture-review.md` 已定的「顺序抓取」方向一致。回调返回错误时，数据源停止翻页并原样返回该错误。
+  > 3. **顺序**：页与页之间按上游翻页顺序（两个数据源都是新到旧），页内按 `PublishedAt` 新到旧排序。不再做跨页的全局排序。
+  > 4. **坏候选**：知乎 `fetchActivitiesPaged` 遇到某页存在「`target` 非空但 `id` 为空」的动态时，整页重试，最多 3 次，复用现有的 1s/2s 退避。重试后仍残缺的动态由适配器跳过，打告警，并随该页回调交给 `Run`，汇总进最终报告新增的「跳过的坏候选」段，内容为动态 ID 与原因。`reconcile` 里的空 ID 检查保留，作为数据源违约时的契约断言；在边扫边导下，它中止的只是剩余部分。
+  > 5. **重试层级**：去掉 `Run` 对整个 `Discover` 的 `retryValue`。它在边扫边导下意味着第 900 页失败就从第 1 页重扫，最多三遍。重试下沉到页级：知乎沿用现有的网络错误 / 5xx 页重试，加上第 4 条的残缺重试；爱发电列表翻页补上同样的网络错误 / 5xx 页重试（3 次，1s/2s 退避）。
+  > 6. **扫描失败**：页级重试用尽后，命令以非零码退出，最终报告照常打印已导入数。知乎给出续扫提示 `--start-before=<失败页的请求游标>`。知乎首页的请求不带游标，爱发电没有游标参数，这两种情况提示直接重跑（已导入的会被跳过）。
+  > 7. **中断**：第一次 Ctrl+C 后，当前条目处理完即停，不再处理本页剩余条目，也不再请求新页；续扫游标取当前页的请求游标，取不到时的处理同第 6 条。第二次 Ctrl+C 仍是立即退出。`--max-items` 截断时的续扫游标语义不变（最后一条被保留的动态）。
+  > 8. **统计**：`Scanned`、`Existing`、`Missing`、`MissingByCategory`、缺失时间范围、`DuplicateCandidates` 逐页累加，最终报告格式不变。已见候选 ID 与已命中的 Miniflux 条目在整次运行内保留，重刷时多个候选命中同一条目，按页序取第一条。原先只打一次的「历史对账完成」日志，改为每页一条小结（页号、本页缺失数、累计已导入数）。
+  > 9. **RSS 路径**：第 4 条的页重试位于 RSS 与回填共用的 `fetchActivitiesPaged`，RSS 路径自动受益。重试后仍残缺的动态，RSS 路径同样跳过并告警，不再产出 GUID 为空、链接为 `https://www.zhihu.com/unknown/` 的条目——它进入 Miniflux 后会成为永久条目，理由同知乎回填 spec 中「猜测 URL 成为永久去重判据」一段。
+  > 10. **新增测试**仅以下四条，现有测试中断言「扫完才导入」或「整段 Discover 重试」的按新语义改写：
+  >     - 第 1 页的条目在请求第 2 页之前已导入；
+  >     - 第 2 页失败时第 1 页的导入保留，命令报错并给出续扫游标；
+  >     - 知乎页内出现残缺 `target` 时整页重试，仍残缺则跳过并进入报告（夹具取本次实测形态）；
+  >     - 第一次 Ctrl+C 后处理完当前条目即停。
+
 - Miniflux entries that are absent from the current upstream list do not cause a watermark-not-found failure. They may represent author-deleted content. Reconciliation is driven only by upstream candidates that are missing from Miniflux.
 
 - Dry-run stops after reconciliation. It performs feed validation, existing-entry pagination, author resolution, and complete Afdian list discovery, but performs no detail requests, comment requests, or Miniflux imports. Its result includes scanned, existing, missing, and duplicate-candidate counts plus the missing publication-time range when available.
 
+  > **修订（2026-10-25）**：dry-run 改为与 execute 共用逐页循环，逐页对账、不写入；输出内容不变。见上文「Discovery is a separate phase」条的修订。
+
 - Execute mode processes missing candidates in newest-to-oldest order. For each candidate it fetches detail, attempts to fetch comments, builds the normalized article, and imports it before moving to the next candidate. Successful earlier imports remain durable if a later candidate fails; a rerun rebuilds the Miniflux existence set and skips them.
+
+  > **修订（2026-10-25）**：顺序改为上游翻页顺序、页内按发布时间新到旧，不再跨页全局排序。见上文「Discovery is a separate phase」条的修订。
 
 - New imports provide canonical URL, title, author, HTML content, publication timestamp, `status = unread`, and `external_id = post_id`. Current comment rendering and HTML append behavior are reused.
 
@@ -120,6 +147,8 @@ RSSGen 保留两种且仅有两种产品运行方式：
 - Afdian list, detail, and comment operations are strictly serial and share one rate limiter. The default minimum interval is one second. The CLI may request a longer interval but cannot reduce it below one second. Miniflux HTTP calls do not consume this source rate limit.
 
 - Afdian and Miniflux network operations retry at most three times with conservative exponential backoff. Retries do not change item ordering. After the third failed attempt, the foreground command exits non-zero. Comment exhaustion remains a soft failure as described above.
+
+  > **修订（2026-10-25）**：列表翻页的重试下沉为页级，不再重试整段扫描。见上文「Discovery is a separate phase」条的修订第 5 条。
 
 - The primary backfill module is deliberately deep. Its caller-facing interface is one run operation whose request selects list, dry-run, or execute behavior and whose result contains observable counts and errors. Feed lookup, slug derivation, entry reconciliation, ordering, retry policy, and progress accounting remain inside the module.
 
@@ -156,6 +185,8 @@ RSSGen 保留两种且仅有两种产品运行方式：
 - Ordering tests prove that execute mode imports missing history newest-to-oldest, while the normal RSS route retains its existing list order and default bounded behavior.
 
 - Discovery failure tests prove that an Afdian list request or parse failure prevents the detail/import phase from starting. Empty lists and terminal cursors prove natural successful completion.
+
+  > **修订（2026-10-25）**：断言反转——列表失败时，此前各页已导入的条目保留，命令报错退出。见上文「Discovery is a separate phase」条修订的测试清单。
 
 - Detail failure tests prove that the current candidate stops the run after retry exhaustion, no older candidate is fetched or imported, and previously successful newer imports remain observable.
 

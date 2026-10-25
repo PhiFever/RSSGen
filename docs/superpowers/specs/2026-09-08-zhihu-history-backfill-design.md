@@ -102,6 +102,8 @@ CLI 侧的问题是重复：现有 `newAfdianBackfillCommand` / `afdianBackfillC
 
 - `Run` 在 execute / dry-run 分支的顺序固定为：解析目标 feed 与 identity → 确定最终类别集合 → **校验类别** → 读取 Miniflux 现有条目 → 发现上游历史 → 按类别过滤 → 对账 →（dry-run 到此为止）→ 逐条导入。校验排在翻页之前，拼错的 `--include` 不会在翻完整段历史之后才暴露。
 
+  > **修订（2026-10-25）**：「发现上游历史」之后的三步改为逐页执行：每翻一页，对这一页做类别过滤 → 对账 → 导入（dry-run 不写入），处理完再翻下一页。翻页之前的步骤及其顺序不变。触发事件与完整规则见爱发电回填 spec「Discovery is a separate phase」条的修订。
+
 - 类别校验对**两条入口同等严格**：`--include` 与 feed URL 上的 `include` 有任一值不在 `KnownCategories()` 中即报错退出。`ActionList` 分支不做类别校验——`FeedIdentity` 在那里只用于判断 feed 是否属于当前数据源，让校验错误参与筛选会导致带非法 include 的 feed 从 `--list-feeds` 输出中静默消失，与「显式报错」的要求正相反。
 
 - 上游候选中 `Category` 不在 `KnownCategories()` 内的条目被**跳过**，计入 `SkippedUnknown` 并记录 `Warning`，不计入 `Scanned`。理由是回填与 RSS 路径的风险不对称：未识别类型在 `makeFeedItem` 中落到 `default` 分支，标题兜底为字面量「未知内容」，链接是拼出来的 `https://www.zhihu.com/{target_type}/{id}`；在 RSS 路径上这个降级结果会随缓存过期滚掉，在回填路径上它会成为 Miniflux 永久条目，而那个猜测出来的 URL 同时是 `reconcile` 的去重判据——一旦写错，将来即使代码支持了该类型也再匹配不上。跳过而非中断整次运行：知乎历史中出现一条早已下线的动态类型，不该让整份历史回填不了。
