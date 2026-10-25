@@ -29,7 +29,8 @@ type fakeSource struct {
 	scanNextCursor   string
 	discoverCancel   context.CancelFunc
 	scanTruncated    bool
-	scanInterrupted  bool
+	pages            []Page
+	events           *[]string
 }
 
 func (s *fakeSource) FeedIdentity(feedURL string) (Identity, error) {
@@ -40,7 +41,7 @@ func (s *fakeSource) KnownCategories() []string { return s.knownCategories }
 
 func (s *fakeSource) SupportsRefresh() bool { return s.refreshSupported }
 
-func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc) (Scan, error) {
+func (s *fakeSource) Discover(ctx context.Context, _ string, progress ProgressFunc, onPage PageFunc) (Scan, error) {
 	s.discoverCalls++
 	if s.discoverCancel != nil {
 		s.discoverCancel()
@@ -48,15 +49,25 @@ func (s *fakeSource) Discover(_ context.Context, _ string, progress ProgressFunc
 	if err := popError(&s.discoverErrs); err != nil {
 		return Scan{}, err
 	}
-	if s.reportPage {
-		reportProgress(progress, "数据源分页扫描进度", "page", 1, "page_items", len(s.candidates), "scanned", len(s.candidates))
+	pages := s.pages
+	if pages == nil {
+		pages = []Page{{Candidates: append([]Candidate(nil), s.candidates...), Cursor: s.scanNextCursor}}
 	}
-	return Scan{
-		Candidates:  append([]Candidate(nil), s.candidates...),
-		NextCursor:  s.scanNextCursor,
-		Truncated:   s.scanTruncated,
-		Interrupted: s.scanInterrupted,
-	}, nil
+	for i, page := range pages {
+		if s.events != nil {
+			*s.events = append(*s.events, fmt.Sprintf("请求第 %d 页", i+1))
+		}
+		if s.reportPage {
+			reportProgress(progress, "数据源分页扫描进度", "page", i+1, "page_items", len(page.Candidates), "scanned", len(page.Candidates))
+		}
+		if err := onPage(page); err != nil {
+			return Scan{NextCursor: page.Cursor}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return Scan{NextCursor: page.Cursor}, err
+		}
+	}
+	return Scan{NextCursor: s.scanNextCursor, Truncated: s.scanTruncated}, nil
 }
 
 func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, error) {
@@ -73,11 +84,13 @@ func (s *fakeSource) Detail(_ context.Context, candidate Candidate) (string, err
 	return "body-" + candidate.ID, nil
 }
 
-func (s *fakeSource) Comments(_ context.Context, candidate Candidate) (string, error) {
+func (s *fakeSource) Comments(ctx context.Context, candidate Candidate) (string, error) {
 	s.commentCalls = append(s.commentCalls, candidate.ID)
 	if s.commentCancel != nil {
 		s.commentCancel()
-		return "", context.Canceled
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 	}
 	if s.emptyComments {
 		return "", nil
@@ -102,6 +115,8 @@ type fakeDestination struct {
 	imported       []Article
 	importOutcomes map[string]ImportOutcome
 	importErrs     map[string][]error
+	importCancel   context.CancelFunc
+	events         *[]string
 }
 
 type recordedUpdate struct {
@@ -109,11 +124,13 @@ type recordedUpdate struct {
 	Title, Content string
 }
 
-func (d *fakeDestination) Update(_ context.Context, entryID int64, title, content string) error {
+func (d *fakeDestination) Update(ctx context.Context, entryID int64, title, content string) error {
 	d.updates = append(d.updates, recordedUpdate{entryID, title, content})
 	if d.updateCancel != nil {
 		d.updateCancel()
-		return context.Canceled
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 	return popError(&d.updateErrs)
 }
@@ -131,7 +148,16 @@ func (d *fakeDestination) Entries(context.Context, int64) ([]Entry, error) {
 	return append([]Entry(nil), d.entries...), nil
 }
 
-func (d *fakeDestination) Import(_ context.Context, _ int64, article Article) (ImportOutcome, error) {
+func (d *fakeDestination) Import(ctx context.Context, _ int64, article Article) (ImportOutcome, error) {
+	if d.importCancel != nil {
+		d.importCancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if d.events != nil {
+		*d.events = append(*d.events, "导入 "+article.ExternalID)
+	}
 	d.imported = append(d.imported, article)
 	errs := d.importErrs[article.ExternalID]
 	if err := popError(&errs); err != nil {
@@ -156,7 +182,7 @@ func popError(errs *[]error) error {
 
 func noWait(context.Context, time.Duration) error { return nil }
 
-func TestRunFlushesInterruptedScan(t *testing.T) {
+func TestRunStopsBeforeProcessingCancelledPage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	source := &fakeSource{
@@ -164,11 +190,10 @@ func TestRunFlushesInterruptedScan(t *testing.T) {
 			{ID: "a", URL: "https://afdian.com/p/a"},
 			{ID: "b", URL: "https://afdian.com/p/b"},
 		},
-		detailErrs:      map[string][]error{},
-		commentErrs:     map[string][]error{},
-		discoverCancel:  cancel,
-		scanTruncated:   true,
-		scanInterrupted: true,
+		detailErrs:     map[string][]error{},
+		commentErrs:    map[string][]error{},
+		discoverCancel: cancel,
+		scanTruncated:  true,
 	}
 	destination := &fakeDestination{
 		feed:       Feed{ID: 42, FeedURL: "http://rssgen:8000/feed/afdian/alice"},
@@ -177,7 +202,7 @@ func TestRunFlushesInterruptedScan(t *testing.T) {
 	result, err := Run(ctx, Request{Action: ActionExecute, FeedID: 42}, Dependencies{
 		Source: source, Destination: destination, Wait: noWait,
 	})
-	if err != nil || result.Imported != len(source.candidates) || len(destination.imported) != len(source.candidates) || !result.ScanInterrupted {
+	if err != nil || result.Imported != 0 || len(destination.imported) != 0 || !result.ScanInterrupted {
 		t.Fatalf("Run result=%+v imports=%d err=%v", result, len(destination.imported), err)
 	}
 	if ctx.Err() != context.Canceled || source.discoverCalls != 1 {
@@ -341,10 +366,9 @@ func TestRunReportsPhaseDiscoveryAndImportProgress(t *testing.T) {
 		"Miniflux 现有条目读取完成",
 		"开始扫描数据源完整历史",
 		"数据源分页扫描进度",
-		"数据源完整历史扫描完成",
-		"历史对账完成",
 		"开始处理缺失条目",
 		"缺失条目处理完成",
+		"本页历史处理完成",
 	}
 	var gotMessages []string
 	for _, record := range records {
@@ -353,13 +377,13 @@ func TestRunReportsPhaseDiscoveryAndImportProgress(t *testing.T) {
 	if !reflect.DeepEqual(gotMessages, wantMessages) {
 		t.Fatalf("progress messages = %v, want %v", gotMessages, wantMessages)
 	}
-	completed := attrsMap(records[len(records)-1].attrs)
+	completed := attrsMap(records[len(records)-2].attrs)
 	if completed["current"] != 1 || completed["total"] != 1 || completed["post_id"] != "post-1" || completed["outcome"] != "created" {
 		t.Fatalf("completed attrs = %+v", completed)
 	}
 }
 
-func TestRunRetriesDiscoveryBeforeStartingDetails(t *testing.T) {
+func TestRunDoesNotRetryDiscovery(t *testing.T) {
 	source := &fakeSource{discoverErrs: []error{errors.New("bad"), errors.New("bad"), errors.New("bad")}}
 	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
 
@@ -369,17 +393,17 @@ func TestRunRetriesDiscoveryBeforeStartingDetails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected discovery failure")
 	}
-	if source.discoverCalls != 3 || len(source.detailCalls) != 0 || len(destination.imported) != 0 {
+	if source.discoverCalls != 1 || len(source.detailCalls) != 0 || len(destination.imported) != 0 {
 		t.Fatalf("calls: discover=%d detail=%v imports=%v", source.discoverCalls, source.detailCalls, destination.imported)
 	}
 }
 
 func TestRunUsesConservativeExponentialRetryDelays(t *testing.T) {
-	source := &fakeSource{discoverErrs: []error{errors.New("once"), errors.New("twice")}}
-	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
+	source := &fakeSource{candidates: []Candidate{{ID: "a"}}, detailErrs: map[string][]error{"a": {errors.New("once"), errors.New("twice")}}, commentErrs: map[string][]error{}}
+	destination := &fakeDestination{importErrs: map[string][]error{}, feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}}
 	var waits []time.Duration
 
-	_, err := Run(context.Background(), Request{Action: ActionExecute, DryRun: true, FeedID: 1}, Dependencies{
+	_, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{
 		Source: source, Destination: destination,
 		MaxAttempts: 10,
 		Wait: func(_ context.Context, delay time.Duration) error {
@@ -390,8 +414,8 @@ func TestRunUsesConservativeExponentialRetryDelays(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !reflect.DeepEqual(waits, []time.Duration{time.Second, 2 * time.Second}) || source.discoverCalls != 3 {
-		t.Fatalf("waits=%v attempts=%d", waits, source.discoverCalls)
+	if !reflect.DeepEqual(waits, []time.Duration{time.Second, 2 * time.Second}) || len(source.detailCalls) != 3 {
+		t.Fatalf("waits=%v attempts=%d", waits, len(source.detailCalls))
 	}
 }
 
@@ -776,7 +800,6 @@ func TestRunRefreshCancellation(t *testing.T) {
 			switch phase {
 			case "scan":
 				source.discoverCancel = cancel
-				source.scanInterrupted = true
 				source.scanTruncated = true
 			case "comments":
 				source.commentCancel = cancel
@@ -785,11 +808,11 @@ func TestRunRefreshCancellation(t *testing.T) {
 			}
 			result, err := Run(ctx, Request{Action: ActionRefresh, RangeConfirmed: true, FeedID: 1}, deps)
 			if phase == "scan" {
-				if err != nil || result.Updated != 1 || !result.ScanInterrupted {
-					t.Fatalf("扫描中断应写完已扫部分：%+v %v", result, err)
+				if err != nil || result.Updated != 0 || !result.ScanInterrupted {
+					t.Fatalf("扫描中断不应开始条目：%+v %v", result, err)
 				}
-			} else if !errors.Is(err, context.Canceled) || result.Updated != 0 || result.CommentFailures != 0 || len(result.Warnings) != 0 {
-				t.Fatalf("取消不能计作成功或评论告警：%+v %v", result, err)
+			} else if err != nil || result.Updated != 1 || !result.ScanInterrupted || result.CommentFailures != 0 || len(result.Warnings) != 0 {
+				t.Fatalf("取消应完成当前重刷条目：%+v %v", result, err)
 			}
 		})
 	}
@@ -850,5 +873,32 @@ func TestRunArchivesBeforeWrite(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRunImportsPageBeforeRequestingNext(t *testing.T) {
+	var events []string
+	source := &fakeSource{
+		pages:         []Page{{Candidates: []Candidate{{ID: "a", Content: "正文"}}}, {Candidates: []Candidate{{ID: "b", Content: "正文"}}}},
+		emptyComments: true, events: &events,
+	}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}, importErrs: map[string][]error{}, events: &events}
+	result, err := Run(context.Background(), Request{Action: ActionExecute, FeedID: 1}, Dependencies{Source: source, Destination: destination, Wait: noWait})
+	want := []string{"请求第 1 页", "导入 a", "请求第 2 页", "导入 b"}
+	if err != nil || result.Imported != 2 || !reflect.DeepEqual(events, want) {
+		t.Fatalf("events=%v result=%+v err=%v", events, result, err)
+	}
+}
+
+func TestRunCancellationFinishesOnlyCurrentItem(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	source := &fakeSource{pages: []Page{{Cursor: "1995", Candidates: []Candidate{
+		{ID: "a", Content: "正文"}, {ID: "b", Content: "正文"}, {ID: "c", Content: "正文"},
+	}}}, emptyComments: true}
+	destination := &fakeDestination{feed: Feed{ID: 1, FeedURL: "http://rssgen/feed/afdian/alice"}, importErrs: map[string][]error{}, importCancel: cancel}
+	result, err := Run(ctx, Request{Action: ActionExecute, FeedID: 1}, Dependencies{Source: source, Destination: destination, Wait: noWait})
+	if err != nil || result.Imported != 1 || len(destination.imported) != 1 || destination.imported[0].ExternalID != "a" || !result.ScanInterrupted || !result.ScanTruncated || result.ScanNextCursor != "1995" {
+		t.Fatalf("imports=%v result=%+v err=%v", destination.imported, result, err)
 	}
 }

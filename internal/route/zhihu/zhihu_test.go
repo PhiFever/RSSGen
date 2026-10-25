@@ -1881,8 +1881,9 @@ func TestFetchActivitiesPagedProgressCarriesNextOffset(t *testing.T) {
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
 	var got string
-	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, 0, func(page, pageItems, total int, nextOffset string) {
-		got = nextOffset
+	_, err := newBackfillTestSource().route.fetchActivitiesPaged(context.Background(), "u", 0, 0, 0, func(page activityPage) error {
+		got = page.NextOffset
+		return nil
 	})
 	if err != nil || got != "1781935272669" {
 		t.Fatalf("nextOffset=%q err=%v", got, err)

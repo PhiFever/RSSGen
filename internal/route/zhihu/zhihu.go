@@ -291,9 +291,23 @@ func (r *Route) fetchActivities(userID string, limit int) ([]zhihuActivity, erro
 	return r.fetchActivitiesPaged(context.Background(), userID, limit, 0, 0, nil)
 }
 
+// activityPage 交付已过滤、截断的一页动态及续扫位置。
+type activityPage struct {
+	Number     int
+	Activities []zhihuActivity
+	Skipped    []zhihuActivity
+	Total      int
+	NextOffset string
+}
+
+// incompleteActivity 判定上游临时降级的残缺动态：target 存在但缺 id。
+func incompleteActivity(act zhihuActivity) bool {
+	return act.Target != nil && strings.TrimSpace(string(act.Target.ID)) == ""
+}
+
 // fetchActivitiesPaged 翻页拉取动态。limit <= 0 表示不设上限，翻到上游自然结束。
 // stopAfter 为零时不设下界，否则保留动态游标大于等于下界的条目。
-func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit int, startOffset, stopAfter int64, onPage func(page, pageItems, total int, nextOffset string)) ([]zhihuActivity, error) {
+func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit int, startOffset, stopAfter int64, onPage func(activityPage) error) ([]zhihuActivity, error) {
 	dC0, err := r.getDC0()
 	if err != nil {
 		return nil, err
@@ -339,22 +353,54 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 			"x-zse-96":         signResult.XZSE96,
 		}
 
-		resp, err := sc.Get(nextURL, referer, headers)
-		for attempt := 1; attempt < 3 && (err != nil || (resp.StatusCode >= 500 && resp.StatusCode < 600)); attempt++ {
-			time.Sleep(time.Duration(attempt) * time.Second)
-			resp, err = sc.Get(nextURL, referer, headers)
-		}
-		if err != nil {
-			return activities, err
-		}
-		if resp.StatusCode != 200 {
-			return activities, route.NewHTTPError(resp.StatusCode, nextURL)
-		}
-
 		var data activitiesResponse
-		if err := json.Unmarshal(resp.Body, &data); err != nil {
-			return activities, fmt.Errorf("解析响应 JSON 失败: %w", err)
+		for attempt := 1; attempt <= 3; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return activities, err
+			}
+			resp, err := sc.Get(nextURL, referer, headers)
+			retry := err != nil || (resp.StatusCode >= 500 && resp.StatusCode < 600)
+			if !retry {
+				if resp.StatusCode != 200 {
+					return activities, route.NewHTTPError(resp.StatusCode, nextURL)
+				}
+				data = activitiesResponse{}
+				if err := json.Unmarshal(resp.Body, &data); err != nil {
+					return activities, fmt.Errorf("解析响应 JSON 失败: %w", err)
+				}
+				for _, act := range data.Data {
+					if incompleteActivity(act) {
+						retry = true
+						break
+					}
+				}
+			}
+			if !retry {
+				break
+			}
+			if attempt == 3 {
+				if err != nil {
+					return activities, err
+				}
+				if resp.StatusCode != 200 {
+					return activities, route.NewHTTPError(resp.StatusCode, nextURL)
+				}
+				break
+			}
+			time.Sleep(time.Duration(attempt) * time.Second)
 		}
+		emptyPage := len(data.Data) == 0
+		var skipped []zhihuActivity
+		valid := make([]zhihuActivity, 0, len(data.Data))
+		for _, act := range data.Data {
+			if incompleteActivity(act) {
+				slog.Warn("知乎动态残缺，重试后仍缺少 ID，已跳过", "activity_id", act.ID, "verb", act.Verb, "action_text", act.ActionText)
+				skipped = append(skipped, act)
+			} else {
+				valid = append(valid, act)
+			}
+		}
+		data.Data = valid
 
 		reachedLowerBound := false
 		if stopAfter != 0 {
@@ -370,6 +416,9 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 				}
 			}
 		}
+		if limit > 0 && len(data.Data) > limit-len(activities) {
+			data.Data = data.Data[:limit-len(activities)]
+		}
 		activities = append(activities, data.Data...)
 		page++
 		if onPage != nil {
@@ -377,9 +426,11 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 			if next, err := url.Parse(data.Paging.Next); err == nil {
 				nextOffset = next.Query().Get("offset")
 			}
-			onPage(page, len(data.Data), len(activities), nextOffset)
+			if err := onPage(activityPage{page, data.Data, skipped, len(activities), nextOffset}); err != nil {
+				return activities, err
+			}
 		}
-		if reachedLowerBound || len(data.Data) == 0 {
+		if reachedLowerBound || emptyPage {
 			break
 		}
 
@@ -391,11 +442,6 @@ func (r *Route) fetchActivitiesPaged(ctx context.Context, userID string, limit i
 			break
 		}
 		nextURL = data.Paging.Next
-	}
-
-	// 截断到 limit
-	if limit > 0 && len(activities) > limit {
-		activities = activities[:limit]
 	}
 
 	return activities, nil

@@ -4,7 +4,6 @@ package afdian
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -264,7 +263,7 @@ func (r *Route) getPostList(sc *scraper.Scraper, userID, authorSlug string, limi
 	return r.getPostListWithProgress(context.Background(), sc, userID, authorSlug, limit, nil)
 }
 
-type postListProgressFunc func(page, pageItems, totalItems int)
+type postListProgressFunc func(page int, posts []afdianPost, totalItems int) error
 
 func (r *Route) getPostListWithProgress(
 	ctx context.Context,
@@ -290,6 +289,13 @@ func (r *Route) getPostListWithProgress(
 		)
 
 		resp, err := sc.Get(apiURL, referer, nil)
+		for attempt := 1; attempt < 3 && (err != nil || (resp.StatusCode >= 500 && resp.StatusCode < 600)); attempt++ {
+			time.Sleep(time.Duration(attempt) * time.Second)
+			if err := ctx.Err(); err != nil {
+				return allPosts, err
+			}
+			resp, err = sc.Get(apiURL, referer, nil)
+		}
 		if err != nil {
 			return allPosts, err
 		}
@@ -303,7 +309,9 @@ func (r *Route) getPostListWithProgress(
 		}
 		if len(data) == 0 {
 			if progress != nil {
-				progress(page, 0, len(allPosts))
+				if err := progress(page, nil, len(allPosts)); err != nil {
+					return allPosts, err
+				}
 			}
 			break
 		}
@@ -316,14 +324,18 @@ func (r *Route) getPostListWithProgress(
 		pageItems := len(postList.List)
 		if pageItems == 0 {
 			if progress != nil {
-				progress(page, 0, len(allPosts))
+				if err := progress(page, nil, len(allPosts)); err != nil {
+					return allPosts, err
+				}
 			}
 			break
 		}
 
 		allPosts = append(allPosts, postList.List...)
 		if progress != nil {
-			progress(page, pageItems, len(allPosts))
+			if err := progress(page, postList.List, len(allPosts)); err != nil {
+				return allPosts, err
+			}
 		}
 
 		// 获取最后一条的 publish_sn 用于翻页
@@ -390,6 +402,7 @@ func (s *BackfillSource) Discover(
 	ctx context.Context,
 	authorSlug string,
 	progress backfill.ProgressFunc,
+	onPage backfill.PageFunc,
 ) (backfill.Scan, error) {
 	if err := ctx.Err(); err != nil {
 		return backfill.Scan{}, err
@@ -398,31 +411,27 @@ func (s *BackfillSource) Discover(
 	if err != nil {
 		return backfill.Scan{}, err
 	}
-	posts, err := s.route.getPostListWithProgress(ctx, s.scraper, userID, authorSlug, 0, func(page, pageItems, totalItems int) {
+	_, err = s.route.getPostListWithProgress(ctx, s.scraper, userID, authorSlug, 0, func(page int, posts []afdianPost, totalItems int) error {
 		if progress != nil {
-			progress("Afdian 历史扫描进度",
-				"source_id", authorSlug, "page", page, "page_items", pageItems, "scanned", totalItems)
+			progress("Afdian 历史扫描进度", "source_id", authorSlug, "page", page, "page_items", len(posts), "scanned", totalItems)
 		}
+		candidates := make([]backfill.Candidate, 0, len(posts))
+		for _, post := range posts {
+			var publishedAt time.Time
+			if post.PublishTime > 0 {
+				publishedAt = time.Unix(int64(post.PublishTime), 0).UTC()
+			}
+			candidates = append(candidates, backfill.Candidate{
+				ID:          post.PostID,
+				Title:       post.Title,
+				Author:      post.User.Name,
+				URL:         fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
+				PublishedAt: publishedAt,
+			})
+		}
+		return onPage(backfill.Page{Candidates: candidates})
 	})
-	interrupted := len(posts) > 0 && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
-	if err != nil && !interrupted {
-		return backfill.Scan{}, err
-	}
-	candidates := make([]backfill.Candidate, 0, len(posts))
-	for _, post := range posts {
-		var publishedAt time.Time
-		if post.PublishTime > 0 {
-			publishedAt = time.Unix(int64(post.PublishTime), 0).UTC()
-		}
-		candidates = append(candidates, backfill.Candidate{
-			ID:          post.PostID,
-			Title:       post.Title,
-			Author:      post.User.Name,
-			URL:         fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
-			PublishedAt: publishedAt,
-		})
-	}
-	return backfill.Scan{Candidates: candidates, Truncated: interrupted, Interrupted: interrupted}, nil
+	return backfill.Scan{}, err
 }
 
 // Detail 获取一篇付费文章正文。

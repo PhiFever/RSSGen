@@ -72,7 +72,7 @@ func runCLI(args []string) int {
 // ignoreSIGPIPE 让写断开的 stdout/stderr 返回 EPIPE，而不是杀死进程。
 // Ctrl+C 打的是整个前台进程组，管道下游（如 tee）默认处置就是立刻死，
 // 下游一死 stdout 即断开；此时收尾阶段的第一条日志会让进程死于 SIGPIPE，
-// 中断后「写入已扫描部分」一条也落不了地。日志写不出去可以接受，收尾丢失不行。
+// 中断后当前条目可能无法写完。日志写不出去可以接受，收尾丢失不行。
 func ignoreSIGPIPE() {
 	signal.Ignore(syscall.SIGPIPE)
 }
@@ -687,23 +687,25 @@ func printBackfillResult(output io.Writer, action backfill.Action, dryRun bool, 
 	for _, warning := range result.Warnings {
 		_, _ = fmt.Fprintf(output, "warning post_id=%s operation=%s error=%v\n", warning.CandidateID, warning.Operation, warning.Err)
 	}
-	// 放在最后一行：扫描阶段就已确定，但导入阶段每条要打两行日志，
-	// 在扫描处提示会被淹没。next_offset 直接就是下一段 --start-before 的值。
+	for _, skipped := range result.Skipped {
+		_, _ = fmt.Fprintf(output, "skipped id=%s reason=%s\n", skipped.ID, skipped.Reason)
+	}
+	// 续扫提示保持在最后一行，避免被逐条日志淹没。
 	if result.ScanInterrupted || result.ScanTruncated {
 		key, reason := "scan_truncated", "更早的历史未被扫描"
 		if result.ScanInterrupted {
 			key = "scan_interrupted"
-			reason = "扫描被中断，已扫描部分已写入"
+			reason = "扫描被中断，已处理部分已写入"
 			if action == backfill.ActionRefresh {
-				reason = "扫描被中断，已扫描部分的更新结果见上方统计"
+				reason = "扫描被中断，已处理部分的更新结果见上方统计"
 			}
 			// dry-run 一条都不写，"已写入"在这条路径上是假话。
 			if dryRun {
-				reason = "扫描被中断，以上仅为已扫描部分的对账结果"
+				reason = "扫描被中断，以上仅为已处理部分的对账结果"
 			}
 		}
-		// 游标为空表示该数据源没有续扫游标（afdian），不要打出半截的 --start-before=。
-		resume := ""
+		// 首页失败或数据源没有游标时，提示直接重跑。
+		resume := "，直接重跑即可（已导入的会被跳过）"
 		if result.ScanNextCursor != "" {
 			resume = fmt.Sprintf("，续扫请传 --start-before=%s", result.ScanNextCursor)
 		}

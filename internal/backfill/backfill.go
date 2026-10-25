@@ -61,15 +61,26 @@ type Candidate struct {
 	PublishedAt time.Time
 }
 
-// Scan 是一轮历史扫描的产物。Truncated 报告扫描是否提前停止（数量上限或中断），
-// Interrupted 进一步区分「是用户按了 Ctrl+C」，
-// NextCursor 给出续扫游标——三者一起让"还有更早的历史没扫"成为可断言的返回值，
-// 而不是一条淹没在导入日志里的提示。
+// Page 是数据源翻到的一页。
+type Page struct {
+	Candidates []Candidate        // 本页候选。
+	Skipped    []SkippedCandidate // 重试后仍残缺的条目。
+	Cursor     string             // 请求本页的续扫游标；首页或无游标时为空。
+}
+
+// SkippedCandidate 记录数据源重试后仍残缺的条目。
+type SkippedCandidate struct {
+	ID     string // 上游条目 ID。
+	Reason string // 跳过原因。
+}
+
+// PageFunc 处理一页；返回错误时数据源必须停止并原样返回错误。
+type PageFunc func(Page) error
+
+// Scan 报告数量上限截断或出错时的续扫位置；正常结束为零值。
 type Scan struct {
-	Candidates  []Candidate
-	NextCursor  string
-	Truncated   bool
-	Interrupted bool
+	NextCursor string // 截断时为最后保留的动态 ID，出错时为未完成页的请求游标。
+	Truncated  bool   // 是否因数量上限提前停止。
 }
 
 // Article 是发送到 Miniflux Entry Import 的规范化条目。
@@ -96,7 +107,7 @@ type Source interface {
 	SupportsRefresh() bool
 	FeedIdentity(feedURL string) (Identity, error)
 	KnownCategories() []string
-	Discover(ctx context.Context, sourceID string, progress ProgressFunc) (Scan, error)
+	Discover(ctx context.Context, sourceID string, progress ProgressFunc, onPage PageFunc) (Scan, error)
 	Detail(ctx context.Context, candidate Candidate) (string, error)
 	Comments(ctx context.Context, candidate Candidate) (string, error)
 }
@@ -153,6 +164,7 @@ type Result struct {
 	ScanNextCursor      string
 	ScanTruncated       bool
 	ScanInterrupted     bool
+	Skipped             []SkippedCandidate // 数据源跳过的残缺条目。
 }
 
 // WaitFunc 让测试可以确定性地替换重试等待。
@@ -255,173 +267,186 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 	}
 	reportProgress(deps.Progress, "Miniflux 现有条目读取完成", "feed_id", req.FeedID, "entries", len(entries))
 	reportProgress(deps.Progress, "开始扫描数据源完整历史", "source_id", identity.SourceID)
-	scan, err := retryValue(ctx, policy, func(ctx context.Context) (Scan, error) {
-		return deps.Source.Discover(ctx, identity.SourceID, deps.Progress)
-	})
-	if err != nil {
-		return result, fmt.Errorf("发现数据源完整历史: %w", err)
-	}
-	candidates := scan.Candidates
-	result.ScanTruncated = scan.Truncated
-	result.ScanNextCursor = scan.NextCursor
-	result.ScanInterrupted = scan.Interrupted
-	if scan.Interrupted {
-		// 扫描被用户中断：后续对账和导入必须脱离已取消的 ctx，
-		// 否则第一次 retryValue 就会以 context.Canceled 返回，已扫到的条目一条也落不了地。
-		// 用户的逃生口是 CLI 的第二次 Ctrl+C，不是这里。
-		ctx = context.WithoutCancel(ctx)
-		reportProgress(deps.Progress, "扫描已中断，开始写入已扫描部分",
-			"source_id", identity.SourceID, "candidates", len(candidates))
-	}
-	reportProgress(deps.Progress, "数据源完整历史扫描完成", "source_id", identity.SourceID, "candidates", len(candidates))
+	state := newReconciliation(entries)
+	pageNumber := 0
+	var pageErr error
+	processPage := func(page Page) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		pageNumber++
+		result.Skipped = append(result.Skipped, page.Skipped...)
+		candidates := page.Candidates
 
-	// 未知类别不拦截：RSS 路径会照常发布这类条目，回填必须与之一致。
-	// known == nil 表示该数据源没有类别概念，此时按类别过滤只会把候选清空。
-	if known != nil && len(effective) > 0 {
-		filtered := make([]Candidate, 0, len(candidates))
-		for _, candidate := range candidates {
-			if !containsCategory(effective, candidate.Category) {
+		// 未知类别不拦截：RSS 路径会照常发布这类条目，回填必须与之一致。
+		// known == nil 表示该数据源没有类别概念，此时按类别过滤只会把候选清空。
+		if known != nil && len(effective) > 0 {
+			filtered := make([]Candidate, 0, len(candidates))
+			for _, candidate := range candidates {
+				if !containsCategory(effective, candidate.Category) {
+					continue
+				}
+				filtered = append(filtered, candidate)
+			}
+			candidates = filtered
+		}
+
+		missing, matched, err := state.reconcile(candidates, &result)
+		if err != nil {
+			return err
+		}
+		work := make([]matchedCandidate, 0, len(missing))
+		if req.Action == ActionRefresh {
+			work = matched
+			for _, match := range matched {
+				if match.EntryID <= 0 {
+					return fmt.Errorf("重刷文章 %s 缺少有效的 Miniflux 条目 ID", match.Candidate.ID)
+				}
+				if req.DryRun {
+					result.PendingUpdates = append(result.PendingUpdates, UpdateTarget{EntryID: match.EntryID, URL: match.Candidate.URL})
+				}
+			}
+		} else {
+			for _, candidate := range missing {
+				work = append(work, matchedCandidate{Candidate: candidate})
+			}
+		}
+		if req.DryRun {
+			work = nil
+		}
+
+		for index, match := range work {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			itemCtx := context.WithoutCancel(ctx)
+			candidate := match.Candidate
+			current := index + 1
+			message := "开始处理缺失条目"
+			if req.Action == ActionRefresh {
+				message = "开始重刷条目"
+			}
+			reportProgress(deps.Progress, message,
+				"page", pageNumber, "current", current, "total", len(work), "post_id", candidate.ID, "title", candidate.Title)
+			failUpdate := func(operation string, cause error) error {
+				result.UpdateFailures = append(result.UpdateFailures, UpdateFailure{
+					UpdateTarget: UpdateTarget{EntryID: match.EntryID, URL: candidate.URL},
+					CandidateID:  candidate.ID, Operation: operation, Err: cause,
+				})
+				return fmt.Errorf("重刷文章 %s（Miniflux 条目 %d）%s: %w", candidate.ID, match.EntryID, operation, cause)
+			}
+			content := candidate.Content
+			if content == "" {
+				content, err = retryValue(itemCtx, policy, func(ctx context.Context) (string, error) {
+					return deps.Source.Detail(ctx, candidate)
+				})
+				if err != nil {
+					if req.Action == ActionRefresh {
+						return failUpdate("detail", err)
+					}
+					return fmt.Errorf("获取文章 %s 详情: %w", candidate.ID, err)
+				}
+			}
+
+			comments, commentErr := retryValue(itemCtx, policy, func(ctx context.Context) (string, error) {
+				return deps.Source.Comments(ctx, candidate)
+			})
+			if commentErr != nil {
+				result.CommentFailures++
+				if req.Action == ActionRefresh {
+					_ = failUpdate("comments", commentErr)
+					continue
+				}
+				result.Warnings = append(result.Warnings, Warning{
+					CandidateID: candidate.ID,
+					Operation:   "comments",
+					Err:         commentErr,
+				})
+			} else {
+				content = appendContent(content, comments)
+			}
+			if deps.Archive != nil && content != "" {
+				content, err = deps.Archive(content, candidate.URL, candidate.PublishedAt)
+				if err != nil {
+					if req.Action == ActionRefresh {
+						return failUpdate("media", err)
+					}
+					return fmt.Errorf("归档文章 %s 的图片: %w", candidate.ID, err)
+				}
+			}
+			if req.Action == ActionRefresh {
+				if content == "" {
+					return failUpdate("content", fmt.Errorf("正文为空，Miniflux 不会覆盖空字符串字段"))
+				}
+				_, err := retryValue(itemCtx, policy, func(ctx context.Context) (struct{}, error) {
+					return struct{}{}, deps.Destination.Update(ctx, match.EntryID, candidate.Title, content)
+				})
+				if err != nil {
+					return failUpdate("update", err)
+				}
+				result.Updated++
+				reportProgress(deps.Progress, "条目重刷完成", "page", pageNumber, "current", current, "total", len(work),
+					"post_id", candidate.ID, "entry_id", match.EntryID, "updated", result.Updated)
 				continue
 			}
-			filtered = append(filtered, candidate)
-		}
-		candidates = filtered
-	}
 
-	missing, matched, err := reconcile(candidates, entries, &result)
-	if err != nil {
-		return result, err
-	}
-	reportProgress(deps.Progress, "历史对账完成",
-		"scanned", result.Scanned, "existing", result.Existing, "missing", result.Missing,
-		"duplicates", result.DuplicateCandidates)
-	work := make([]matchedCandidate, 0, len(missing))
-	if req.Action == ActionRefresh {
-		work = matched
-		for _, match := range matched {
-			if match.EntryID <= 0 {
-				return result, fmt.Errorf("重刷文章 %s 缺少有效的 Miniflux 条目 ID", match.Candidate.ID)
+			article := Article{
+				Title:       candidate.Title,
+				URL:         candidate.URL,
+				Author:      candidate.Author,
+				Content:     content,
+				PublishedAt: candidate.PublishedAt,
+				Status:      "unread",
+				ExternalID:  candidate.ID,
 			}
-			if req.DryRun {
-				result.PendingUpdates = append(result.PendingUpdates, UpdateTarget{EntryID: match.EntryID, URL: match.Candidate.URL})
+			outcome, err := retryValue(itemCtx, policy, func(ctx context.Context) (ImportOutcome, error) {
+				return deps.Destination.Import(ctx, req.FeedID, article)
+			})
+			if err != nil {
+				return fmt.Errorf("导入文章 %s: %w", candidate.ID, err)
 			}
+			var outcomeName string
+			switch outcome {
+			case ImportCreated:
+				result.Imported++
+				outcomeName = "created"
+			case ImportExisting:
+				result.DuplicateImports++
+				outcomeName = "existing"
+			default:
+				return fmt.Errorf("导入文章 %s: 未知导入结果 %d", candidate.ID, outcome)
+			}
+			reportProgress(deps.Progress, "缺失条目处理完成",
+				"page", pageNumber, "current", current, "total", len(missing), "post_id", candidate.ID, "outcome", outcomeName,
+				"imported", result.Imported, "duplicate_imports", result.DuplicateImports,
+				"comment_failures", result.CommentFailures)
 		}
-	} else {
-		for _, candidate := range missing {
-			work = append(work, matchedCandidate{Candidate: candidate})
+
+		countKey, count := "imported", result.Imported
+		if req.Action == ActionRefresh {
+			countKey, count = "updated", result.Updated
 		}
+		reportProgress(deps.Progress, "本页历史处理完成", "page", pageNumber, "missing", len(missing), countKey, count)
+		return ctx.Err()
 	}
-	if req.DryRun {
+	scan, err := deps.Source.Discover(ctx, identity.SourceID, deps.Progress, func(page Page) error {
+		pageErr = processPage(page)
+		return pageErr
+	})
+	result.ScanNextCursor = scan.NextCursor
+	result.ScanTruncated = scan.Truncated
+	if err == nil {
 		return result, nil
 	}
-
-	for index, match := range work {
-		candidate := match.Candidate
-		current := index + 1
-		message := "开始处理缺失条目"
-		if req.Action == ActionRefresh {
-			message = "开始重刷条目"
-		}
-		reportProgress(deps.Progress, message,
-			"current", current, "total", len(work), "post_id", candidate.ID, "title", candidate.Title)
-		failUpdate := func(operation string, cause error) error {
-			result.UpdateFailures = append(result.UpdateFailures, UpdateFailure{
-				UpdateTarget: UpdateTarget{EntryID: match.EntryID, URL: candidate.URL},
-				CandidateID:  candidate.ID, Operation: operation, Err: cause,
-			})
-			return fmt.Errorf("重刷文章 %s（Miniflux 条目 %d）%s: %w", candidate.ID, match.EntryID, operation, cause)
-		}
-		content := candidate.Content
-		if content == "" {
-			content, err = retryValue(ctx, policy, func(ctx context.Context) (string, error) {
-				return deps.Source.Detail(ctx, candidate)
-			})
-			if err != nil {
-				if req.Action == ActionRefresh {
-					return result, failUpdate("detail", err)
-				}
-				return result, fmt.Errorf("获取文章 %s 详情: %w", candidate.ID, err)
-			}
-		}
-
-		comments, commentErr := retryValue(ctx, policy, func(ctx context.Context) (string, error) {
-			return deps.Source.Comments(ctx, candidate)
-		})
-		if commentErr != nil {
-			if ctx.Err() != nil {
-				return result, fmt.Errorf("获取文章 %s 评论已取消: %w", candidate.ID, commentErr)
-			}
-			result.CommentFailures++
-			if req.Action == ActionRefresh {
-				_ = failUpdate("comments", commentErr)
-				continue
-			}
-			result.Warnings = append(result.Warnings, Warning{
-				CandidateID: candidate.ID,
-				Operation:   "comments",
-				Err:         commentErr,
-			})
-		} else {
-			content = appendContent(content, comments)
-		}
-		if deps.Archive != nil && content != "" {
-			content, err = deps.Archive(content, candidate.URL, candidate.PublishedAt)
-			if err != nil {
-				if req.Action == ActionRefresh {
-					return result, failUpdate("media", err)
-				}
-				return result, fmt.Errorf("归档文章 %s 的图片: %w", candidate.ID, err)
-			}
-		}
-		if req.Action == ActionRefresh {
-			if content == "" {
-				return result, failUpdate("content", fmt.Errorf("正文为空，Miniflux 不会覆盖空字符串字段"))
-			}
-			_, err := retryValue(ctx, policy, func(ctx context.Context) (struct{}, error) {
-				return struct{}{}, deps.Destination.Update(ctx, match.EntryID, candidate.Title, content)
-			})
-			if err != nil {
-				return result, failUpdate("update", err)
-			}
-			result.Updated++
-			reportProgress(deps.Progress, "条目重刷完成", "current", current, "total", len(work),
-				"post_id", candidate.ID, "entry_id", match.EntryID, "updated", result.Updated)
-			continue
-		}
-
-		article := Article{
-			Title:       candidate.Title,
-			URL:         candidate.URL,
-			Author:      candidate.Author,
-			Content:     content,
-			PublishedAt: candidate.PublishedAt,
-			Status:      "unread",
-			ExternalID:  candidate.ID,
-		}
-		outcome, err := retryValue(ctx, policy, func(ctx context.Context) (ImportOutcome, error) {
-			return deps.Destination.Import(ctx, req.FeedID, article)
-		})
-		if err != nil {
-			return result, fmt.Errorf("导入文章 %s: %w", candidate.ID, err)
-		}
-		var outcomeName string
-		switch outcome {
-		case ImportCreated:
-			result.Imported++
-			outcomeName = "created"
-		case ImportExisting:
-			result.DuplicateImports++
-			outcomeName = "existing"
-		default:
-			return result, fmt.Errorf("导入文章 %s: 未知导入结果 %d", candidate.ID, outcome)
-		}
-		reportProgress(deps.Progress, "缺失条目处理完成",
-			"current", current, "total", len(missing), "post_id", candidate.ID, "outcome", outcomeName,
-			"imported", result.Imported, "duplicate_imports", result.DuplicateImports,
-			"comment_failures", result.CommentFailures)
+	result.ScanTruncated = true
+	if ctx.Err() != nil {
+		result.ScanInterrupted = true
+		return result, nil
 	}
-
-	return result, nil
+	if pageErr != nil {
+		return result, err
+	}
+	return result, fmt.Errorf("扫描数据源历史: %w", err)
 }
 
 func reportProgress(progress ProgressFunc, message string, attrs ...any) {
@@ -435,7 +460,14 @@ type matchedCandidate struct {
 	EntryID   int64
 }
 
-func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candidate, []matchedCandidate, error) {
+type reconciliation struct {
+	existingURLs   map[string]int64
+	existingHashes map[string]int64
+	seenIDs        map[string]struct{}
+	seenEntries    map[int64]bool
+}
+
+func newReconciliation(entries []Entry) *reconciliation {
 	existingURLs := make(map[string]int64, len(entries))
 	existingHashes := make(map[string]int64, len(entries))
 	for _, entry := range entries {
@@ -447,38 +479,40 @@ func reconcile(candidates []Candidate, entries []Entry, result *Result) ([]Candi
 		}
 	}
 
+	return &reconciliation{existingURLs, existingHashes, make(map[string]struct{}), make(map[int64]bool)}
+}
+
+func (r *reconciliation) reconcile(candidates []Candidate, result *Result) ([]Candidate, []matchedCandidate, error) {
 	unique := make([]Candidate, 0, len(candidates))
-	seenIDs := make(map[string]struct{}, len(candidates))
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate.ID) == "" {
 			return nil, nil, fmt.Errorf("数据源历史包含缺少稳定 ID 的条目")
 		}
-		if _, ok := seenIDs[candidate.ID]; ok {
+		if _, ok := r.seenIDs[candidate.ID]; ok {
 			result.DuplicateCandidates++
 			continue
 		}
-		seenIDs[candidate.ID] = struct{}{}
+		r.seenIDs[candidate.ID] = struct{}{}
 		unique = append(unique, candidate)
 	}
 	sort.SliceStable(unique, func(i, j int) bool {
 		return unique[i].PublishedAt.After(unique[j].PublishedAt)
 	})
 
-	result.Scanned = len(unique)
+	result.Scanned += len(unique)
 	missing := make([]Candidate, 0, len(unique))
 	var matched []matchedCandidate
-	seenEntries := make(map[int64]bool)
 	for _, candidate := range unique {
-		entryID, urlExists := existingURLs[candidate.URL]
-		hashID, hashExists := existingHashes[externalIDHash(candidate.ID)]
+		entryID, urlExists := r.existingURLs[candidate.URL]
+		hashID, hashExists := r.existingHashes[externalIDHash(candidate.ID)]
 		if urlExists || hashExists {
 			result.Existing++
 			if hashExists {
 				entryID = hashID
 			}
-			if !seenEntries[entryID] {
+			if !r.seenEntries[entryID] {
 				matched = append(matched, matchedCandidate{Candidate: candidate, EntryID: entryID})
-				seenEntries[entryID] = true
+				r.seenEntries[entryID] = true
 			}
 			continue
 		}

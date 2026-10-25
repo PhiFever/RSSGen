@@ -1090,11 +1090,11 @@ func TestPrintBackfillResultInterruptedLast(t *testing.T) {
 		want   string
 	}{
 		{"execute 说已写入并给出续扫游标", backfill.ActionExecute, false, "1995",
-			"scan_interrupted=true 扫描被中断，已扫描部分已写入，续扫请传 --start-before=1995\n"},
+			"scan_interrupted=true 扫描被中断，已处理部分已写入，续扫请传 --start-before=1995\n"},
 		{"dry-run 一条都没写，不能说已写入", backfill.ActionExecute, true, "1995",
-			"scan_interrupted=true 扫描被中断，以上仅为已扫描部分的对账结果，续扫请传 --start-before=1995\n"},
+			"scan_interrupted=true 扫描被中断，以上仅为已处理部分的对账结果，续扫请传 --start-before=1995\n"},
 		{"数据源没有续扫游标时不打半截参数", backfill.ActionExecute, false, "",
-			"scan_interrupted=true 扫描被中断，已扫描部分已写入\n"},
+			"scan_interrupted=true 扫描被中断，已处理部分已写入，直接重跑即可（已导入的会被跳过）\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

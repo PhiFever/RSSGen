@@ -2,7 +2,6 @@ package zhihu
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -82,56 +81,60 @@ func (s *BackfillSource) KnownCategories() []string {
 func (s *BackfillSource) SupportsRefresh() bool { return true }
 
 // Discover 扫描至多 maxItems 条动态，类别过滤由 backfill.Run 执行。
-func (s *BackfillSource) Discover(ctx context.Context, userID string, progress backfill.ProgressFunc) (backfill.Scan, error) {
-	if err := ctx.Err(); err != nil {
-		return backfill.Scan{}, err
+func (s *BackfillSource) Discover(ctx context.Context, userID string, progress backfill.ProgressFunc, onPage backfill.PageFunc) (backfill.Scan, error) {
+	resume := ""
+	if s.startOffset != 0 {
+		resume = strconv.FormatInt(s.startOffset, 10)
 	}
-	activities, err := s.route.fetchActivitiesPaged(ctx, userID, s.maxItems, s.startOffset, s.stopAfter, func(page, pageItems, totalItems int, nextOffset string) {
+	activities, err := s.route.fetchActivitiesPaged(ctx, userID, s.maxItems, s.startOffset, s.stopAfter, func(page activityPage) error {
 		if progress != nil {
-			progress("知乎历史扫描进度", "source_id", userID, "page", page, "page_items", pageItems, "scanned", totalItems, "next_offset", nextOffset)
+			progress("知乎历史扫描进度", "source_id", userID, "page", page.Number, "page_items", len(page.Activities), "scanned", page.Total, "next_offset", page.NextOffset)
 		}
+		candidates := make([]backfill.Candidate, 0, len(page.Activities))
+		for _, act := range page.Activities {
+			if act.Target == nil {
+				continue
+			}
+			if !s.includeSelfInteraction && isSelfInteraction(act) {
+				continue
+			}
+			item := s.route.makeFeedItem(act)
+			candidate := backfill.Candidate{
+				ID: item.GUID, Title: item.Title, Author: item.Author, URL: item.Link,
+				Content: item.Content, Category: item.Categories[0],
+			}
+			if item.PubDate != nil {
+				candidate.PublishedAt = *item.PubDate
+			}
+			// 下层已过滤残缺动态；此处保留空 GUID 的契约告警。
+			if strings.TrimSpace(candidate.ID) == "" {
+				slog.Warn("知乎动态缺少稳定 ID",
+					"activity_id", string(act.ID), "verb", act.Verb, "target_type", act.Target.Type,
+					"action_text", act.ActionText, "category", candidate.Category,
+					"title", candidate.Title, "url", candidate.URL)
+			}
+			candidates = append(candidates, candidate)
+		}
+		delivered := backfill.Page{Candidates: candidates, Cursor: resume}
+		for _, act := range page.Skipped {
+			delivered.Skipped = append(delivered.Skipped, backfill.SkippedCandidate{ID: string(act.ID), Reason: "重试后 target 仍缺少 id"})
+		}
+		if err := onPage(delivered); err != nil {
+			return err
+		}
+		resume = page.NextOffset
+		return nil
 	})
-	interrupted := len(activities) > 0 && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
-	if err != nil && !interrupted {
-		return backfill.Scan{}, err
+	if err != nil {
+		return backfill.Scan{NextCursor: resume}, err
 	}
-	scan := backfill.Scan{Interrupted: interrupted}
 	// 截断必须说出来：静默截断会让用户以为回填已覆盖全部历史。
 	// 游标取最后一条被保留的动态，而非整页末尾——按 maxItems 截断会丢弃该页剩余条目，
 	// 用整页末尾续扫会让这几条永远落不进任何窗口。
-	if interrupted || (s.maxItems > 0 && len(activities) >= s.maxItems) {
-		scan.Truncated = true
-		scan.NextCursor = string(activities[len(activities)-1].ID)
+	if s.maxItems > 0 && len(activities) >= s.maxItems {
+		return backfill.Scan{Truncated: true, NextCursor: string(activities[len(activities)-1].ID)}, nil
 	}
-	candidates := make([]backfill.Candidate, 0, len(activities))
-	for _, act := range activities {
-		if act.Target == nil {
-			continue
-		}
-		if !s.includeSelfInteraction && isSelfInteraction(act) {
-			continue
-		}
-		item := s.route.makeFeedItem(act)
-		candidate := backfill.Candidate{
-			ID: item.GUID, Title: item.Title, Author: item.Author, URL: item.Link,
-			Content: item.Content, Category: item.Categories[0],
-		}
-		if item.PubDate != nil {
-			candidate.PublishedAt = *item.PubDate
-		}
-		// 空 GUID 会让 backfill.Run 的对账整批失败，且失败点在任何导入之前，
-		// 报错本身不指向具体动态。只有裸 id 分支（answer/article/pin/voteup_pin）
-		// 才可能产出空 GUID，其中 pin 的 title 有兜底，缺 id 时全程静默——这里点名。
-		if strings.TrimSpace(candidate.ID) == "" {
-			slog.Warn("知乎动态缺少稳定 ID",
-				"activity_id", string(act.ID), "verb", act.Verb, "target_type", act.Target.Type,
-				"action_text", act.ActionText, "category", candidate.Category,
-				"title", candidate.Title, "url", candidate.URL)
-		}
-		candidates = append(candidates, candidate)
-	}
-	scan.Candidates = candidates
-	return scan, nil
+	return backfill.Scan{}, nil
 }
 
 // Detail 无操作：动态列表就是完整来源，没有独立正文详情请求。

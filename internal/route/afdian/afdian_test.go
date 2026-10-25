@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/route"
 	"github.com/PhiFever/RSSGen/internal/scraper"
@@ -656,7 +657,7 @@ func TestBackfillSourceUsesSharedParsingAndRendering(t *testing.T) {
 	source := &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: newTestScraper(t)}
 	var progress []string
 
-	scan, err := source.Discover(context.Background(), "alice", func(message string, attrs ...any) {
+	scan, err := collectBackfillPages(source, context.Background(), "alice", func(message string, attrs ...any) {
 		progress = append(progress, message+" "+fmt.Sprint(attrs))
 	})
 	if err != nil || len(scan.Candidates) != 1 || scan.Truncated {
@@ -1004,11 +1005,11 @@ func TestBackfillDiscoverInterrupted(t *testing.T) {
 	withTestHost(t, server.URL)
 	source := &BackfillSource{route: New(config.ResolvedRouteConfig{}), scraper: newTestScraper(t)}
 
-	scan, err := source.Discover(ctx, "alice", nil)
-	if err != nil || !scan.Interrupted || !scan.Truncated || pages != 2 || len(scan.Candidates) != 2 {
+	scan, err := collectBackfillPages(source, ctx, "alice", nil)
+	if err != context.Canceled || scan.Truncated || pages != 2 || len(scan.Candidates) != 1 {
 		t.Fatalf("Discover scan=%+v pages=%d err=%v", scan, pages, err)
 	}
-	if scan.Candidates[0].ID != "p1" || scan.Candidates[1].ID != "p2" || scan.NextCursor != "" {
+	if scan.Candidates[0].ID != "p1" || scan.NextCursor != "" {
 		t.Fatalf("Discover scan=%+v", scan)
 	}
 }
@@ -1017,4 +1018,24 @@ func TestBackfillDoesNotSupportRefresh(t *testing.T) {
 	if (&BackfillSource{}).SupportsRefresh() {
 		t.Fatal("爱发电暂不支持重刷")
 	}
+}
+
+// collectBackfillPages 汇集逐页结果，供既有渲染和分页断言使用。
+func collectBackfillPages(source *BackfillSource, ctx context.Context, id string, progress backfill.ProgressFunc) (struct {
+	backfill.Scan
+	Candidates []backfill.Candidate
+}, error) {
+	var collected struct {
+		backfill.Scan
+		Candidates []backfill.Candidate
+	}
+	scan, err := source.Discover(ctx, id, progress, func(page backfill.Page) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		collected.Candidates = append(collected.Candidates, page.Candidates...)
+		return nil
+	})
+	collected.Scan = scan
+	return collected, err
 }

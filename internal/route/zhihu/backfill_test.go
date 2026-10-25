@@ -60,7 +60,7 @@ func TestBackfillPaginationStops(t *testing.T) {
 			defer server.Close()
 			serverURL = server.URL
 			withZhihuTestHost(t, server.URL)
-			scan, err := newBackfillTestSource().Discover(context.Background(), "alice", nil)
+			scan, err := collectBackfillPages(newBackfillTestSource(), context.Background(), "alice", nil)
 			want := 1
 			if stop == "empty data" {
 				want = 0
@@ -95,7 +95,7 @@ func TestBackfillDiscoverAllPages(t *testing.T) {
 	serverURL = server.URL
 	withZhihuTestHost(t, server.URL)
 	var pages []string
-	scan, err := newBackfillTestSource().Discover(context.Background(), "alice", func(message string, attrs ...any) {
+	scan, err := collectBackfillPages(newBackfillTestSource(), context.Background(), "alice", func(message string, attrs ...any) {
 		pages = append(pages, message+" "+fmt.Sprint(attrs))
 	})
 	if err != nil || requests != 3 || len(scan.Candidates) != 12 || scan.Candidates[0].ID != "0" || scan.Candidates[11].ID != "11" {
@@ -144,7 +144,7 @@ func TestBackfillStopsAtMaxItems(t *testing.T) {
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
 	source.maxItems = 6
-	scan, err := source.Discover(context.Background(), "alice", nil)
+	scan, err := collectBackfillPages(source, context.Background(), "alice", nil)
 	if err != nil || requests != 2 || len(scan.Candidates) != 6 {
 		t.Fatalf("candidates=%d requests=%d err=%v", len(scan.Candidates), requests, err)
 	}
@@ -175,7 +175,7 @@ func TestBackfillMatchesRSSIdentityAndContent(t *testing.T) {
 	defer server.Close()
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
-	scan, err := source.Discover(context.Background(), "alice", nil)
+	scan, err := collectBackfillPages(source, context.Background(), "alice", nil)
 	if err != nil || len(scan.Candidates) != len(activities) {
 		t.Fatalf("Discover count=%d err=%v", len(scan.Candidates), err)
 	}
@@ -209,7 +209,7 @@ func TestBackfillSelfInteraction(t *testing.T) {
 	for _, include := range []bool{false, true} {
 		source := newBackfillTestSource()
 		source.includeSelfInteraction = include
-		scan, err := source.Discover(context.Background(), "alice", nil)
+		scan, err := collectBackfillPages(source, context.Background(), "alice", nil)
 		want := 1
 		if include {
 			want = 3
@@ -344,7 +344,7 @@ func TestBackfillDiscoverTruncationCursorCoversDroppedItems(t *testing.T) {
 
 	source := newBackfillTestSource()
 	source.maxItems = 6
-	scan, err := source.Discover(context.Background(), "alice", nil)
+	scan, err := collectBackfillPages(source, context.Background(), "alice", nil)
 	if err != nil || len(scan.Candidates) != 6 {
 		t.Fatalf("Discover count=%d err=%v", len(scan.Candidates), err)
 	}
@@ -372,18 +372,18 @@ func TestBackfillDiscoverInterrupted(t *testing.T) {
 		}
 		writeZhihuJSON(t, w, activitiesResponse{
 			Data:   []zhihuActivity{activity},
-			Paging: zhihuPaging{IsEnd: requests >= 3, Next: fmt.Sprintf("%s/page/%d", serverURL, requests+1)},
+			Paging: zhihuPaging{IsEnd: requests >= 3, Next: fmt.Sprintf("%s/page?offset=%d", serverURL, requests+1)},
 		})
 	}))
 	defer server.Close()
 	serverURL = server.URL
 	withZhihuTestHost(t, server.URL)
 
-	scan, err := newBackfillTestSource().Discover(ctx, "alice", nil)
-	if err != nil || !scan.Interrupted || !scan.Truncated || requests != 2 || len(scan.Candidates) != 2 {
+	scan, err := collectBackfillPages(newBackfillTestSource(), ctx, "alice", nil)
+	if err != context.Canceled || scan.Truncated || requests != 2 || len(scan.Candidates) != 1 {
 		t.Fatalf("Discover scan=%+v requests=%d err=%v", scan, requests, err)
 	}
-	if scan.Candidates[0].ID != "99" || scan.Candidates[1].ID != "98" || scan.NextCursor != "98" {
+	if scan.Candidates[0].ID != "99" || scan.NextCursor != "2" {
 		t.Fatalf("Discover scan=%+v", scan)
 	}
 }
@@ -426,7 +426,7 @@ func TestBackfillDiscoverStopAfter(t *testing.T) {
 				t.Fatal(err)
 			}
 			var pageItems []int
-			scan, err := source.Discover(context.Background(), "alice", func(_ string, attrs ...any) {
+			scan, err := collectBackfillPages(source, context.Background(), "alice", func(_ string, attrs ...any) {
 				pageItems = append(pageItems, attrs[5].(int))
 			})
 			if err != nil || requests != tt.wantRequests || len(scan.Candidates) != tt.wantItems {
@@ -457,7 +457,7 @@ func TestBackfillDiscoverStopAfterMissingCursor(t *testing.T) {
 	withZhihuTestHost(t, server.URL)
 	source := newBackfillTestSource()
 	source.stopAfter = 1781935272669
-	scan, err := source.Discover(context.Background(), "alice", nil)
+	scan, err := collectBackfillPages(source, context.Background(), "alice", nil)
 	if err == nil || !strings.Contains(err.Error(), "动态游标无效") || requests != 1 || len(scan.Candidates) != 0 {
 		t.Fatalf("缺失动态游标必须报错且停止：scan=%+v requests=%d err=%v", scan, requests, err)
 	}
@@ -466,5 +466,69 @@ func TestBackfillDiscoverStopAfterMissingCursor(t *testing.T) {
 func TestBackfillSupportsRefresh(t *testing.T) {
 	if !newBackfillTestSource().SupportsRefresh() {
 		t.Fatal("知乎应支持重刷")
+	}
+}
+
+// collectBackfillPages 汇集逐页结果，供既有渲染和分页断言使用。
+func collectBackfillPages(source *BackfillSource, ctx context.Context, id string, progress backfill.ProgressFunc) (struct {
+	backfill.Scan
+	Candidates []backfill.Candidate
+}, error) {
+	var collected struct {
+		backfill.Scan
+		Candidates []backfill.Candidate
+	}
+	scan, err := source.Discover(ctx, id, progress, func(page backfill.Page) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		collected.Candidates = append(collected.Candidates, page.Candidates...)
+		return nil
+	})
+	collected.Scan = scan
+	return collected, err
+}
+
+func TestBackfillSecondPageFailurePreservesImportsAndCursor(t *testing.T) {
+	var serverURL string
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Query().Get("offset") == "1781935272669" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		writeZhihuJSON(t, w, activitiesResponse{Data: []zhihuActivity{backfillTestActivity("a", "MEMBER_ANSWER_QUESTION", "answer")}, Paging: zhihuPaging{Next: serverURL + "/activities?offset=1781935272669"}})
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	withZhihuTestHost(t, server.URL)
+	destination := &backfillTestDestination{}
+	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionExecute, FeedID: 1}, backfill.Dependencies{Source: newBackfillTestSource(), Destination: destination})
+	if err == nil || requests != 2 || result.Imported != 1 || len(destination.imported) != 1 || !result.ScanTruncated || result.ScanNextCursor != "1781935272669" {
+		t.Fatalf("requests=%d imports=%v result=%+v err=%v", requests, destination.imported, result, err)
+	}
+}
+
+func TestBackfillRetriesAndReportsIncompleteTarget(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeZhihuJSON(t, w, activitiesResponse{Data: []zhihuActivity{
+			{ID: "broken-activity", Verb: "MEMBER_CREATE_PIN", ActionText: "发布了想法", Target: &zhihuTarget{}},
+			backfillTestActivity("answer-id", "MEMBER_ANSWER_QUESTION", "answer"),
+		}, Paging: zhihuPaging{IsEnd: true}})
+	}))
+	defer server.Close()
+	withZhihuTestHost(t, server.URL)
+	var pages []backfill.Page
+	_, err := newBackfillTestSource().Discover(context.Background(), "alice", nil, func(page backfill.Page) error { pages = append(pages, page); return nil })
+	if err != nil || requests != 3 || len(pages) != 1 || len(pages[0].Candidates) != 1 || pages[0].Candidates[0].ID != "answer-id" || len(pages[0].Skipped) != 1 || pages[0].Skipped[0].ID != "broken-activity" {
+		t.Fatalf("requests=%d pages=%+v err=%v", requests, pages, err)
+	}
+	requests = 0
+	result, err := backfill.Run(context.Background(), backfill.Request{Action: backfill.ActionExecute, FeedID: 1, DryRun: true, IncludeCategories: []string{TypeArticle}}, backfill.Dependencies{Source: newBackfillTestSource(), Destination: &backfillTestDestination{}})
+	if err != nil || result.Scanned != 0 || len(result.Skipped) != 1 || result.Skipped[0].ID != "broken-activity" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
 }
