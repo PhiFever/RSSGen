@@ -36,7 +36,7 @@ docker compose up -d                                  # 部署（含 Miniflux + 
 
 ```
 Miniflux 定时拉取 → GET /feed/{route_name}/{params}
-  → 根目录 main.go 的 makeFeedHandler
+  → 根目录 handlers.go 的 makeFeedHandler
   → 解析 format/limit/include 并查 FeedCache（命中直接返回 XML）
   → 未命中：调用 pipeline.Refresh
       Route.Fetch → media.Archive（配置了 media 时）→ feed.Generate → 写缓存 → 返回
@@ -68,7 +68,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 
 1. 建包 `internal/route/{name}/`，嵌入 `route.BaseRoute` 并实现 `route.Route` 接口（只有 `Fetch`，返回 `route.FeedResult`）；路由名由注册时的键承载
 2. 在包的 `init()` 中 `route.Register("{name}", "路由描述", factory)`，factory 接收 `config.ResolvedRouteConfig` 强类型配置
-3. 在根目录 `main.go` import 该包以触发 `init()` 注册：只注册不引用时用匿名 import；afdian、zhihu 因 backfill 入口要调 `NewBackfillSource` 而是具名 import
+3. 在根目录 `server.go` import 该包以触发 `init()` 注册：只注册不引用时用匿名 import；afdian、zhihu 已由 `backfill_cli.go` 具名 import（回填入口调用 `NewBackfillSource`），无需重复注册
 4. 上游返回非 2xx 时返回 `*route.HTTPError`，否则熔断/通知机制不生效
 5. 测试注入走 httptest 接缝：上游地址放在包级 host 变量里（afdian 的 `hostURL`、zhihu 的 `zhihuHostURL`），测试用 `withTestHost` / `withZhihuTestHost` 把它指向 `httptest.Server`；路由结构体不放函数字段
 

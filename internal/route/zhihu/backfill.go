@@ -24,8 +24,8 @@ type BackfillSource struct {
 // NewBackfillSource 创建串行且限速的知乎历史适配器。
 // maxItems 为 0 表示不限制；知乎动态流不会自然收敛，无上限扫描等于上千次上游请求。
 func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelfInteraction bool, maxItems int, startOffset, stopAfter int64) (*BackfillSource, error) {
-	if requestInterval < time.Second {
-		return nil, fmt.Errorf("知乎请求间隔不能小于 1s")
+	if err := backfill.ValidateRequestInterval(requestInterval); err != nil {
+		return nil, err
 	}
 	if maxItems < 0 {
 		return nil, fmt.Errorf("知乎历史扫描上限不能为负数")
@@ -42,9 +42,6 @@ func NewBackfillSource(cookie string, requestInterval time.Duration, includeSelf
 	return &BackfillSource{route: r, includeSelfInteraction: includeSelfInteraction, maxItems: maxItems, startOffset: startOffset, stopAfter: stopAfter}, nil
 }
 
-// defaultBackfillCategories 是 feed URL 未带 include 时的回填默认类别：只要作者
-// 本人创作的内容。backfill 命令不加载 config.yml，够不到 RSS 路径的 default_include，
-// 默认值只能定在这里；要收藏、点赞、关注等类别时用 --include 显式列出。
 var defaultBackfillCategories = []string{TypeAnswer, TypeArticle, TypePin}
 
 // FeedIdentity 保留 feed URL 中的类别过滤；URL 未指定时回落到仅创作类。

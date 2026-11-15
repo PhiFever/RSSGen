@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/cache"
@@ -228,91 +229,79 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 }
 
 func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
-	route.Register("_test_refresh_no_jitter", "_test_refresh_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{}
-	})
-
-	sleepCount := 0
-	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
-		MaxRetries:   1,
-		RoutesConfig: map[string]config.RouteConfig{},
-	})
-	ref.sleepFn = func(time.Duration) bool {
-		sleepCount++
-		return true
-	}
-
-	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_no_jitter", config.RouteConfig{
-		Feeds: []config.FeedConfig{{UserID: "u1"}},
-	})
-
-	if sleepCount != 0 {
-		t.Fatalf("未配置 refresh_jitter 时不应 sleep，实际 %d 次", sleepCount)
-	}
+	testRefreshBatchTiming(t, refreshPhaseScheduled, 0)
 }
 
 func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
-	route.Register("_test_refresh_jitter", "_test_refresh_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{}
-	})
-
-	var jitterMax []time.Duration
-	var slept []time.Duration
-
-	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
-		MaxRetries:   1,
-		RoutesConfig: map[string]config.RouteConfig{},
-	})
-	ref.jitterDurationFn = func(max time.Duration) time.Duration {
-		jitterMax = append(jitterMax, max)
-		return 3 * time.Second
-	}
-	ref.sleepFn = func(delay time.Duration) bool {
-		slept = append(slept, delay)
-		return true
-	}
-
-	ref.refreshFeeds(refreshPhaseScheduled, "_test_refresh_jitter", config.RouteConfig{
-		RefreshJitter: 30,
-		Feeds: []config.FeedConfig{
-			{UserID: "u1"},
-			{UserID: "u2"},
-		},
-	})
-
-	wantMax := []time.Duration{30 * time.Second}
-	if fmt.Sprint(jitterMax) != fmt.Sprint(wantMax) {
-		t.Fatalf("jitter max = %v, want %v", jitterMax, wantMax)
-	}
-	wantSlept := []time.Duration{3 * time.Second}
-	if fmt.Sprint(slept) != fmt.Sprint(wantSlept) {
-		t.Fatalf("sleep delays = %v, want %v", slept, wantSlept)
-	}
+	testRefreshBatchTiming(t, refreshPhaseScheduled, 30)
 }
 
 func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
-	route.Register("_test_preheat_no_jitter", "_test_preheat_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{}
-	})
+	testRefreshBatchTiming(t, refreshPhasePreheat, 30)
+}
 
-	sleepCount := 0
-	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
-		MaxRetries:   1,
-		RoutesConfig: map[string]config.RouteConfig{},
-	})
-	ref.sleepFn = func(time.Duration) bool {
-		sleepCount++
-		return true
-	}
+// testRefreshBatchTiming 用虚拟时间验证真实等待：同批 feed 同时开始，预热不加抖动。
+func testRefreshBatchTiming(t *testing.T, phase refreshPhase, jitter int) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		var fetchedAt []time.Time
+		routeName := "_test_batch_" + t.Name()
+		route.Register(routeName, routeName, func(config.ResolvedRouteConfig) route.Route {
+			return &mockRoute{fetchFn: func([]string, route.FetchOptions) ([]route.FeedItem, error) {
+				fetchedAt = append(fetchedAt, time.Now())
+				return []route.FeedItem{{Title: "t"}}, nil
+			}}
+		})
+		ref := newTestRefresher(t, cache.New(time.Minute), Config{MaxRetries: 1})
 
-	ref.refreshFeeds(refreshPhasePreheat, "_test_preheat_no_jitter", config.RouteConfig{
-		RefreshJitter: 30,
-		Feeds:         []config.FeedConfig{{UserID: "u1"}},
-	})
+		start := time.Now()
+		ref.refreshFeeds(phase, routeName, config.RouteConfig{
+			RefreshJitter: jitter,
+			Feeds:         []config.FeedConfig{{UserID: "u1"}, {UserID: "u2"}},
+		})
 
-	if sleepCount != 0 {
-		t.Fatalf("预热不应应用 refresh_jitter，实际 sleep %d 次", sleepCount)
-	}
+		if len(fetchedAt) != 2 {
+			t.Fatalf("抓取次数 = %d, want 2", len(fetchedAt))
+		}
+		if !fetchedAt[0].Equal(fetchedAt[1]) || !time.Now().Equal(fetchedAt[1]) {
+			t.Fatalf("抖动只能出现在批次开始前，抓取时间 = %v，结束时间 = %v", fetchedAt, time.Now())
+		}
+		delay := fetchedAt[0].Sub(start)
+		if phase.scheduled && jitter > 0 {
+			if delay < 0 || delay >= time.Duration(jitter)*time.Second {
+				t.Fatalf("延迟 = %v，应位于 [0, %ds)", delay, jitter)
+			}
+		} else if delay != 0 {
+			t.Fatalf("不应等待，实际延迟 = %v", delay)
+		}
+	})
+}
+
+func TestRefreshJitterStopsOnCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ref := newTestRefresher(t, cache.New(time.Minute), Config{})
+		finished := make(chan bool, 1)
+		go func() {
+			finished <- ref.sleepRefreshJitter(refreshPhaseScheduled, "test", config.RouteConfig{RefreshJitter: 30})
+		}()
+		synctest.Wait()
+		// 零抖动允许立即完成；有等待时必须能被 Stop 取消。
+		select {
+		case <-finished:
+			return
+		default:
+		}
+		ref.Stop()
+		synctest.Wait()
+		select {
+		case ok := <-finished:
+			if ok {
+				t.Fatal("取消后不应继续刷新")
+			}
+		default:
+			t.Fatal("Stop 后仍在等待抖动计时器")
+		}
+	})
 }
 
 type staticFeedCatalog struct {

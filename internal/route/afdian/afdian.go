@@ -350,8 +350,8 @@ func (s *BackfillSource) SupportsRefresh() bool { return false }
 
 // NewBackfillSource 创建串行且限速的 Afdian 历史适配器。
 func NewBackfillSource(cookie string, requestInterval time.Duration) (*BackfillSource, error) {
-	if requestInterval < time.Second {
-		return nil, fmt.Errorf("Afdian 请求间隔不能小于 1s")
+	if err := backfill.ValidateRequestInterval(requestInterval); err != nil {
+		return nil, err
 	}
 	sc, err := scraper.New(scraper.Config{
 		Cookies:           scraper.ParseCookieString(cookie),

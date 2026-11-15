@@ -12,6 +12,15 @@ import (
 
 const DefaultDynamicFeedLimit = 200
 
+const (
+	// DefaultStartupDelay 是后台刷新启动前的默认等待秒数。
+	DefaultStartupDelay = 5
+	// DefaultMaxRetries 是后台刷新一次 feed 的默认最大尝试次数。
+	DefaultMaxRetries = 3
+	// DefaultRetryBaseDelay 是后台刷新指数退避的默认基础秒数。
+	DefaultRetryBaseDelay = 5
+)
+
 // Config 是 RSSGen 的顶层配置结构。
 type Config struct {
 	Server    ServerConfig           `yaml:"server"`
@@ -191,13 +200,13 @@ func setDefaults(cfg *Config) {
 		cfg.Scraper.Impersonate = "chrome_131"
 	}
 	if cfg.Refresher.StartupDelay == 0 {
-		cfg.Refresher.StartupDelay = 5
+		cfg.Refresher.StartupDelay = DefaultStartupDelay
 	}
 	if cfg.Refresher.MaxRetries == 0 {
-		cfg.Refresher.MaxRetries = 3
+		cfg.Refresher.MaxRetries = DefaultMaxRetries
 	}
 	if cfg.Refresher.RetryBaseDelay == 0 {
-		cfg.Refresher.RetryBaseDelay = 5
+		cfg.Refresher.RetryBaseDelay = DefaultRetryBaseDelay
 	}
 }
 

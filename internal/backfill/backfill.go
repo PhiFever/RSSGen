@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// MinRequestInterval 是历史数据源请求之间允许的最小间隔。
+const MinRequestInterval = time.Second
+
+// ValidateRequestInterval 统一校验 CLI 和数据源构造器使用的请求间隔。
+func ValidateRequestInterval(interval time.Duration) error {
+	if interval < MinRequestInterval {
+		return fmt.Errorf("请求间隔不能小于 %s", MinRequestInterval)
+	}
+	return nil
+}
+
 // Action 选择前台回填操作。
 type Action string
 

@@ -57,9 +57,6 @@ type Refresher struct {
 
 	errorStats map[string]*ErrorStatus
 	statsMu    sync.RWMutex
-
-	jitterDurationFn func(time.Duration) time.Duration
-	sleepFn          func(time.Duration) bool
 }
 
 type refreshPhase struct {
@@ -95,15 +92,15 @@ func New(cfg Config) *Refresher {
 
 	startupDelay := cfg.StartupDelay
 	if startupDelay <= 0 {
-		startupDelay = 5
+		startupDelay = config.DefaultStartupDelay
 	}
 	maxRetries := cfg.MaxRetries
 	if maxRetries <= 0 {
-		maxRetries = 3
+		maxRetries = config.DefaultMaxRetries
 	}
 	retryBaseDelay := cfg.RetryBaseDelay
 	if retryBaseDelay <= 0 {
-		retryBaseDelay = 5
+		retryBaseDelay = config.DefaultRetryBaseDelay
 	}
 
 	return &Refresher{
@@ -158,13 +155,6 @@ func (r *Refresher) preinitHTTPClient() {
 		return
 	}
 	slog.Info("HTTP 客户端预初始化完成", "url", r.preinitURL)
-}
-
-func defaultJitterDuration(max time.Duration) time.Duration {
-	if max <= 0 {
-		return 0
-	}
-	return time.Duration(rand.Int63n(int64(max)))
 }
 
 // Stop 停止所有后台刷新任务。
@@ -331,19 +321,15 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, rc 
 	}
 
 	maxJitter := time.Duration(rc.RefreshJitter) * time.Second
-	jitterDuration := defaultJitterDuration
-	if r.jitterDurationFn != nil {
-		jitterDuration = r.jitterDurationFn
+	if maxJitter <= 0 {
+		return true
 	}
-	delay := jitterDuration(maxJitter)
+	delay := time.Duration(rand.Int63n(int64(maxJitter)))
 	if delay <= 0 {
 		return true
 	}
 
 	slog.Info("定时刷新随机延迟", "route", routeName, "delay", delay)
-	if r.sleepFn != nil {
-		return r.sleepFn(delay)
-	}
 	select {
 	case <-r.ctx.Done():
 		return false

@@ -154,12 +154,12 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 - **缓存键构造归位 pipeline**：`internal/cache/cachekey.go` 删除，基础键与变体键只在 pipeline 构造，cache 包只剩 TTL 缓存；键格式未变
 - **scraper 无生产者符号**：`Config.ExtraHeaders`、`Response.Text` 删除。enclosure 序列化不在此列——那是明确保留的 feed 通用能力
 
-仍未做（不在本轮范围）：
+后续四项已完成（2026-11-15）：
 
-- `main.go` 同时装着服务装配与 backfill CLI（约 800 行），可按职责拆成多个文件
-- `--request-interval` 的下限在 flag `Validator`、`backfillConfigFromCommand`、各数据源构造函数里各校验一遍
-- `refresher.New` 与 `config.setDefaults` 各有一份 `startup_delay` / `max_retries` / `retry_base_delay` 默认值
-- `Refresher` 的 `jitterDurationFn` / `sleepFn` 是只为测试存在的函数字段
+- 入口按职责拆成 `main.go`（根命令与信号）、`server.go`（服务装配与生命周期）、`handlers.go`（HTTP 路由与响应）、`backfill_cli.go`（回填命令、参数与输出），保持同一个 main 包
+- `--request-interval` 的下限与校验规则归属 `backfill.MinRequestInterval` / `ValidateRequestInterval`；CLI Validator 和数据源构造器复用，删除参数转换中的重复校验，保留直接调用构造器时的约束
+- `startup_delay` / `max_retries` / `retry_base_delay` 默认值统一为 config 包常量，配置加载与刷新器构造共用；原有零值及非正值回退行为不变
+- 删除 `Refresher.jitterDurationFn` / `sleepFn`；测试通过标准库 `testing/synctest` 验证真实计时器的批次抖动、预热无抖动以及等待取消
 
 ---
 
