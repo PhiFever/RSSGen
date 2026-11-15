@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -250,7 +251,7 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 	known := deps.Source.KnownCategories()
 	if known != nil {
 		for _, category := range effective {
-			if !containsCategory(known, category) {
+			if !slices.Contains(known, category) {
 				valid := append([]string(nil), known...)
 				sort.Strings(valid)
 				return result, fmt.Errorf("非法类别 %q，可用值: %s", category, strings.Join(valid, ", "))
@@ -283,7 +284,7 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		if known != nil && len(effective) > 0 {
 			filtered := make([]Candidate, 0, len(candidates))
 			for _, candidate := range candidates {
-				if !containsCategory(effective, candidate.Category) {
+				if !slices.Contains(effective, candidate.Category) {
 					continue
 				}
 				filtered = append(filtered, candidate)
@@ -567,21 +568,12 @@ func ParseCategories(raw string) []string {
 	var categories []string
 	for _, category := range strings.Split(raw, ",") {
 		category = strings.TrimSpace(category)
-		if category != "" && !containsCategory(categories, category) {
+		if category != "" && !slices.Contains(categories, category) {
 			categories = append(categories, category)
 		}
 	}
 	sort.Strings(categories)
 	return categories
-}
-
-func containsCategory(categories []string, category string) bool {
-	for _, item := range categories {
-		if item == category {
-			return true
-		}
-	}
-	return false
 }
 
 func externalIDHash(id string) string {

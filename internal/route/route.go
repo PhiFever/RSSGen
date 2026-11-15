@@ -31,23 +31,11 @@ func NewHTTPError(statusCode int, url string) error {
 	return &HTTPError{StatusCode: statusCode, URL: url}
 }
 
-// BaseRoute 提供所有路由共享的元数据与 scraper 生命周期管理。
+// BaseRoute 提供所有路由共享的 scraper 生命周期管理。
 type BaseRoute struct {
-	name string
-
 	scraperMu sync.Mutex
 	scraper   *scraper.Scraper
 }
-
-// NewBaseRoute 创建可嵌入的路由基座。
-func NewBaseRoute(name string) BaseRoute {
-	return BaseRoute{
-		name: name,
-	}
-}
-
-// Name 返回路由名称。
-func (r *BaseRoute) Name() string { return r.name }
 
 // Scraper 返回路由复用的 scraper，并在每次获取时刷新 Cookie。
 func (r *BaseRoute) Scraper(cfg config.ResolvedRouteConfig) (*scraper.Scraper, error) {
@@ -105,20 +93,17 @@ type FeedResult struct {
 	Items []FeedItem
 }
 
-// Route 是路由基类接口，每个数据源实现此接口。
+// Route 抓取数据源并返回完整的 feed 结果。
 type Route interface {
-	// Name 返回路由名称，决定 URL 前缀 /feed/{name}/...
-	Name() string
 	// Fetch 抓取数据源，返回 feed 元信息和 FeedItem 列表。
 	Fetch(pathParams []string, opts FetchOptions) (FeedResult, error)
 }
 
 // FetchOptions 包含抓取的可选参数。
 type FetchOptions struct {
-	Limit       int
-	Include     []string // 仅包含的 category 列表
-	Format      string   // 输出格式：atom 或 rss
-	ExtraParams map[string]string
+	Limit   int
+	Include []string // 仅包含的 category 列表
+	Format  string   // 输出格式：atom 或 rss
 }
 
 // NormalizeFetchOptions 规范化抓取选项，保证缓存键、HTTP 路径和后台刷新语义一致。
@@ -127,9 +112,6 @@ func NormalizeFetchOptions(opts FetchOptions) FetchOptions {
 		opts.Limit = 20
 	}
 	opts.Format = strings.ToLower(strings.TrimSpace(opts.Format))
-	if opts.Format == "" {
-		opts.Format = "atom"
-	}
 	if opts.Format != "rss" {
 		opts.Format = "atom"
 	}

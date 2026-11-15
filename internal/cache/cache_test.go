@@ -62,36 +62,12 @@ func TestOverwrite(t *testing.T) {
 	}
 }
 
-func TestBuildCacheKey(t *testing.T) {
-	tests := []struct {
-		route string
-		parts []string
-		want  string
-	}{
-		{route: "zhihu", parts: nil, want: "zhihu"},
-		{route: "afdian", parts: []string{"author"}, want: "afdian/author"},
-		{route: "test", parts: []string{"a", "b"}, want: "test/a/b"},
-	}
-	for _, tt := range tests {
-		if got := BuildCacheKey(tt.route, tt.parts); got != tt.want {
-			t.Fatalf("BuildCacheKey(%q, %+v) = %q, want %q", tt.route, tt.parts, got, tt.want)
-		}
-	}
-}
-
-func TestBuildFeedCacheKeyIncludesVariant(t *testing.T) {
-	got := BuildFeedCacheKey("zhihu", []string{"user1"}, FeedVariant{
-		Format:  "rss",
-		Limit:   7,
-		Include: []string{"answer", "pin"},
-	})
-	want := "zhihu/user1?format=rss&limit=7&include=answer,pin"
-	if got != want {
-		t.Fatalf("BuildFeedCacheKey variant = %q, want %q", got, want)
-	}
-
-	base := BuildCacheKey("zhihu", []string{"user1"})
-	if got == base {
-		t.Fatal("变体缓存键不应退化为基础 feed 键")
+func TestSetRemovesExpiredEntries(t *testing.T) {
+	c := New(10 * time.Millisecond)
+	c.Set("a", "old")
+	time.Sleep(20 * time.Millisecond)
+	c.Set("b", "new")
+	if _, ok := c.m.Load("a"); ok {
+		t.Fatal("Set 应清扫已过期的 a")
 	}
 }

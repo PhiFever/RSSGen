@@ -1,6 +1,7 @@
 package refresher
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -11,25 +12,33 @@ import (
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/health"
-	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
 
+// newTestRefresher 统一组装测试所需的流水线和健康状态依赖。
+func newTestRefresher(t *testing.T, feedCache *cache.TTLCache, cfg Config) *Refresher {
+	t.Helper()
+	cfg.Pipeline = pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.RoutesConfig})
+	if cfg.FeedHealth == nil {
+		cfg.FeedHealth = health.New(health.Config{})
+	}
+	ref := New(cfg)
+	t.Cleanup(ref.cancel)
+	return ref
+}
+
 func TestNew(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
 
 	cfg := Config{
-		FeedCache:      feedCache,
-		Notifier:       notif,
 		StartupDelay:   1,
 		MaxRetries:     2,
 		RetryBaseDelay: 1,
 		RoutesConfig:   map[string]config.RouteConfig{},
 	}
 
-	ref := New(cfg)
+	ref := newTestRefresher(t, feedCache, cfg)
 	if ref == nil {
 		t.Fatal("New 返回 nil")
 	}
@@ -41,33 +50,11 @@ func TestNew(t *testing.T) {
 	}
 }
 
-func TestBuildCacheKey(t *testing.T) {
-	tests := []struct {
-		routeName  string
-		pathParams []string
-		expected   string
-	}{
-		{"afdian", []string{"user1"}, "afdian/user1"},
-		{"zhihu", []string{"user2"}, "zhihu/user2"},
-		{"test", []string{"a", "b"}, "test/a/b"},
-	}
-
-	for _, tt := range tests {
-		result := cache.BuildCacheKey(tt.routeName, tt.pathParams)
-		if result != tt.expected {
-			t.Errorf("BuildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParams, result, tt.expected)
-		}
-	}
-}
-
 // --- GetStatus（迁移自 Python TestGetStatus） ---
 
 func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
@@ -96,24 +83,22 @@ func TestGetStatusReturnsRouteGroupedDict(t *testing.T) {
 	if status["zhihu"] == nil || status["zhihu"]["user1"] == nil {
 		t.Error("应包含 zhihu/user1")
 	}
-	if status["zhihu"]["user1"].ItemCount != 5 {
-		t.Errorf("ItemCount = %d, want 5", status["zhihu"]["user1"].ItemCount)
+	if status["zhihu"]["user1"][0].ItemCount != 5 {
+		t.Errorf("ItemCount = %d, want 5", status["zhihu"]["user1"][0].ItemCount)
 	}
-	if status["zhihu"]["user1"].Variant.Format != "atom" {
-		t.Errorf("Variant = %+v", status["zhihu"]["user1"].Variant)
+	if status["zhihu"]["user1"][0].Variant.Format != "atom" {
+		t.Errorf("Variant = %+v", status["zhihu"]["user1"][0].Variant)
 	}
 	if status["afdian"] == nil || status["afdian"]["user2"] == nil {
 		t.Error("应包含 afdian/user2")
 	}
-	if status["afdian"]["user2"].Error != "timeout" {
-		t.Errorf("Error = %q, want 'timeout'", status["afdian"]["user2"].Error)
+	if status["afdian"]["user2"][0].Error != "timeout" {
+		t.Errorf("Error = %q, want 'timeout'", status["afdian"]["user2"][0].Error)
 	}
 }
 
 func TestGetStatusEmpty(t *testing.T) {
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 	status := ref.GetStatus()
@@ -131,23 +116,23 @@ func TestGetStatusIncludesObservedDynamicFeeds(t *testing.T) {
 		HealthKey: "zhihu/u1",
 		Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
 	}
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
 		RoutesConfig: map[string]config.RouteConfig{"zhihu": {Enabled: true, RefreshInterval: 60}},
 	})
 
+	rss := ref.pipe.FeedRef("zhihu", []string{"u1"}, route.FetchOptions{Format: "rss"})
+	ref.errorStats[rss.CacheKey] = &ErrorStatus{RouteName: rss.RouteName, FeedID: rss.FeedID, CacheKey: rss.CacheKey, Variant: rss.Variant}
 	status := ref.GetStatus()
 	got := status["zhihu"]["u1"]
-	if got == nil {
-		t.Fatal("status 应包含已观察到的动态 feed")
+	if len(got) != 2 {
+		t.Fatal("status 应同时包含已刷新变体和已观察到的动态变体")
 	}
-	if got.Source != statusSourceDynamic {
-		t.Fatalf("Source = %q, want dynamic", got.Source)
+	if got[0].Source != statusSourceDynamic {
+		t.Fatalf("Source = %q, want dynamic", got[0].Source)
 	}
-	if got.CacheKey != dynamicRef.CacheKey {
-		t.Fatalf("CacheKey = %q, want %q", got.CacheKey, dynamicRef.CacheKey)
+	if got[0].CacheKey != dynamicRef.CacheKey {
+		t.Fatalf("CacheKey = %q, want %q", got[0].CacheKey, dynamicRef.CacheKey)
 	}
 }
 
@@ -156,14 +141,11 @@ func TestGetStatusIncludesObservedDynamicFeeds(t *testing.T) {
 func TestStartCreatesPerRouteTasks(t *testing.T) {
 	// 注册一个 mock route factory
 	route.Register("_test_refresher", "_test_refresher", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_refresher"}
+		return &mockRoute{}
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_refresher": {
@@ -189,9 +171,7 @@ func TestStartPreinitURL(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		PreinitURL:   server.URL,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -207,15 +187,11 @@ func TestStartPreinitURL(t *testing.T) {
 }
 
 func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
-	New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	newTestRefresher(t, cache.New(10*time.Second), Config{
 		RoutesConfig: map[string]config.RouteConfig{},
 	}).preinitHTTPClient()
 
-	errorRef := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	errorRef := newTestRefresher(t, cache.New(10*time.Second), Config{
 		PreinitURL:   "http://127.0.0.1:1",
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -225,9 +201,7 @@ func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
-	statusRef := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	statusRef := newTestRefresher(t, cache.New(10*time.Second), Config{
 		PreinitURL:   server.URL,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -237,7 +211,6 @@ func TestPreinitHTTPClientSkipsAndHandlesFailures(t *testing.T) {
 func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 	route.Register("_test_refresh_feeds_skip", "_test_refresh_feeds_skip", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_refresh_feeds_skip",
 			fetchFn: func([]string, route.FetchOptions) ([]route.FeedItem, error) {
 				t.Fatal("空 feeds 或缺 user_id 时不应调用 Fetch")
 				return nil, nil
@@ -245,9 +218,7 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 		}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 	ref.refreshFeeds(refreshPhase{label: "test"}, "_test_refresh_feeds_skip", config.RouteConfig{})
@@ -258,13 +229,11 @@ func TestRefreshFeedsSkipsEmptyAndInvalidFeedConfig(t *testing.T) {
 
 func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
 	route.Register("_test_refresh_no_jitter", "_test_refresh_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_refresh_no_jitter"}
+		return &mockRoute{}
 	})
 
 	sleepCount := 0
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -284,15 +253,13 @@ func TestRefreshFeedsWithoutJitterDoesNotSleep(t *testing.T) {
 
 func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
 	route.Register("_test_refresh_jitter", "_test_refresh_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_refresh_jitter"}
+		return &mockRoute{}
 	})
 
 	var jitterMax []time.Duration
 	var slept []time.Duration
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -325,13 +292,11 @@ func TestRefreshFeedsAppliesJitterOncePerScheduledBatch(t *testing.T) {
 
 func TestRefreshFeedsJitterDoesNotApplyToPreheat(t *testing.T) {
 	route.Register("_test_preheat_no_jitter", "_test_preheat_no_jitter", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_preheat_no_jitter"}
+		return &mockRoute{}
 	})
 
 	sleepCount := 0
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -368,7 +333,6 @@ func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
 	var capturedPath []string
 	route.Register("_test_refresh_dynamic_only", "_test_refresh_dynamic_only", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_refresh_dynamic_only",
 			fetchFn: func(pathParams []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				capturedPath = append([]string(nil), pathParams...)
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -384,9 +348,7 @@ func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
 		HealthKey: "_test_refresh_dynamic_only/u1",
 		Variant:   pipeline.FeedVariant{Format: "atom", Limit: 20},
 	}
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		FeedCatalog:  &staticFeedCatalog{refs: []pipeline.FeedRef{dynamicRef}},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
@@ -399,7 +361,7 @@ func TestRefreshFeedsUsesDynamicFeedsWhenStaticListEmpty(t *testing.T) {
 	}
 	status := ref.GetStatus()
 	got := status["_test_refresh_dynamic_only"]["u1"]
-	if got == nil || got.Source != statusSourceDynamic {
+	if len(got) == 0 || got[0].Source != statusSourceDynamic {
 		t.Fatalf("status = %+v, want dynamic source", got)
 	}
 }
@@ -408,7 +370,6 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 	var captured []string
 	route.Register("_test_refresh_dynamic_merge", "_test_refresh_dynamic_merge", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_refresh_dynamic_merge",
 			fetchFn: func(pathParams []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				captured = append(captured, fmt.Sprintf("%s:%d:%v", pathParams[0], opts.Limit, opts.Include))
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -436,9 +397,7 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 			Variant:   pipeline.FeedVariant{Format: "atom", Limit: 30, Include: []string{"pin"}},
 		},
 	}
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		FeedCatalog:  &staticFeedCatalog{refs: dynamicRefs},
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
@@ -453,24 +412,21 @@ func TestRefreshFeedsMergesConfigAndDynamicWithConfigPrecedence(t *testing.T) {
 		t.Fatalf("captured = %v, want %s", captured, want)
 	}
 	status := ref.GetStatus()
-	if status["_test_refresh_dynamic_merge"]["u1"].Source != statusSourceConfig {
-		t.Fatalf("u1 source = %q, want config", status["_test_refresh_dynamic_merge"]["u1"].Source)
+	if status["_test_refresh_dynamic_merge"]["u1"][0].Source != statusSourceConfig {
+		t.Fatalf("u1 source = %q, want config", status["_test_refresh_dynamic_merge"]["u1"][0].Source)
 	}
-	if status["_test_refresh_dynamic_merge"]["u2"].Source != statusSourceDynamic {
-		t.Fatalf("u2 source = %q, want dynamic", status["_test_refresh_dynamic_merge"]["u2"].Source)
+	if status["_test_refresh_dynamic_merge"]["u2"][0].Source != statusSourceDynamic {
+		t.Fatalf("u2 source = %q, want dynamic", status["_test_refresh_dynamic_merge"]["u2"][0].Source)
 	}
 }
 
 func TestStopCancelsAllTasks(t *testing.T) {
 	route.Register("_test_refresher2", "_test_refresher2", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_refresher2"}
+		return &mockRoute{}
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_refresher2": {
@@ -490,12 +446,10 @@ func TestStopCancelsAllTasks(t *testing.T) {
 
 func TestIdempotentStart(t *testing.T) {
 	route.Register("_test_refresher3", "_test_refresher3", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_refresher3"}
+		return &mockRoute{}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_refresher3": {
@@ -515,12 +469,10 @@ func TestIdempotentStart(t *testing.T) {
 
 func TestPreheatSkippedWhenDisabled(t *testing.T) {
 	route.Register("_test_preheat1", "_test_preheat1", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_preheat1"}
+		return &mockRoute{}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat1": {
@@ -541,11 +493,9 @@ func TestPreheatSkippedWhenDisabled(t *testing.T) {
 // --- mockRoute 用于测试 ---
 
 type mockRoute struct {
-	name    string
 	fetchFn func([]string, route.FetchOptions) ([]route.FeedItem, error)
 }
 
-func (m *mockRoute) Name() string { return m.name }
 func (m *mockRoute) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
 	info := route.FeedInfo{Title: "Mock", Link: "https://example.com"}
 	if m.fetchFn != nil {
@@ -562,19 +512,16 @@ func (m *mockRoute) Fetch(pathParams []string, opts route.FetchOptions) (route.F
 
 func TestRefreshOneSuccess(t *testing.T) {
 	route.Register("_test_r1_ok", "_test_r1_ok", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_r1_ok"}
+		return &mockRoute{}
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
-	ref.refreshOneWithOptions("_test_r1_ok", []string{"user1"}, route.FetchOptions{})
+	ref.refreshOne("_test_r1_ok", []string{"user1"}, route.FetchOptions{}, statusSourceConfig)
 
 	cacheKey := pipeline.CacheKey("_test_r1_ok", []string{"user1"}, route.FetchOptions{})
 	ref.statsMu.RLock()
@@ -593,19 +540,11 @@ func TestRefreshOneSuccess(t *testing.T) {
 	if st.ItemCount != 1 {
 		t.Errorf("ItemCount = %d, want 1", st.ItemCount)
 	}
-	// pending 应被清理
-	ref.pendingMu.Lock()
-	isPending := ref.pending[cacheKey]
-	ref.pendingMu.Unlock()
-	if isPending {
-		t.Error("refreshOne 完成后 pending 应被清理")
-	}
 }
 
 func TestRefreshOneFailure(t *testing.T) {
 	route.Register("_test_r1_fail", "_test_r1_fail", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_fail",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, errors.New("boom")
 			},
@@ -613,16 +552,13 @@ func TestRefreshOneFailure(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:      feedCache,
-		Notifier:       notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		MaxRetries:     1,
 		RetryBaseDelay: 0,
 		RoutesConfig:   map[string]config.RouteConfig{},
 	})
 
-	ref.refreshOneWithOptions("_test_r1_fail", []string{"user1"}, route.FetchOptions{})
+	ref.refreshOne("_test_r1_fail", []string{"user1"}, route.FetchOptions{}, statusSourceConfig)
 
 	cacheKey := pipeline.CacheKey("_test_r1_fail", []string{"user1"}, route.FetchOptions{})
 	ref.statsMu.RLock()
@@ -645,7 +581,6 @@ func TestRefreshOneFailure(t *testing.T) {
 func TestBusinessErrorDisablesFeed(t *testing.T) {
 	route.Register("_test_r1_biz", "_test_r1_biz", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_biz",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 403})
 			},
@@ -653,11 +588,14 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	feedHealth := health.New(health.Config{})
-	ref := New(Config{
-		FeedCache:      feedCache,
-		Notifier:       notif,
+	notifications := 0
+	feedHealth := health.New(health.Config{OnDisabled: func(key string, code int, message string) {
+		notifications++
+		if key != "_test_r1_biz/user1" || code != 403 || message == "" {
+			t.Errorf("通知参数不匹配: %s %d %s", key, code, message)
+		}
+	}})
+	ref := newTestRefresher(t, feedCache, Config{
 		FeedHealth:     feedHealth,
 		MaxRetries:     1,
 		RetryBaseDelay: 0,
@@ -669,17 +607,20 @@ func TestBusinessErrorDisablesFeed(t *testing.T) {
 		t.Fatal("初始状态 feed 不应被禁用")
 	}
 
-	ref.refreshOneWithOptions("_test_r1_biz", []string{"user1"}, route.FetchOptions{})
+	ref.refreshOne("_test_r1_biz", []string{"user1"}, route.FetchOptions{}, statusSourceConfig)
 
 	if !feedHealth.IsFeedDisabled(cacheKey) {
 		t.Error("业务错误(403)后 feed 应被禁用")
+	}
+
+	if notifications != 1 {
+		t.Fatalf("通知次数 = %d, want 1", notifications)
 	}
 }
 
 func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	route.Register("_test_r1_temp", "_test_r1_temp", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_temp",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				return nil, fmt.Errorf("upstream: %w", &route.HTTPError{StatusCode: 500})
 			},
@@ -687,11 +628,8 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
 	feedHealth := health.New(health.Config{})
-	ref := New(Config{
-		FeedCache:      feedCache,
-		Notifier:       notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		FeedHealth:     feedHealth,
 		MaxRetries:     1,
 		RetryBaseDelay: 0,
@@ -699,7 +637,7 @@ func TestTemporaryErrorKeepsFeedEnabled(t *testing.T) {
 	})
 
 	cacheKey := "_test_r1_temp/user1"
-	ref.refreshOneWithOptions("_test_r1_temp", []string{"user1"}, route.FetchOptions{})
+	ref.refreshOne("_test_r1_temp", []string{"user1"}, route.FetchOptions{}, statusSourceConfig)
 
 	if feedHealth.IsFeedDisabled(cacheKey) {
 		t.Error("临时错误(500)不应禁用 feed")
@@ -710,7 +648,6 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	fetchCalled := false
 	route.Register("_test_r1_skip", "_test_r1_skip", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_skip",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				fetchCalled = true
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -719,11 +656,8 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
 	feedHealth := health.New(health.Config{})
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		FeedHealth:   feedHealth,
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
@@ -732,7 +666,7 @@ func TestDisabledFeedSkipsFetch(t *testing.T) {
 	cacheKey := "_test_r1_skip/user1"
 	feedHealth.RecordFailure(cacheKey, route.NewHTTPError(http.StatusForbidden, ""))
 
-	ref.refreshOneWithOptions("_test_r1_skip", []string{"user1"}, route.FetchOptions{})
+	ref.refreshOne("_test_r1_skip", []string{"user1"}, route.FetchOptions{}, statusSourceConfig)
 
 	if fetchCalled {
 		t.Error("被禁用的 feed 不应调用 Fetch")
@@ -743,7 +677,6 @@ func TestPreheatRunsWheneverEnabled(t *testing.T) {
 	fetchCount := 0
 	route.Register("_test_preheat_run", "_test_preheat_run", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_preheat_run",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				fetchCount++
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -751,9 +684,7 @@ func TestPreheatRunsWheneverEnabled(t *testing.T) {
 		}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_preheat_run": {
@@ -776,12 +707,10 @@ func TestPreheatRunsWheneverEnabled(t *testing.T) {
 
 func TestZeroIntervalWithoutPreheatSkipsRoute(t *testing.T) {
 	route.Register("_test_zero_iv", "_test_zero_iv", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_zero_iv"}
+		return &mockRoute{}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_zero_iv": {
@@ -802,7 +731,6 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 	preheated := make(chan struct{}, 1)
 	route.Register("_test_zero_iv_preheat", "_test_zero_iv_preheat", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_zero_iv_preheat",
 			fetchFn: func(_ []string, _ route.FetchOptions) ([]route.FeedItem, error) {
 				preheated <- struct{}{}
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -810,9 +738,7 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 		}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 1,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_zero_iv_preheat": {
@@ -837,12 +763,10 @@ func TestZeroIntervalRunsPreheatThenStops(t *testing.T) {
 
 func TestNullIntervalSkipsRoute(t *testing.T) {
 	route.Register("_test_null_iv", "_test_null_iv", func(cfg config.ResolvedRouteConfig) route.Route {
-		return &mockRoute{name: "_test_null_iv"}
+		return &mockRoute{}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		StartupDelay: 0,
 		RoutesConfig: map[string]config.RouteConfig{
 			"_test_null_iv": {
@@ -865,7 +789,6 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 	var capturedOpts route.FetchOptions
 	route.Register("_test_r1_params", "_test_r1_params", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_params",
 			fetchFn: func(_ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				capturedOpts = opts
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -874,15 +797,12 @@ func TestTriggerInjectsFeedConfigParams(t *testing.T) {
 	})
 
 	feedCache := cache.New(10 * time.Second)
-	notif := &notifier.Notifier{}
-	ref := New(Config{
-		FeedCache:    feedCache,
-		Notifier:     notif,
+	ref := newTestRefresher(t, feedCache, Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
 
-	ref.refreshOneWithOptions("_test_r1_params", []string{"user1"}, route.FetchOptions{Limit: 5})
+	ref.refreshOne("_test_r1_params", []string{"user1"}, route.FetchOptions{Limit: 5}, statusSourceConfig)
 
 	if capturedOpts.Limit != 5 {
 		t.Errorf("Limit = %d, want 5", capturedOpts.Limit)
@@ -893,7 +813,6 @@ func TestRefreshFeedsPassesZhihuIncludeAndDefaultLimit(t *testing.T) {
 	var capturedOpts route.FetchOptions
 	route.Register("_test_r1_include", "_test_r1_include", func(cfg config.ResolvedRouteConfig) route.Route {
 		return &mockRoute{
-			name: "_test_r1_include",
 			fetchFn: func(_ []string, opts route.FetchOptions) ([]route.FeedItem, error) {
 				capturedOpts = opts
 				return []route.FeedItem{{Title: "t"}}, nil
@@ -901,9 +820,7 @@ func TestRefreshFeedsPassesZhihuIncludeAndDefaultLimit(t *testing.T) {
 		}
 	})
 
-	ref := New(Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
+	ref := newTestRefresher(t, cache.New(10*time.Second), Config{
 		MaxRetries:   1,
 		RoutesConfig: map[string]config.RouteConfig{},
 	})
@@ -924,5 +841,44 @@ func TestRefreshFeedsPassesZhihuIncludeAndDefaultLimit(t *testing.T) {
 	wantInclude := []string{"answer", "article"}
 	if fmt.Sprint(capturedOpts.Include) != fmt.Sprint(wantInclude) {
 		t.Fatalf("Include = %v, want %v", capturedOpts.Include, wantInclude)
+	}
+}
+
+func TestGetStatusPreservesSortedVariants(t *testing.T) {
+	ref := newTestRefresher(t, cache.New(time.Second), Config{})
+	atom := ref.pipe.FeedRef("zhihu", []string{"u1"}, route.FetchOptions{Format: "atom"})
+	rss := ref.pipe.FeedRef("zhihu", []string{"u1"}, route.FetchOptions{Format: "rss"})
+	for _, variant := range []pipeline.FeedRef{rss, atom} {
+		ref.errorStats[variant.CacheKey] = &ErrorStatus{RouteName: variant.RouteName, FeedID: variant.FeedID, CacheKey: variant.CacheKey, Variant: variant.Variant}
+	}
+	for i := 0; i < 10; i++ {
+		data, err := json.Marshal(ref.GetStatus())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var status map[string]map[string][]ErrorStatus
+		if err := json.Unmarshal(data, &status); err != nil {
+			t.Fatalf("状态应按变体列出: %v", err)
+		}
+		got := status["zhihu"]["u1"]
+		if len(got) != 2 || got[0].CacheKey != atom.CacheKey || got[1].CacheKey != rss.CacheKey {
+			t.Fatalf("变体状态或排序不匹配: %+v", got)
+		}
+	}
+}
+
+func TestRefreshFeedsPrunesStaleRouteStatus(t *testing.T) {
+	ref := newTestRefresher(t, cache.New(time.Second), Config{})
+	stale := ref.pipe.FeedRef("zhihu", []string{"u1"}, route.FetchOptions{})
+	other := ref.pipe.FeedRef("afdian", []string{"u2"}, route.FetchOptions{})
+	for _, feed := range []pipeline.FeedRef{stale, other} {
+		ref.errorStats[feed.CacheKey] = &ErrorStatus{RouteName: feed.RouteName, FeedID: feed.FeedID, CacheKey: feed.CacheKey}
+	}
+	ref.refreshFeeds(refreshPhaseScheduled, "zhihu", config.RouteConfig{})
+	if _, ok := ref.errorStats[stale.CacheKey]; ok {
+		t.Error("本轮没有目标时也应删除同路由的淘汰状态")
+	}
+	if _, ok := ref.errorStats[other.CacheKey]; !ok {
+		t.Error("应保留其它路由状态")
 	}
 }

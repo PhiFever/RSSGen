@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/PhiFever/RSSGen/internal/backfill"
@@ -109,8 +108,7 @@ type Route struct {
 // New 创建爱发电路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
 	return &Route{
-		BaseRoute: route.NewBaseRoute("afdian"),
-		cfg:       cfg,
+		cfg: cfg,
 	}
 }
 
@@ -136,9 +134,6 @@ func (r *Route) feedInfo(pathParams []string) (route.FeedInfo, error) {
 }
 
 func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedResult, error) {
-	if len(pathParams) == 0 {
-		return route.FeedResult{}, fmt.Errorf("需要指定作者 url_slug，如 /feed/afdian/{author_slug}")
-	}
 	info, err := r.feedInfo(pathParams)
 	if err != nil {
 		return route.FeedResult{}, err
@@ -164,39 +159,18 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 		return route.FeedResult{}, fmt.Errorf("获取帖子列表失败: %w", err)
 	}
 
-	contents := make([]string, len(posts))
-	contentOK := make([]bool, len(posts))
-
-	var wg sync.WaitGroup
-	for idx := range posts {
-		idx := idx
-		postID := posts[idx].PostID
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			content, err := r.getPostDetail(sc, postID)
-			if err != nil {
-				// 获取详情失败，跳过此条目（与 Python 行为一致）
-				slog.Warn("文章详情获取失败，跳过", "post_id", postID, "error", err)
-				return
-			}
-			comments, err := r.getPostComments(sc, postID)
-			if err != nil {
-				slog.Warn("文章评论获取失败，省略评论", "post_id", postID, "error", err)
-			} else {
-				content = appendRenderedComments(content, comments)
-			}
-			contents[idx] = content
-			contentOK[idx] = true
-		}()
-	}
-	wg.Wait()
-
-	// 构建 FeedItem，保持帖子列表原始顺序。
 	items := make([]route.FeedItem, 0, len(posts))
-	for i, post := range posts {
-		if !contentOK[i] {
+	for _, post := range posts {
+		content, err := r.getPostDetail(sc, post.PostID)
+		if err != nil {
+			slog.Warn("文章详情获取失败，跳过", "post_id", post.PostID, "error", err)
 			continue
+		}
+		comments, err := r.getPostComments(sc, post.PostID)
+		if err != nil {
+			slog.Warn("文章评论获取失败，省略评论", "post_id", post.PostID, "error", err)
+		} else {
+			content = appendRenderedComments(content, comments)
 		}
 		// 解析发布时间
 		var pubDate *time.Time
@@ -208,7 +182,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 		item := route.FeedItem{
 			Title:   post.Title,
 			Link:    fmt.Sprintf("%s/p/%s", hostURL, post.PostID),
-			Content: contents[i],
+			Content: content,
 			PubDate: pubDate,
 			Author:  post.User.Name,
 			GUID:    post.PostID,
@@ -307,22 +281,16 @@ func (r *Route) getPostListWithProgress(
 		if err != nil {
 			return allPosts, err
 		}
-		if len(data) == 0 {
-			if progress != nil {
-				if err := progress(page, nil, len(allPosts)); err != nil {
-					return allPosts, err
-				}
-			}
-			break
-		}
 
+		// 缺少 data 与空列表同样视为自然结束。
 		var postList afdianPostList
-		if err := json.Unmarshal(data, &postList); err != nil {
-			slog.Warn("解析帖子列表失败，原始响应", "error", err, "data", string(data))
-			return allPosts, fmt.Errorf("解析帖子列表失败: %w", err)
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &postList); err != nil {
+				slog.Warn("解析帖子列表失败，原始响应", "error", err, "data", string(data))
+				return allPosts, fmt.Errorf("解析帖子列表失败: %w", err)
+			}
 		}
-		pageItems := len(postList.List)
-		if pageItems == 0 {
+		if len(postList.List) == 0 {
 			if progress != nil {
 				if err := progress(page, nil, len(allPosts)); err != nil {
 					return allPosts, err

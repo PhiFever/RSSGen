@@ -2,18 +2,18 @@
 package refresher
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
-	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
 	"github.com/PhiFever/RSSGen/internal/health"
-	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/route"
 )
@@ -23,15 +23,13 @@ const (
 	statusSourceDynamic = "dynamic"
 )
 
-// FeedCatalog supplies dynamically observed feed variants to the refresher.
+// FeedCatalog 向刷新器提供动态观察到的 feed 变体。
 type FeedCatalog interface {
 	List(routeName string) []pipeline.FeedRef
 }
 
 // Config 是刷新器的配置。
 type Config struct {
-	FeedCache      *cache.TTLCache
-	Notifier       *notifier.Notifier
 	FeedHealth     *health.FeedHealth
 	Pipeline       *pipeline.Pipeline
 	FeedCatalog    FeedCatalog
@@ -39,13 +37,11 @@ type Config struct {
 	MaxRetries     int
 	RetryBaseDelay int
 	PreinitURL     string
-	ScraperConfig  config.ScraperConfig
 	RoutesConfig   map[string]config.RouteConfig
 }
 
 // Refresher 是后台刷新调度器。
 type Refresher struct {
-	notifier       *notifier.Notifier
 	feedHealth     *health.FeedHealth
 	pipe           *pipeline.Pipeline
 	feedCatalog    FeedCatalog
@@ -59,8 +55,6 @@ type Refresher struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	pending    map[string]bool
-	pendingMu  sync.Mutex
 	errorStats map[string]*ErrorStatus
 	statsMu    sync.RWMutex
 
@@ -111,23 +105,10 @@ func New(cfg Config) *Refresher {
 	if retryBaseDelay <= 0 {
 		retryBaseDelay = 5
 	}
-	pipe := cfg.Pipeline
-	if pipe == nil {
-		pipe = pipeline.New(pipeline.Config{
-			FeedCache:     cfg.FeedCache,
-			ScraperConfig: cfg.ScraperConfig,
-			RoutesConfig:  cfg.RoutesConfig,
-		})
-	}
-	feedHealth := cfg.FeedHealth
-	if feedHealth == nil {
-		feedHealth = health.New(health.Config{})
-	}
 
 	return &Refresher{
-		notifier:       cfg.Notifier,
-		feedHealth:     feedHealth,
-		pipe:           pipe,
+		feedHealth:     cfg.FeedHealth,
+		pipe:           cfg.Pipeline,
 		feedCatalog:    cfg.FeedCatalog,
 		startupDelay:   startupDelay,
 		maxRetries:     maxRetries,
@@ -136,7 +117,6 @@ func New(cfg Config) *Refresher {
 		routesConfig:   cfg.RoutesConfig,
 		ctx:            ctx,
 		cancel:         cancel,
-		pending:        make(map[string]bool),
 		errorStats:     make(map[string]*ErrorStatus),
 	}
 }
@@ -149,7 +129,7 @@ func (r *Refresher) Start() {
 		if !rc.Enabled {
 			continue
 		}
-		if !shouldScheduleRoute(rc) {
+		if !rc.NeedsScheduling() {
 			slog.Info("路由未配置 refresh_interval 且未启用预热，调度已关闭", "route", routeName)
 			continue
 		}
@@ -180,10 +160,6 @@ func (r *Refresher) preinitHTTPClient() {
 	slog.Info("HTTP 客户端预初始化完成", "url", r.preinitURL)
 }
 
-func shouldScheduleRoute(rc config.RouteConfig) bool {
-	return rc.Enabled && (rc.PreheatOnStartup || rc.RefreshInterval > 0)
-}
-
 func defaultJitterDuration(max time.Duration) time.Duration {
 	if max <= 0 {
 		return 0
@@ -198,36 +174,41 @@ func (r *Refresher) Stop() {
 	slog.Info("BackgroundRefresher 已停止")
 }
 
-// GetStatus 返回按路由分组的状态。
-func (r *Refresher) GetStatus() map[string]map[string]*ErrorStatus {
-	r.statsMu.RLock()
-	grouped := make(map[string]map[string]*ErrorStatus)
-	for _, status := range r.errorStats {
+// GetStatus 返回按路由、feed 分组且按缓存键排序的各变体状态。
+func (r *Refresher) GetStatus() map[string]map[string][]ErrorStatus {
+	grouped := make(map[string]map[string][]ErrorStatus)
+	seen := make(map[string]bool)
+	appendStatus := func(status ErrorStatus) {
 		if grouped[status.RouteName] == nil {
-			grouped[status.RouteName] = make(map[string]*ErrorStatus)
+			grouped[status.RouteName] = make(map[string][]ErrorStatus)
 		}
-		statusCopy := *status
-		grouped[status.RouteName][status.FeedID] = &statusCopy
+		grouped[status.RouteName][status.FeedID] = append(grouped[status.RouteName][status.FeedID], status)
+		seen[status.CacheKey] = true
+	}
+	r.statsMu.RLock()
+	for _, status := range r.errorStats {
+		appendStatus(*status)
 	}
 	r.statsMu.RUnlock()
-
 	if r.feedCatalog != nil {
 		for routeName := range r.routesConfig {
 			for _, ref := range r.feedCatalog.List(routeName) {
-				if grouped[ref.RouteName] == nil {
-					grouped[ref.RouteName] = make(map[string]*ErrorStatus)
-				}
-				if grouped[ref.RouteName][ref.FeedID] != nil {
+				if seen[ref.CacheKey] {
 					continue
 				}
-				grouped[ref.RouteName][ref.FeedID] = &ErrorStatus{
+				appendStatus(ErrorStatus{
 					RouteName: ref.RouteName,
 					FeedID:    ref.FeedID,
 					CacheKey:  ref.CacheKey,
 					Variant:   ref.Variant,
 					Source:    statusSourceDynamic,
-				}
+				})
 			}
+		}
+	}
+	for _, feeds := range grouped {
+		for _, variants := range feeds {
+			slices.SortFunc(variants, func(a, b ErrorStatus) int { return cmp.Compare(a.CacheKey, b.CacheKey) })
 		}
 	}
 	return grouped
@@ -277,6 +258,7 @@ func (r *Refresher) runRouteLoop(routeName string, rc config.RouteConfig) {
 func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config.RouteConfig) {
 	label := phase.label
 	targets := r.refreshTargets(routeName, rc)
+	r.pruneStatus(routeName, targets)
 	if len(targets) == 0 {
 		slog.Info("未配置 feed 列表，跳过", "route", routeName, "label", label)
 		return
@@ -287,9 +269,24 @@ func (r *Refresher) refreshFeeds(phase refreshPhase, routeName string, rc config
 		return
 	}
 	for _, target := range targets {
-		r.refreshOneWithOptionsSource(target.ref.RouteName, target.ref.PathParts, fetchOptionsFromVariant(target.ref.Variant), target.source)
+		r.refreshOne(target.ref.RouteName, target.ref.PathParts, fetchOptionsFromVariant(target.ref.Variant), target.source)
 	}
 	slog.Info("刷新完成", "route", routeName, "label", label)
+}
+
+// pruneStatus 删除该路由下已不在本轮刷新目标里的状态，即被 feedcatalog 淘汰的动态变体。
+func (r *Refresher) pruneStatus(routeName string, targets []refreshTarget) {
+	active := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		active[target.ref.CacheKey] = true
+	}
+	r.statsMu.Lock()
+	defer r.statsMu.Unlock()
+	for key, status := range r.errorStats {
+		if status.RouteName == routeName && !active[key] {
+			delete(r.errorStats, key)
+		}
+	}
 }
 
 func (r *Refresher) refreshTargets(routeName string, rc config.RouteConfig) []refreshTarget {
@@ -355,23 +352,8 @@ func (r *Refresher) sleepRefreshJitter(phase refreshPhase, routeName string, rc 
 	}
 }
 
-func (r *Refresher) refreshOneWithOptions(routeName string, pathParams []string, opts route.FetchOptions) {
-	r.refreshOneWithOptionsSource(routeName, pathParams, opts, statusSourceConfig)
-}
-
-func (r *Refresher) refreshOneWithOptionsSource(routeName string, pathParams []string, opts route.FetchOptions, source string) {
+func (r *Refresher) refreshOne(routeName string, pathParams []string, opts route.FetchOptions, source string) {
 	ref := r.pipe.FeedRef(routeName, pathParams, opts)
-
-	// 标记为 pending
-	r.pendingMu.Lock()
-	r.pending[ref.CacheKey] = true
-	r.pendingMu.Unlock()
-
-	defer func() {
-		r.pendingMu.Lock()
-		delete(r.pending, ref.CacheKey)
-		r.pendingMu.Unlock()
-	}()
 
 	// 检查 feed 是否被禁用
 	if r.feedHealth.IsFeedDisabled(ref.HealthKey) {
@@ -433,14 +415,5 @@ func (r *Refresher) refreshOneWithOptionsSource(routeName string, pathParams []s
 	}
 	r.statsMu.Unlock()
 
-	// 检查是否是业务错误
-	if lastErr != nil {
-		statusCode, justDisabled := r.feedHealth.RecordFailure(ref.HealthKey, lastErr)
-		if justDisabled {
-			if r.notifier != nil {
-				r.notifier.Notify(ref.HealthKey, statusCode, fmt.Sprintf("%v", lastErr))
-			}
-			slog.Warn("feed 已禁用（业务错误）", "key", ref.HealthKey, "status", statusCode)
-		}
-	}
+	r.feedHealth.RecordFailure(ref.HealthKey, lastErr)
 }

@@ -132,16 +132,6 @@ func TestCookieHeaderUsesSnapshot(t *testing.T) {
 	}
 }
 
-func TestResponseText(t *testing.T) {
-	r := &Response{
-		StatusCode: 200,
-		Body:       []byte("hello world"),
-	}
-	if r.Text() != "hello world" {
-		t.Errorf("Text() = %q, want %q", r.Text(), "hello world")
-	}
-}
-
 func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -152,9 +142,6 @@ func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 		}
 		if got := r.Header.Get("X-Test"); got != "request" {
 			t.Errorf("X-Test = %q", got)
-		}
-		if got := r.Header.Get("X-Extra"); got != "instance" {
-			t.Errorf("X-Extra = %q", got)
 		}
 		cookie, err := r.Cookie("sid")
 		if err != nil || cookie.Value != "abc" {
@@ -169,9 +156,8 @@ func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 	defer server.Close()
 
 	s, err := New(Config{
-		RateLimit:    0.001,
-		Cookies:      map[string]string{"sid": "abc"},
-		ExtraHeaders: map[string]string{"X-Extra": "instance"},
+		RateLimit: 0.001,
+		Cookies:   map[string]string{"sid": "abc"},
 	})
 	if err != nil {
 		t.Fatalf("New 返回错误: %v", err)
@@ -187,8 +173,8 @@ func TestGetSendsHeadersCookiesAndReadsResponse(t *testing.T) {
 	if resp.Header.Get("X-Reply") != "ok" {
 		t.Fatalf("响应 header 未保留")
 	}
-	if resp.Text() != "hello" {
-		t.Fatalf("Text() = %q", resp.Text())
+	if string(resp.Body) != "hello" {
+		t.Fatalf("Body = %q", string(resp.Body))
 	}
 }
 
@@ -204,8 +190,8 @@ func TestGetRecoversWhenALPNChanges(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第 %d 次请求失败: %v", requestNumber, err)
 		}
-		if resp.StatusCode != http.StatusOK || resp.Text() != "ok" {
-			t.Fatalf("第 %d 次响应 = (%d, %q), want (200, %q)", requestNumber, resp.StatusCode, resp.Text(), "ok")
+		if resp.StatusCode != http.StatusOK || string(resp.Body) != "ok" {
+			t.Fatalf("第 %d 次响应 = (%d, %q), want (200, %q)", requestNumber, resp.StatusCode, string(resp.Body), "ok")
 		}
 	}
 }
@@ -226,8 +212,8 @@ func TestGetRecoversAfterConnectionReset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("请求未从连接重置中恢复: %v", err)
 	}
-	if resp.StatusCode != http.StatusOK || resp.Text() != "ok" {
-		t.Fatalf("响应 = (%d, %q), want (200, %q)", resp.StatusCode, resp.Text(), "ok")
+	if resp.StatusCode != http.StatusOK || string(resp.Body) != "ok" {
+		t.Fatalf("响应 = (%d, %q), want (200, %q)", resp.StatusCode, string(resp.Body), "ok")
 	}
 	if strings.Contains(logs.String(), "do-not-log") {
 		t.Fatalf("自愈日志泄漏了完整 URL: %s", logs.String())

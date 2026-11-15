@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -206,8 +207,7 @@ type Route struct {
 // New 创建知乎路由实例。
 func New(cfg config.ResolvedRouteConfig) *Route {
 	return &Route{
-		BaseRoute: route.NewBaseRoute("zhihu"),
-		cfg:       cfg,
+		cfg: cfg,
 	}
 }
 
@@ -274,7 +274,7 @@ func (r *Route) Fetch(pathParams []string, opts route.FetchOptions) (route.FeedR
 		}
 
 		category := deriveCategory(act)
-		if len(include) > 0 && !contains(include, category) {
+		if len(include) > 0 && !slices.Contains(include, category) {
 			continue
 		}
 
@@ -884,14 +884,4 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
-}
-
-// contains 检查字符串切片是否包含指定值。
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }

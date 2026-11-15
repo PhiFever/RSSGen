@@ -48,7 +48,7 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 
 ### 模块地图（internal/）
 
-- **pipeline/** — feed 生成流水线：复用 route 实例，规范化 `FetchOptions`，执行 `Route.Fetch`、`feed.Generate` 并写入 FeedCache
+- **pipeline/** — feed 生成流水线：复用 route 实例，规范化 `FetchOptions`，执行 `Route.Fetch`、`feed.Generate` 并写入 FeedCache；基础 feed 键与变体缓存键（`FeedRef`）只在这里构造
 - **route/** — `Route` 接口、`FeedResult`/`FeedItem`/`FeedInfo` 数据结构、`HTTPError`（携带上游状态码供熔断判定）、路由注册表
 - **route/zhihu/**、**route/afdian/** — 具体路由实现
 - **backfill/** — 一次性历史回填深模块：feed 校验、全历史对账、重试、顺序与统计
@@ -56,21 +56,21 @@ Feed XML 缓存键包含规范化后的输出变体：`route/path?format=atom&li
 - **sign/zhihu/** — 知乎 x-zse-96 签名算法还原（打乱 base64 + SM4 变体 + XOR）。上游 JS 改版时最先失效的模块，版本常量集中在 `sign.go` 顶部
 - **scraper/** — tls-client 封装：Chrome 指纹 profile、请求头及其顺序（风控敏感，头顺序必须手动维护）、Cookie、按实例限速、代理
 - **feed/** — FeedItem → Atom/RSS XML，bluemonday 白名单消毒
-- **refresher/** — 后台调度器，含 pending 去重、重试、熔断触发和错误状态统计（`/status` 端点数据源）
-- **health/** — feed 健康状态管理：业务错误状态码判定与进程内 feed 禁用状态（重启恢复）
+- **refresher/** — 后台调度器，含重试、失败上报和按变体记录的刷新状态（`/status` 端点数据源）
+- **health/** — feed 健康状态管理：业务错误状态码判定、进程内 feed 禁用状态（重启恢复），首次禁用时记日志并经 `OnDisabled` 回调触发通知
 - **media/** — 图片归档：feed 生成前把白名单 CDN 图片下载并存进 Immich 相册（先按文件名查已有资源），改写正文图片地址；backfill 也复用
 - **feedcatalog/** — 进程内记录动态访问到的 feed 变体（按路由限量），供 refresher 与配置中的静态 feed 合并刷新
-- **cache/** — 内存 TTL 缓存（存 feed XML）+ 基础 feed 键/变体缓存键构造
+- **cache/** — 内存 TTL 缓存（存 feed XML），写入时清扫过期条目
 - **notifier/** — 业务错误通知发送（基于 shoutrrr URL，支持飞书、ntfy 等）；不持有 feed 熔断状态
 - **config/** — YAML 加载、默认值、`ResolveRoute` 合并全局 scraper 配置与路由级覆盖（同步/后台两条路径共用，保证行为一致）
 
 ### 新增路由的模式
 
-1. 建包 `internal/route/{name}/`，实现 `route.Route` 接口（`Name`/`Fetch`），`Fetch` 返回 `route.FeedResult`
+1. 建包 `internal/route/{name}/`，嵌入 `route.BaseRoute` 并实现 `route.Route` 接口（只有 `Fetch`，返回 `route.FeedResult`）；路由名由注册时的键承载
 2. 在包的 `init()` 中 `route.Register("{name}", "路由描述", factory)`，factory 接收 `config.ResolvedRouteConfig` 强类型配置
-3. 在根目录 `main.go` 匿名 import 该包
+3. 在根目录 `main.go` import 该包以触发 `init()` 注册：只注册不引用时用匿名 import；afdian、zhihu 因 backfill 入口要调 `NewBackfillSource` 而是具名 import
 4. 上游返回非 2xx 时返回 `*route.HTTPError`，否则熔断/通知机制不生效
-5. 测试注入用函数字段模式：路由结构体上放可替换的抓取函数字段（参考 afdian 的 `getPostListFn`、zhihu 的 `fetchActivitiesFn`），测试中替换为假实现
+5. 测试注入走 httptest 接缝：上游地址放在包级 host 变量里（afdian 的 `hostURL`、zhihu 的 `zhihuHostURL`），测试用 `withTestHost` / `withZhihuTestHost` 把它指向 `httptest.Server`；路由结构体不放函数字段
 
 ### 配置
 

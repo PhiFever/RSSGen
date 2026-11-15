@@ -58,7 +58,7 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 4. health 深化：熔断编排收进 RecordFailure 【Worth exploring】
 
-状态：已完成（2026-07-08）。
+状态：已完成（2026-07-08）；2026-11-15 再收一步——同步 handler 也长出了同一段「按返回值通知」的编排，两处重复，于是改为 health 持有 `OnDisabled` 回调，`RecordFailure` 不再有返回值，首次禁用的日志与通知都在 health 内触发，refresher 不再依赖 notifier。下文「按返回值触发通知」的方向描述已被取代。
 
 涉及：`internal/refresher/refresher.go`（refreshOneWithOptions 的错误分类段）、`internal/health/feed_health.go`、`internal/notifier/notifier.go`
 
@@ -106,6 +106,8 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 
 ### 7. afdian 详情抓取：删掉被限速锁串行化的伪并发 【Worth exploring】
 
+状态：已完成（2026-11-15）。改为顺序抓取，同一时刻至多一个在途请求；断言并发的 `TestFetchDetailsRunConcurrentlyAndPreserveOrder` 一并删除，顺序由 `TestFetchPipelineOrderPreserved` 覆盖。复核时发现下文「性能等价」只在单次请求耗时不超过限速间隔时成立（`rateLimitWait` 的锁只罩住等待，请求在锁外）：默认 1s 限速下等价，上游单次响应慢于限速间隔时顺序版更慢——这是为了让限速语义名副其实而接受的代价。
+
 涉及：`internal/route/afdian/afdian.go`（Fetch 中 missing 详情抓取段）、`internal/scraper/scraper.go`（rateLimitWait）
 
 摩擦：每条缺失详情各起一个 goroutine，但共用同一个 Scraper，`rateLimitWait` 用互斥锁 + Sleep 把所有请求串行化——并发拿不到任何吞吐（限速语义是 scraper 接口的一部分），却付出 WaitGroup + contents/contentOK 共享切片按下标并发写的复杂度。
@@ -123,6 +125,41 @@ P0 文档与仓库卫生、P1 缓存变体键/双重抓取、P2 pipeline 提取/
 摩擦：被两条路由共享的底层 scraper 的 header 顺序表里硬写了知乎签名专属头——路由专属细节跨接缝反向泄漏进通用模块，afdian 永远不发这两个头。
 
 搁置理由：现状两条路由都正确工作，header 顺序风控敏感需手动维护，价值在第三条路由或风控排查时才兑现。若做条目 2 的路由基座，可顺路带上（header order 作为 scraper.Config 字段传入或提供合并钩子）。
+
+---
+
+## 第三轮（2026-11-15）：小项清理与结构收口
+
+全部完成（`deadcode ./...` 无输出，`go test ./...` 全绿）。
+
+小项清理：
+
+- refresher：删除只剩测试调用的 `refreshOneWithOptions` 包装，`refreshOneWithOptionsSource` 更名 `refreshOne`；删除只写不读的 `pending` 表
+- 调度判定单点化：`config.RouteConfig.NeedsScheduling` 取代 `main.go` 与 refresher 各写一份的同一条件
+- 死符号：`zhihu.ParseStartBefore`、`route.FetchOptions.ExtraParams`、scraper `doRequest` 的 `method` / `body` 参数（并入 `Get`）
+- 手写 `contains` / `containsCategory` 换成标准库 `slices.Contains`
+- afdian：`Fetch` 与 `feedInfo` 重复的空路径校验、翻页里重复的「空页收尾」分支各合成一处
+- `makeFeedHandlerWithPipeline` 更名 `makeFeedHandler`（被区分的旧函数早已删除）
+- 测试：`main_test.go`、`refresher_test.go` 中与 `cache_test.go` 重复的 `TestBuildCacheKey` 删除
+- 注释与文档：feedcatalog / pipeline / refresher 的英文注释改中文；AGENTS.md、CODING_STANDARDS.md 中「函数字段注入」改为现行的 httptest 接缝
+
+结构收口（各项均推翻或补完了此前的取舍）：
+
+- **条目 7 afdian 顺序抓取**：见条目 7 状态
+- **熔断通知编排收进 health**：见条目 4 状态。`makeFeedHandler` 与 `refreshOne` 各只剩一行 `RecordFailure`；`main.go` 的 `feedNotifier` 接口、`refresher.Config.Notifier` 删除
+- **`/status` 按变体列出**：`GetStatus` 返回 `路由 → feedID → []ErrorStatus`，按缓存键升序；此前同一 feed 多变体时留下哪一条取决于 map 遍历顺序。**JSON 形态变化**：feed 的值由对象变为数组
+- **进程内状态清理**：refresher 每轮刷新前删掉该路由下已不在刷新目标里的状态（被 feedcatalog 淘汰的动态变体）；`TTLCache` 在 `Set` 时清扫过期条目，删除一律用 `CompareAndDelete`
+- **删除生产代码里的测试兜底**：`refresher.New` 不再自建 pipeline / health（`Config.FeedCache`、`Config.ScraperConfig` 随之删除），`makeFeedHandler` 不再兜底 `feedHealth`，`makeRouter` 从未使用的 `cfg` 参数删除；测试改用 `newTestRefresher` 辅助构造
+- **`Route.Name()` 删除**：路由名只由 `route.Register` 的键承载，`Route` 收成单方法接口，`NewBaseRoute` 随之删除，路由直接嵌入零值 `route.BaseRoute`
+- **缓存键构造归位 pipeline**：`internal/cache/cachekey.go` 删除，基础键与变体键只在 pipeline 构造，cache 包只剩 TTL 缓存；键格式未变
+- **scraper 无生产者符号**：`Config.ExtraHeaders`、`Response.Text` 删除。enclosure 序列化不在此列——那是明确保留的 feed 通用能力
+
+仍未做（不在本轮范围）：
+
+- `main.go` 同时装着服务装配与 backfill CLI（约 800 行），可按职责拆成多个文件
+- `--request-interval` 的下限在 flag `Validator`、`backfillConfigFromCommand`、各数据源构造函数里各校验一遍
+- `refresher.New` 与 `config.setDefaults` 各有一份 `startup_delay` / `max_retries` / `retry_base_delay` 默认值
+- `Refresher` 的 `jitterDurationFn` / `sleepFn` 是只为测试存在的函数字段
 
 ---
 

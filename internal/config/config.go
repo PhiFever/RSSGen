@@ -98,6 +98,11 @@ type RouteConfig struct {
 	IncludeSelfInteraction *bool        `yaml:"include_self_interaction,omitempty"`
 }
 
+// NeedsScheduling 判断路由是否需要后台调度（启动预热或定时刷新）。
+func (rc RouteConfig) NeedsScheduling() bool {
+	return rc.Enabled && (rc.PreheatOnStartup || rc.RefreshInterval > 0)
+}
+
 // FeedConfig 是路由中单个 feed 的配置。
 type FeedConfig struct {
 	UserID  string   `yaml:"user_id"`

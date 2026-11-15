@@ -94,11 +94,21 @@ func OptionsFromFeedConfig(fc config.FeedConfig) route.FetchOptions {
 // CacheKey 返回指定路由、路径与抓取选项对应的 feed XML 缓存键。
 func CacheKey(routeName string, pathParams []string, opts route.FetchOptions) string {
 	opts = route.NormalizeFetchOptions(opts)
-	return cache.BuildFeedCacheKey(routeName, pathParams, cache.FeedVariant{
-		Format:  opts.Format,
-		Limit:   opts.Limit,
-		Include: opts.Include,
-	})
+	key := healthKey(routeName, pathParams)
+	parts := []string{"format=" + opts.Format, "limit=" + strconv.Itoa(opts.Limit)}
+	if len(opts.Include) > 0 {
+		parts = append(parts, "include="+strings.Join(opts.Include, ","))
+	}
+	return key + "?" + strings.Join(parts, "&")
+}
+
+// healthKey 构建基础 feed 键；空路径不带尾斜杠。
+func healthKey(routeName string, pathParams []string) string {
+	key := routeName
+	for _, part := range pathParams {
+		key += "/" + part
+	}
+	return key
 }
 
 // FeedRef 返回当前 pipeline 配置下指定 feed 的结构化引用。
@@ -106,9 +116,8 @@ func (p *Pipeline) FeedRef(routeName string, pathParams []string, opts route.Fet
 	return newFeedRef(routeName, pathParams, p.normalizeOptions(routeName, pathParams, opts))
 }
 
-// RouteAllowsDynamicObservation reports whether HTTP requests for routeName
-// should be added to the dynamic feed catalog. Missing route config is treated
-// as enabled to preserve the existing zero-config test and local route behavior.
+// RouteAllowsDynamicObservation 判断对 routeName 的 HTTP 请求是否应记入动态 feed 目录。
+// 路由没有配置段时视为启用，保持零配置测试与本地路由的既有行为。
 func (p *Pipeline) RouteAllowsDynamicObservation(routeName string) bool {
 	if p == nil {
 		return false
@@ -121,10 +130,9 @@ func (p *Pipeline) RouteAllowsDynamicObservation(routeName string) bool {
 func (p *Pipeline) Refresh(routeName string, pathParams []string, opts route.FetchOptions) (RefreshResult, error) {
 	ref := p.FeedRef(routeName, pathParams, opts)
 	opts = route.FetchOptions{
-		Limit:       ref.Variant.Limit,
-		Include:     append([]string(nil), ref.Variant.Include...),
-		Format:      ref.Variant.Format,
-		ExtraParams: opts.ExtraParams,
+		Limit:   ref.Variant.Limit,
+		Include: append([]string(nil), ref.Variant.Include...),
+		Format:  ref.Variant.Format,
 	}
 
 	rt, err := p.route(routeName)
@@ -168,7 +176,7 @@ func newFeedRef(routeName string, pathParams []string, opts route.FetchOptions) 
 		RouteName: routeName,
 		FeedID:    strings.Join(pathParams, "/"),
 		PathParts: append([]string(nil), pathParams...),
-		HealthKey: cache.BuildCacheKey(routeName, pathParams),
+		HealthKey: healthKey(routeName, pathParams),
 		CacheKey:  CacheKey(routeName, pathParams, opts),
 		Variant:   variant,
 	}

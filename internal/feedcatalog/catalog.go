@@ -1,4 +1,4 @@
-// Package feedcatalog tracks feed variants observed during this process.
+// Package feedcatalog 记录本进程运行期间观察到的 feed 变体。
 package feedcatalog
 
 import (
@@ -9,11 +9,10 @@ import (
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 )
 
-// Catalog records recently observed feed variants in memory.
+// Catalog 在内存中记录最近观察到的 feed 变体。
 //
-// Entries are bucketed by route and capped independently per route. The limit
-// applies only to dynamically observed feeds; statically configured feeds are
-// merged by the refresher separately.
+// 条目按路由分桶，每个路由独立限量。上限只约束动态观察到的 feed；
+// 配置中的静态 feed 由 refresher 另行合并。
 type Catalog struct {
 	mu         sync.Mutex
 	limit      int
@@ -29,8 +28,7 @@ type catalogEntry struct {
 	ref pipeline.FeedRef
 }
 
-// New creates an in-memory observed feed catalog. A non-positive limit disables
-// observation.
+// New 创建内存中的 feed 观察目录；limit 非正数时不记录。
 func New(limit int) *Catalog {
 	return &Catalog{
 		limit:      limit,
@@ -38,7 +36,7 @@ func New(limit int) *Catalog {
 	}
 }
 
-// Observe records a feed variant and updates its LRU position.
+// Observe 记录一个 feed 变体并更新它的 LRU 位置。
 func (c *Catalog) Observe(ref pipeline.FeedRef) {
 	if c == nil || c.limit <= 0 || ref.RouteName == "" || ref.CacheKey == "" {
 		return
@@ -79,7 +77,7 @@ func (c *Catalog) Observe(ref pipeline.FeedRef) {
 	slog.Debug("动态 feed 超过上限，淘汰最久未访问项", "route", ref.RouteName, "key", oldEntry.ref.CacheKey, "limit", c.limit)
 }
 
-// List returns a snapshot of observed feed variants for a route, oldest first.
+// List 返回某路由下已观察 feed 变体的快照，最久未访问的在前。
 func (c *Catalog) List(routeName string) []pipeline.FeedRef {
 	if c == nil || c.limit <= 0 {
 		return nil

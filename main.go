@@ -343,10 +343,6 @@ type feedObserver interface {
 	Observe(ref pipeline.FeedRef)
 }
 
-type feedNotifier interface {
-	Notify(feedKey string, statusCode int, errorMessage string)
-}
-
 func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	feedCache := cache.New(time.Duration(cfg.Cache.FeedTTL) * time.Second)
 
@@ -359,6 +355,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	}
 	feedHealth := health.New(health.Config{
 		BusinessErrorCodes: cfg.Notifier.BusinessErrorCodes,
+		OnDisabled:         notif.Notify,
 	})
 
 	var archiver *media.Archiver
@@ -380,8 +377,6 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 	var ref *refresher.Refresher
 	if anyRouteEnabled(cfg) {
 		ref = refresher.New(refresher.Config{
-			FeedCache:      feedCache,
-			Notifier:       notif,
 			FeedHealth:     feedHealth,
 			Pipeline:       pipe,
 			FeedCatalog:    feedCatalog,
@@ -389,14 +384,13 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 			MaxRetries:     cfg.Refresher.MaxRetries,
 			RetryBaseDelay: cfg.Refresher.RetryBaseDelay,
 			PreinitURL:     cfg.Refresher.PreinitURL,
-			ScraperConfig:  cfg.Scraper,
 			RoutesConfig:   cfg.Routes,
 		})
 		ref.Start()
 		slog.Info("后台刷新器已启动")
 	}
 
-	router := makeRouter(feedHealth, feedCache, ref, cfg, pipe, feedCatalog, notif, archiver)
+	router := makeRouter(feedHealth, feedCache, ref, pipe, feedCatalog, archiver)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return &runtimeApp{
 		server: &http.Server{
@@ -410,7 +404,7 @@ func buildRuntime(cfg *config.Config) (*runtimeApp, error) {
 // anyRouteEnabled 检查是否有任何路由需要后台调度。
 func anyRouteEnabled(cfg *config.Config) bool {
 	for _, rc := range cfg.Routes {
-		if rc.Enabled && (rc.RefreshInterval > 0 || rc.PreheatOnStartup) {
+		if rc.NeedsScheduling() {
 			return true
 		}
 	}
@@ -439,10 +433,8 @@ func makeRouter(
 	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	ref *refresher.Refresher,
-	cfg *config.Config,
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
-	feedNotifier feedNotifier,
 	archiver *media.Archiver,
 ) *chi.Mux {
 	r := chi.NewRouter()
@@ -466,7 +458,7 @@ func makeRouter(
 	})
 
 	// Feed 路由：GET /feed/{route_name}/*
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, feedCatalog, feedNotifier))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, pipe, feedCatalog))
 
 	// 状态接口
 	r.Get("/status", makeStatusHandler(ref, archiver))
@@ -725,16 +717,12 @@ func splitPath(path string) []string {
 	return result
 }
 
-func makeFeedHandlerWithPipeline(
+func makeFeedHandler(
 	feedHealth *health.FeedHealth,
 	feedCache *cache.TTLCache,
 	pipe *pipeline.Pipeline,
 	feedCatalog feedObserver,
-	feedNotifier feedNotifier,
 ) http.HandlerFunc {
-	if feedHealth == nil {
-		feedHealth = health.New(health.Config{})
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		routeName := chi.URLParam(r, "route_name")
 		path := chi.URLParam(r, "*")
@@ -769,13 +757,7 @@ func makeFeedHandlerWithPipeline(
 
 		result, err := pipe.Refresh(routeName, pathParts, opts)
 		if err != nil {
-			statusCode, justDisabled := feedHealth.RecordFailure(ref.HealthKey, err)
-			if justDisabled {
-				if feedNotifier != nil {
-					feedNotifier.Notify(ref.HealthKey, statusCode, fmt.Sprintf("%v", err))
-				}
-				slog.Warn("feed 已禁用（业务错误）", "key", ref.HealthKey, "status", statusCode)
-			}
+			feedHealth.RecordFailure(ref.HealthKey, err)
 			slog.Error("路由抓取失败", "route", routeName, "error", err)
 			http.Error(w, fmt.Sprintf("抓取失败: %v", err), http.StatusBadGateway)
 			return

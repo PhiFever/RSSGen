@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +23,6 @@ func TestNew(t *testing.T) {
 	})
 	if r == nil {
 		t.Fatal("New 返回 nil")
-	}
-	if r.Name() != "afdian" {
-		t.Errorf("Name() = %q, want %q", r.Name(), "afdian")
 	}
 	if route.GetDescriptions()["afdian"] != "爱发电创作者动态订阅" {
 		t.Errorf("注册表 description = %q", route.GetDescriptions()["afdian"])
@@ -311,41 +307,6 @@ func TestFetchPipelineOrderPreserved(t *testing.T) {
 		}
 		if item.Content != fmt.Sprintf("<p>%s</p>", expectedGUIDs[i]) {
 			t.Errorf("result.Items[%d].Content = %q", i, item.Content)
-		}
-	}
-}
-
-func TestFetchDetailsRunConcurrentlyAndPreserveOrder(t *testing.T) {
-	r := New(config.ResolvedRouteConfig{Cookie: "test", RateLimit: 0.001})
-	posts := []afdianPost{makePost("p1"), makePost("p2"), makePost("p3")}
-
-	var active int32
-	var maxActive int32
-	detail := func(postID string) (string, error) {
-		current := atomic.AddInt32(&active, 1)
-		for {
-			max := atomic.LoadInt32(&maxActive)
-			if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
-				break
-			}
-		}
-		time.Sleep(30 * time.Millisecond)
-		atomic.AddInt32(&active, -1)
-		return fmt.Sprintf("<p>%s</p>", postID), nil
-	}
-
-	newFetchTestServer(t, posts, detail, nil, nil)
-
-	result, err := r.Fetch([]string{"slug"}, route.FetchOptions{Limit: 20})
-	if err != nil {
-		t.Fatalf("Fetch 返回错误: %v", err)
-	}
-	if atomic.LoadInt32(&maxActive) < 2 {
-		t.Fatalf("详情抓取应并发执行，maxActive=%d", maxActive)
-	}
-	for i, want := range []string{"p1", "p2", "p3"} {
-		if result.Items[i].GUID != want {
-			t.Fatalf("result.Items[%d].GUID = %q, want %q", i, result.Items[i].GUID, want)
 		}
 	}
 }

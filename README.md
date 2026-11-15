@@ -238,7 +238,7 @@ notifier:
 
 旧的 `services`（`type` / `webhook_url` / `secret`）写法已移除，飞书配置需改写为 `lark` URL；启用通知时 URL 写错会导致启动失败，错误提示对应条目的序号（从 0 开始）。ntfy 的 topic 在首次发布时自动创建，无需预建。
 
-`/status` 会返回后台刷新器是否启用，以及按路由和 feed 分组的最近刷新状态。
+`/status` 会返回后台刷新器是否启用，以及按路由和 feed 分组的最近刷新状态；每个 feed 下是一个数组，按输出变体（format / limit / include）各列一条。
 
 ## 致谢
 

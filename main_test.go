@@ -25,8 +25,8 @@ import (
 	"github.com/PhiFever/RSSGen/internal/backfill"
 	"github.com/PhiFever/RSSGen/internal/cache"
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/feedcatalog"
 	"github.com/PhiFever/RSSGen/internal/health"
-	"github.com/PhiFever/RSSGen/internal/notifier"
 	"github.com/PhiFever/RSSGen/internal/pipeline"
 	"github.com/PhiFever/RSSGen/internal/refresher"
 	"github.com/PhiFever/RSSGen/internal/route"
@@ -356,25 +356,6 @@ func TestSplitPath(t *testing.T) {
 	}
 }
 
-func TestBuildCacheKey(t *testing.T) {
-	tests := []struct {
-		routeName string
-		pathParts []string
-		expected  string
-	}{
-		{"afdian", []string{"user1"}, "afdian/user1"},
-		{"zhihu", []string{"user2"}, "zhihu/user2"},
-		{"test", []string{}, "test"},
-	}
-
-	for _, tt := range tests {
-		result := cache.BuildCacheKey(tt.routeName, tt.pathParts)
-		if result != tt.expected {
-			t.Errorf("BuildCacheKey(%q, %v) = %q, want %q", tt.routeName, tt.pathParts, result, tt.expected)
-		}
-	}
-}
-
 func TestRouteRegistration(t *testing.T) {
 	registry := route.GetRegistry()
 	if len(registry) == 0 {
@@ -394,7 +375,7 @@ func TestRouteRegistration(t *testing.T) {
 
 func TestIndexEndpoint(t *testing.T) {
 	route.Register("_main_index", "main test route", func(config.ResolvedRouteConfig) route.Route {
-		return &mainTestRoute{name: "_main_index"}
+		return &mainTestRoute{}
 	})
 
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{}}
@@ -403,9 +384,7 @@ func TestIndexEndpoint(t *testing.T) {
 		health.New(health.Config{}),
 		feedCache,
 		nil,
-		cfg,
 		pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes}),
-		nil,
 		nil,
 		nil,
 	)
@@ -507,10 +486,15 @@ func TestBuildRuntimeStartsRefresherWhenRouteScheduled(t *testing.T) {
 }
 
 func TestStatusHandlerIncludesFeeds(t *testing.T) {
+	pipe := pipeline.New(pipeline.Config{FeedCache: cache.New(10 * time.Second)})
+	catalog := feedcatalog.New(10)
+	observed := pipe.FeedRef("zhihu", []string{"u1"}, route.FetchOptions{})
+	catalog.Observe(observed)
 	ref := refresher.New(refresher.Config{
-		FeedCache:    cache.New(10 * time.Second),
-		Notifier:     &notifier.Notifier{},
-		RoutesConfig: map[string]config.RouteConfig{},
+		Pipeline:     pipe,
+		FeedHealth:   health.New(health.Config{}),
+		RoutesConfig: map[string]config.RouteConfig{"zhihu": {Enabled: true}},
+		FeedCatalog:  catalog,
 	})
 
 	req := httptest.NewRequest("GET", "/status", nil)
@@ -520,14 +504,17 @@ func TestStatusHandlerIncludesFeeds(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d, want %d", w.Code, http.StatusOK)
 	}
-	var body map[string]any
+	var body struct {
+		Enabled bool                                          `json:"enabled"`
+		Feeds   map[string]map[string][]refresher.ErrorStatus `json:"feeds"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("状态响应不是 JSON: %v", err)
 	}
-	if body["enabled"] != true {
-		t.Fatalf("enabled = %v, want true", body["enabled"])
+	if body.Enabled != true {
+		t.Fatalf("enabled = %v, want true", body.Enabled)
 	}
-	if _, ok := body["feeds"]; !ok {
+	if got := body.Feeds["zhihu"]["u1"]; len(got) != 1 || got[0].CacheKey != observed.CacheKey {
 		t.Fatal("/status 应包含 feeds 字段")
 	}
 }
@@ -550,11 +537,11 @@ func makeTestFeedHandler(
 	feedCache *cache.TTLCache,
 	cfg *config.Config,
 ) http.HandlerFunc {
-	return makeFeedHandlerWithPipeline(feedHealth, feedCache, pipeline.New(pipeline.Config{
+	return makeFeedHandler(feedHealth, feedCache, pipeline.New(pipeline.Config{
 		FeedCache:     feedCache,
 		ScraperConfig: cfg.Scraper,
 		RoutesConfig:  cfg.Routes,
-	}), nil, nil)
+	}), nil)
 }
 
 func disableTestFeed(feedHealth *health.FeedHealth, feedKey string) {
@@ -626,7 +613,7 @@ func TestFeedHandlerObservesValidCacheHit(t *testing.T) {
 	observer := &recordingFeedObserver{}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer, nil))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, pipe, observer))
 
 	req := httptest.NewRequest("GET", "/feed/afdian/user1", nil)
 	w := httptest.NewRecorder()
@@ -651,7 +638,7 @@ func TestFeedHandlerDoesNotObserveUnknownRouteDisabledRouteOrDisabledFeed(t *tes
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"afdian": {Enabled: false}}}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, observer, nil))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, pipe, observer))
 
 	req := httptest.NewRequest("GET", "/feed/nonexistent/user1", nil)
 	w := httptest.NewRecorder()
@@ -694,7 +681,6 @@ func TestFeedUnknownRouteReturns404(t *testing.T) {
 }
 
 type mainTestRoute struct {
-	name        string
 	fetchErr    error
 	infoErr     error
 	info        *route.FeedInfo
@@ -729,7 +715,6 @@ func (o *recordingFeedObserver) Observe(ref pipeline.FeedRef) {
 	o.refs = append(o.refs, ref)
 }
 
-func (r *mainTestRoute) Name() string { return r.name }
 func (r *mainTestRoute) Fetch(_ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount.Add(1)
 	r.capturedOpt = opts
@@ -751,7 +736,7 @@ func (r *mainTestRoute) Fetch(_ []string, opts route.FetchOptions) (route.FeedRe
 }
 
 func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
-	testRoute := &mainTestRoute{name: "_main_success"}
+	testRoute := &mainTestRoute{}
 	route.Register("_main_success", "_main_success", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
@@ -784,7 +769,7 @@ func TestFeedHandlerSyncFetchSuccessAndQueryParams(t *testing.T) {
 }
 
 func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
-	testRoute := &mainTestRoute{name: "_main_variant"}
+	testRoute := &mainTestRoute{}
 	route.Register("_main_variant", "_main_variant", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
@@ -812,7 +797,7 @@ func TestFeedHandlerCacheVariantsDoNotPollute(t *testing.T) {
 }
 
 func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
-	testRoute := &mainTestRoute{name: "_main_no_trigger"}
+	testRoute := &mainTestRoute{}
 	route.Register("_main_no_trigger", "_main_no_trigger", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	feedCache := cache.New(10 * time.Second)
@@ -836,7 +821,7 @@ func TestFeedHandlerCacheMissDoesNotTriggerBackgroundFetch(t *testing.T) {
 
 func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 	t.Run("fetch error", func(t *testing.T) {
-		testRoute := &mainTestRoute{name: "_main_fetch_err", fetchErr: errors.New("boom")}
+		testRoute := &mainTestRoute{fetchErr: errors.New("boom")}
 		route.Register("_main_fetch_err", "_main_fetch_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_err": {Enabled: true}}}
@@ -852,7 +837,7 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 	})
 
 	t.Run("result info error", func(t *testing.T) {
-		testRoute := &mainTestRoute{name: "_main_info_err", infoErr: errors.New("bad info")}
+		testRoute := &mainTestRoute{infoErr: errors.New("bad info")}
 		route.Register("_main_info_err", "_main_info_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 		cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_info_err": {Enabled: true}}}
@@ -869,29 +854,21 @@ func TestFeedHandlerFetchAndInfoErrors(t *testing.T) {
 }
 
 func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
-	testRoute := &mainTestRoute{name: "_main_fetch_biz_err", fetchErr: route.NewHTTPError(http.StatusForbidden, "https://upstream.example/api")}
+	testRoute := &mainTestRoute{fetchErr: route.NewHTTPError(http.StatusForbidden, "https://upstream.example/api")}
 	route.Register("_main_fetch_biz_err", "_main_fetch_biz_err", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
-	received := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		received <- struct{}{}
-		_, _ = w.Write([]byte(`{"id":"t","event":"message"}`))
-	}))
-	defer server.Close()
-
+	notifications := 0
 	feedCache := cache.New(10 * time.Second)
-	feedHealth := health.New(health.Config{})
+	feedHealth := health.New(health.Config{OnDisabled: func(key string, code int, message string) {
+		notifications++
+		if key != "_main_fetch_biz_err/u1" || code != 403 || message != testRoute.fetchErr.Error() {
+			t.Errorf("通知参数不匹配: %s %d %s", key, code, message)
+		}
+	}})
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_fetch_biz_err": {Enabled: true}}}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
-	notif, err := notifier.New(notifier.Config{
-		Enabled:     true,
-		ServiceURLs: []string{"ntfy://" + strings.TrimPrefix(server.URL, "http://") + "/RSSGen?scheme=http&token=tk_test"},
-	})
-	if err != nil {
-		t.Fatalf("创建通知器失败: %v", err)
-	}
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, nil, notif))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, pipe, nil))
 
 	req := httptest.NewRequest("GET", "/feed/_main_fetch_biz_err/u1", nil)
 	w := httptest.NewRecorder()
@@ -904,15 +881,13 @@ func TestFeedHandlerBusinessErrorNotifiesAndDisablesFeed(t *testing.T) {
 		t.Fatal("同步业务错误后 feed 应被禁用")
 	}
 
-	select {
-	case <-received:
-	case <-time.After(time.Second):
-		t.Fatal("同步业务错误应触发通知")
+	if notifications != 1 {
+		t.Fatalf("通知次数 = %d, want 1", notifications)
 	}
 }
 
 func TestFeedHandlerClientDisconnectWriteErrorNotLoggedAsError(t *testing.T) {
-	testRoute := &mainTestRoute{name: "_main_write_broken_pipe"}
+	testRoute := &mainTestRoute{}
 	route.Register("_main_write_broken_pipe", "_main_write_broken_pipe", func(config.ResolvedRouteConfig) route.Route { return testRoute })
 
 	var logs bytes.Buffer
@@ -925,7 +900,7 @@ func TestFeedHandlerClientDisconnectWriteErrorNotLoggedAsError(t *testing.T) {
 	cfg := &config.Config{Routes: map[string]config.RouteConfig{"_main_write_broken_pipe": {Enabled: true}}}
 	pipe := pipeline.New(pipeline.Config{FeedCache: feedCache, RoutesConfig: cfg.Routes})
 	r := chi.NewRouter()
-	r.Get("/feed/{route_name}/*", makeFeedHandlerWithPipeline(feedHealth, feedCache, pipe, nil, nil))
+	r.Get("/feed/{route_name}/*", makeFeedHandler(feedHealth, feedCache, pipe, nil))
 
 	req := httptest.NewRequest("GET", "/feed/_main_write_broken_pipe/u1", nil)
 	w := &writeErrorResponseWriter{err: &net.OpError{Op: "write", Err: syscall.EPIPE}}

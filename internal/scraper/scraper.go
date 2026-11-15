@@ -68,26 +68,20 @@ var chromeHeaderOrder = []string{
 
 // Config 是 Scraper 的配置参数。
 type Config struct {
-	Cookies      map[string]string
-	Proxy        string
-	RateLimit    float64 // 最小请求间隔（秒）
-	Impersonate  string  // TLS 指纹配置名，如 "chrome_131"
-	ExtraHeaders map[string]string
+	Cookies     map[string]string
+	Proxy       string
+	RateLimit   float64 // 最小请求间隔（秒）
+	Impersonate string  // TLS 指纹配置名，如 "chrome_131"
 	// TransportAttempts 控制传输层立即自愈的尝试次数。零值保留常规的两次尝试；
 	// 历史回填设为一次，由外层对账模块统一执行最多三次重试。
 	TransportAttempts int
 }
 
-// Response 封装 HTTP 响应，提供便捷方法。
+// Response 封装 HTTP 响应。
 type Response struct {
 	StatusCode int
 	Header     http.Header
 	Body       []byte
-}
-
-// Text 返回响应体的字符串形式。
-func (r *Response) Text() string {
-	return string(r.Body)
 }
 
 // Scraper 是基于 tls-client 的反爬 HTTP 客户端。
@@ -96,7 +90,6 @@ type Scraper struct {
 	proxy             string
 	rateLimit         time.Duration
 	impersonate       string
-	extraHeaders      map[string]string
 	transportAttempts int
 
 	mu              sync.Mutex
@@ -150,7 +143,6 @@ func New(cfg Config) (*Scraper, error) {
 		proxy:             cfg.Proxy,
 		rateLimit:         time.Duration(rateLimit * float64(time.Second)),
 		impersonate:       imp,
-		extraHeaders:      cfg.ExtraHeaders,
 		client:            client,
 		transportAttempts: cfg.TransportAttempts,
 	}
@@ -198,14 +190,11 @@ func (s *Scraper) rateLimitWait() {
 	s.lastRequestTime = time.Now()
 }
 
-// doRequest 是内部请求方法，统一处理限速、header 合并。
-func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, extraHeaders map[string]string) (*Response, error) {
-	// 合并 headers：Chrome 默认头打底 → 实例 ExtraHeaders → referer → 单次请求头
-	headers := make(map[string]string, len(chromeDefaultHeaders)+len(s.extraHeaders)+len(extraHeaders)+1)
+// Get 发送 GET 请求，统一处理限速、header 合并与传输层自愈。extraHeaders 可以为 nil。
+func (s *Scraper) Get(url string, referer string, extraHeaders map[string]string) (*Response, error) {
+	// 合并 headers：Chrome 默认头打底 → referer → 单次请求头
+	headers := make(map[string]string, len(chromeDefaultHeaders)+len(extraHeaders)+1)
 	for k, v := range chromeDefaultHeaders {
-		headers[k] = v
-	}
-	for k, v := range s.extraHeaders {
 		headers[k] = v
 	}
 	if referer != "" {
@@ -218,7 +207,7 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 	for attempt := 0; attempt < s.transportAttempts; attempt++ {
 		s.rateLimitWait()
 
-		req, err := http.NewRequest(method, url, body)
+		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("创建请求失败: %w", err)
 		}
@@ -240,13 +229,13 @@ func (s *Scraper) doRequest(method, url string, referer string, body io.Reader, 
 					"error", transportErrorDetail(err),
 				)
 				if rebuildErr := s.replaceClient(); rebuildErr != nil {
-					return nil, fmt.Errorf("%s 请求失败 %s: %w; 重建 HTTP 客户端失败: %v", method, url, err, rebuildErr)
+					return nil, fmt.Errorf("GET 请求失败 %s: %w; 重建 HTTP 客户端失败: %v", url, err, rebuildErr)
 				}
 				if attempt+1 < s.transportAttempts {
 					continue
 				}
 			}
-			return nil, fmt.Errorf("%s 请求失败 %s: %w", method, url, err)
+			return nil, fmt.Errorf("GET 请求失败 %s: %w", url, err)
 		}
 
 		bodyBytes, err := io.ReadAll(resp.Body)
@@ -308,11 +297,6 @@ func transportErrorDetail(err error) error {
 		return urlErr.Err
 	}
 	return err
-}
-
-// Get 发送 GET 请求。headers 可以为 nil。
-func (s *Scraper) Get(url string, referer string, headers map[string]string) (*Response, error) {
-	return s.doRequest("GET", url, referer, nil, headers)
 }
 
 // SetCookies 更新 cookie（运行时动态设置）。

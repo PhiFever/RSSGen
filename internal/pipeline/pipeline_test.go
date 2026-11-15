@@ -15,7 +15,6 @@ type pipelineTestRoute struct {
 	lastOpts   route.FetchOptions
 }
 
-func (r *pipelineTestRoute) Name() string { return "_pipeline_test" }
 func (r *pipelineTestRoute) Fetch(_ []string, opts route.FetchOptions) (route.FeedResult, error) {
 	r.fetchCount++
 	r.lastOpts = opts
@@ -120,5 +119,39 @@ func TestCacheKeyUsesConfiguredIncludeWhenRequestOmitsIt(t *testing.T) {
 	want = "_pipeline_include/u2?format=atom&limit=20&include=answer,pin"
 	if got != want {
 		t.Fatalf("CacheKey with default include = %q, want %q", got, want)
+	}
+}
+
+func TestHealthKey(t *testing.T) {
+	tests := []struct {
+		route string
+		parts []string
+		want  string
+	}{
+		{route: "zhihu", parts: nil, want: "zhihu"},
+		{route: "afdian", parts: []string{"author"}, want: "afdian/author"},
+		{route: "test", parts: []string{"a", "b"}, want: "test/a/b"},
+	}
+	for _, tt := range tests {
+		if got := healthKey(tt.route, tt.parts); got != tt.want {
+			t.Fatalf("healthKey(%q, %+v) = %q, want %q", tt.route, tt.parts, got, tt.want)
+		}
+	}
+}
+
+func TestCacheKeyIncludesVariant(t *testing.T) {
+	got := CacheKey("zhihu", []string{"user1"}, route.FetchOptions{
+		Format:  "rss",
+		Limit:   7,
+		Include: []string{"answer", "pin"},
+	})
+	want := "zhihu/user1?format=rss&limit=7&include=answer,pin"
+	if got != want {
+		t.Fatalf("CacheKey variant = %q, want %q", got, want)
+	}
+
+	base := healthKey("zhihu", []string{"user1"})
+	if got == base {
+		t.Fatal("变体缓存键不应退化为基础 feed 键")
 	}
 }

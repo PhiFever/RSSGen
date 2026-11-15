@@ -76,9 +76,6 @@ func TestActivitiesResponseAcceptsNumericIDs(t *testing.T) {
 
 func TestRouteMetadataAndScraper(t *testing.T) {
 	r := New(config.ResolvedRouteConfig{Cookie: "d_c0=test;", RateLimit: 0.001})
-	if r.Name() != "zhihu" {
-		t.Fatalf("Name() = %q", r.Name())
-	}
 	if route.GetDescriptions()["zhihu"] != "知乎用户动态订阅" {
 		t.Fatalf("注册表 description = %q", route.GetDescriptions()["zhihu"])
 	}
@@ -1805,7 +1802,7 @@ func TestFetchActivitiesPagedRetriesOn5xx(t *testing.T) {
 	}
 }
 
-func TestParseStartBefore(t *testing.T) {
+func TestParseScanOffset(t *testing.T) {
 	for _, tt := range []struct {
 		input   string
 		want    int64
@@ -1819,9 +1816,9 @@ func TestParseStartBefore(t *testing.T) {
 		{"abc", 0, true},
 	} {
 		t.Run(tt.input, func(t *testing.T) {
-			got, err := ParseStartBefore(tt.input)
+			got, err := ParseScanOffset("start-before", tt.input)
 			if (err != nil) != tt.wantErr || got != tt.want {
-				t.Fatalf("ParseStartBefore(%q)=%d, %v; want %d, error=%v", tt.input, got, err, tt.want, tt.wantErr)
+				t.Fatalf("ParseScanOffset(%q)=%d, %v; want %d, error=%v", tt.input, got, err, tt.want, tt.wantErr)
 			}
 		})
 	}

@@ -148,11 +148,6 @@ func (s *BackfillSource) Comments(ctx context.Context, candidate backfill.Candid
 	return "", nil
 }
 
-// ParseStartBefore 将毫秒游标或日期解析为知乎动态的起始游标。
-func ParseStartBefore(value string) (int64, error) {
-	return ParseScanOffset("start-before", value)
-}
-
 // ParseScanOffset 共用上下界解析规则，日期先取整秒再换算为毫秒游标。
 func ParseScanOffset(flagName, value string) (int64, error) {
 	if value != "" && strings.Trim(value, "0123456789") == "" {

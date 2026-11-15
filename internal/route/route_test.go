@@ -9,7 +9,6 @@ import (
 
 type testRoute struct{}
 
-func (testRoute) Name() string { return "_test_route" }
 func (testRoute) Fetch([]string, FetchOptions) (FeedResult, error) {
 	return FeedResult{
 		Info:  FeedInfo{Title: "test", Link: "https://example.com"},
@@ -37,7 +36,8 @@ func TestRegistrySnapshots(t *testing.T) {
 	if !ok {
 		t.Fatal("注册表快照应包含测试路由")
 	}
-	if factory(config.ResolvedRouteConfig{}).Name() != "_test_route" {
+	result, err := factory(config.ResolvedRouteConfig{}).Fetch(nil, FetchOptions{})
+	if err != nil || result.Info.Title != "test" || len(result.Items) != 1 || result.Items[0].Title != "item" {
 		t.Fatal("注册表工厂应创建测试路由")
 	}
 	descriptions := GetDescriptions()
