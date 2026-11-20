@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/PhiFever/RSSGen/internal/config"
+	"github.com/PhiFever/RSSGen/internal/feed"
 	"github.com/PhiFever/RSSGen/internal/route"
 	signzhihu "github.com/PhiFever/RSSGen/internal/sign/zhihu"
 )
@@ -564,6 +565,26 @@ func TestMakeFeedItemPinVideoBlockLogsOriginalURL(t *testing.T) {
 	logs := buf.String()
 	if strings.Contains(logs, "知乎 pin video block") {
 		t.Errorf("可渲染 video block 不应输出告警, 实得日志: %q", logs)
+	}
+}
+
+func TestPinVideoLinkSurvivesFeedGeneration(t *testing.T) {
+	target := map[string]interface{}{
+		"id": "2100627130107409654", "type": "pin",
+		"content": []interface{}{map[string]interface{}{
+			"type": PinBlockVideo, "video_id": "2106407827975696968",
+			"playlist": []interface{}{map[string]interface{}{"quality": "hd", "url": "https://vdn.vzuu.com/hd.mp4"}},
+		}},
+	}
+	item := newTestRoute().makeFeedItem(mkAct(target, "MEMBER_CREATE_PIN", "发布了视频"))
+	for _, format := range []string{"atom", "rss"} {
+		out, err := feed.Generate(&route.FeedInfo{}, []route.FeedItem{item}, format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "https://www.zhihu.com/video/2106407827975696968") {
+			t.Errorf("%s 正文缺少知乎视频链接", format)
+		}
 	}
 }
 

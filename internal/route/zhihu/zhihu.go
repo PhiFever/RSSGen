@@ -185,6 +185,7 @@ type zhihuPinBlock struct {
 	Playlist       []zhihuPinPlaylistItem `json:"playlist"`
 	VideoInfo      *zhihuVideoInfo        `json:"video_info"`
 	Raw            json.RawMessage        `json:"-"`
+	VideoID        zhihuID                `json:"video_id"`
 }
 
 type zhihuVideoInfo struct {
@@ -694,11 +695,16 @@ func renderPinContent(blocks []zhihuPinBlock, zhihuURL string) string {
 
 func renderPinVideoBlock(block zhihuPinBlock) string {
 	videoURL := selectPinVideoURL(block)
-	if videoURL == "" {
+	linkURL := videoURL
+	if block.VideoID != "" {
+		linkURL = zhihuHostURL + "/video/" + string(block.VideoID)
+	}
+	if linkURL == "" {
 		return ""
 	}
+	link := fmt.Sprintf(`<a href="%s">查看视频</a>`, html.EscapeString(linkURL))
 	if !strings.Contains(videoURL, ".mp4") {
-		return fmt.Sprintf(`<a href="%s">查看视频</a>`, html.EscapeString(videoURL))
+		return link
 	}
 
 	poster := block.Thumbnail
@@ -714,7 +720,7 @@ func renderPinVideoBlock(block zhihuPinBlock) string {
 	if block.Width > 0 {
 		attrs = append(attrs, fmt.Sprintf(`width="%.0f"`, block.Width))
 	}
-	return fmt.Sprintf(`<video %s><source src="%s" type="video/mp4" /></video>`, strings.Join(attrs, " "), html.EscapeString(videoURL))
+	return fmt.Sprintf(`<video %s><source src="%s" type="video/mp4" /></video>%s`, strings.Join(attrs, " "), html.EscapeString(videoURL), link)
 }
 
 func selectPinVideoURL(block zhihuPinBlock) string {
