@@ -281,7 +281,7 @@ func (d *backfillTestDestination) Feeds(context.Context) ([]backfill.Feed, error
 func (d *backfillTestDestination) Feed(context.Context, int64) (backfill.Feed, error) {
 	return backfill.Feed{ID: 1, FeedURL: "http://rssgen/feed/zhihu/alice"}, nil
 }
-func (d *backfillTestDestination) Entries(context.Context, int64) ([]backfill.Entry, error) {
+func (d *backfillTestDestination) Entries(context.Context, int64, int64) ([]backfill.Entry, error) {
 	return d.entries, nil
 }
 func (d *backfillTestDestination) Import(_ context.Context, _ int64, article backfill.Article) (backfill.ImportOutcome, error) {

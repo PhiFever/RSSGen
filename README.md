@@ -128,7 +128,7 @@ go run . backfill execute --source zhihu \
 
 `--start-before` 指定从哪个游标向更早的动态扫描，接受两种形态：纯数字毫秒游标（至少 `1000000000000`，例如 `1781935272669`），或日期（`2026-06-01` 按 UTC 零点解释，也接受 `2026-06-01T00:00:00Z` 这样的 RFC3339 时间）。日期沿用既有解析：取整秒后乘以 1000 转为毫秒游标，不保留 RFC3339 小数秒。不传时从最新一页开始。
 
-每页「知乎历史扫描进度」日志包含 `next_offset=`。复制其中的非空值传回 `--start-before`，即可继续扫描更早的动态；与 `--max-items` 组合即为按窗口分批扫描：
+按窗口分批补缺时，可用 `--max-items` 限定每次扫描的动态数。达到上限后，从最后一行 `scan_truncated=true` 复制 `--start-before` 参数，继续扫描更早的动态。
 
 ```bash
 # 从指定日期向前扫描一个窗口并导入
@@ -136,13 +136,13 @@ go run . backfill execute --source zhihu \
   --feed-id 42 \
   --start-before 2026-07-01 --max-items 1000
 
-# 从上一窗口日志复制 next_offset 的值，扫描下一个窗口
+# 使用上一窗口结束时给出的续扫游标
 go run . backfill execute --source zhihu \
   --feed-id 42 \
   --start-before 1781935272669 --max-items 1000
 ```
 
-扫描完成后才开始导入；中断扫描后直接使用最后的游标，会跳过本次已扫描但尚未导入的内容。要补齐这些内容，应重新执行该窗口原来的命令。`--max-items` 的上限落在一页中间时，该页剩余动态会被丢弃，此时应以「已达知乎历史扫描上限」那行的 `next_offset` 续扫——它取最后一条**被保留**的动态，不是整页末尾，因此被丢弃的条目会落进下一个窗口，不需要重叠补扫。系统不保存本地断点状态。
+CLI 每读一页就对账并导入该页缺失的条目。逐页日志中的 `next_offset` 在该页处理前输出，此时页内可能还有条目待写入。中断后请按末行 `scan_interrupted=true` 的提示续扫；如果没有给出游标，重跑原命令即可，补缺会跳过已导入的条目。若条数上限落在页中间，末行续扫游标取自最后一条已保留的动态，下次会接着处理该页剩余条目。
 
 单页遇到网络错误或 HTTP 5xx 最多尝试 3 次，失败后依次等待 1 秒、2 秒；HTTP 4xx 和 JSON 解析错误直接返回。4xx 通常涉及签名失效或风控，反复请求可能加重风控。
 
@@ -167,6 +167,14 @@ go run . backfill refresh --source zhihu \
 ```
 
 重刷输出已确认成功的更新数与失败条目详情；评论抓取最终失败的条目跳过，不用缺失评论的正文覆盖旧内容。到达下界表示指定窗口扫描完成，不提示继续扫描更早历史。`list`、`execute`、`refresh` 共用 `--source`、`--config` 和 `--request-interval`，公共参数可放在子命令前后；三者都要求 `backfill.miniflux_url` 与 `backfill.miniflux_api_token`，`list` 不要求数据源 Cookie。要指向另一个 Miniflux 实例，用 `--config` 换一份配置文件。
+
+可在同一时间窗内用 `--entry-id` 将重刷限定到单篇 Miniflux 条目。要批量修复知乎视频想法，可从仓库根目录运行下列脚本。它用同一份 RSSGen 配置查询 Miniflux，筛选标题标明发布、赞同或收藏了视频且缺少视频链接的想法。执行后逐篇读回验证，重跑会跳过已有链接的条目。
+
+```bash
+go build -o ./rssgen .
+uv run scripts/refresh_zhihu_videos.py --config config.yml
+uv run scripts/refresh_zhihu_videos.py --config config.yml --cli ./rssgen --apply
+```
 
 ### 回填时归档图片
 

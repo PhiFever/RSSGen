@@ -93,8 +93,24 @@ type entriesResponse struct {
 	} `json:"entries"`
 }
 
-// Entries 读取一个 feed 的全部状态和全部分页条目。
-func (c *Client) Entries(ctx context.Context, feedID int64) ([]backfill.Entry, error) {
+// Entries 读取一个 feed 中可重刷的指定条目，或分页读取全部已读、未读条目。
+func (c *Client) Entries(ctx context.Context, feedID, entryID int64) ([]backfill.Entry, error) {
+	if entryID != 0 {
+		var response struct {
+			backfill.Entry
+			Status string
+		}
+		if err := c.getJSON(ctx, fmt.Sprintf("/feeds/%d/entries/%d", feedID, entryID), &response); err != nil {
+			return nil, err
+		}
+		if response.ID != entryID {
+			return nil, fmt.Errorf("Miniflux 条目响应 ID=%d，与请求 ID=%d 不一致", response.ID, entryID)
+		}
+		if response.Status != "read" && response.Status != "unread" {
+			return nil, nil
+		}
+		return []backfill.Entry{response.Entry}, nil
+	}
 	entries := make([]backfill.Entry, 0)
 	for offset := 0; ; offset += c.pageSize {
 		query := url.Values{}

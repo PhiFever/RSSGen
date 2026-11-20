@@ -78,7 +78,19 @@ func newBackfillCommand(deps commandDependencies) *cli.Command {
 		Commands: []*cli.Command{
 			{Name: "list", Usage: "列出该数据源下可回填的 feed", Action: run},
 			{Name: "execute", Usage: "补齐 Miniflux 缺失的历史条目", Flags: backfillScanFlags(), Action: run},
-			{Name: "refresh", Usage: "重刷已有条目的标题与正文（仅知乎，必须指定扫描范围）", Flags: backfillScanFlags(), Action: run},
+			{
+				Name: "refresh", Usage: "重刷已有条目的标题与正文（仅知乎，必须指定扫描范围）",
+				Flags: append(backfillScanFlags(), &cli.Int64Flag{
+					Name: "entry-id", Usage: "只重刷该 Miniflux 条目",
+					Validator: func(id int64) error {
+						if id <= 0 {
+							return fmt.Errorf("--entry-id 必须为正整数")
+						}
+						return nil
+					},
+				}),
+				Action: run,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := rejectPositionalArgs(cmd); err != nil {
@@ -132,6 +144,7 @@ type backfillCLIConfig struct {
 	requestInterval        time.Duration
 	minifluxToken          string
 	sourceCookie           string
+	entryID                int64
 }
 
 func backfillConfigFromCommand(cmd *cli.Command) (backfillCLIConfig, error) {
@@ -144,6 +157,7 @@ func backfillConfigFromCommand(cmd *cli.Command) (backfillCLIConfig, error) {
 		action:                 backfill.Action(cmd.Name),
 		dryRun:                 cmd.Bool("dry-run"),
 		feedID:                 cmd.Int64("feed-id"),
+		entryID:                cmd.Int64("entry-id"),
 		requestInterval:        cmd.Duration("request-interval"),
 	}
 	spec, ok := backfillSources[cfg.source]
@@ -260,7 +274,7 @@ func runBackfill(ctx context.Context, cfg backfillCLIConfig, output io.Writer) e
 	slog.Info("开始历史回填", "source", cfg.source, "action", cfg.action, "feed_id", cfg.feedID)
 	result, runErr := backfill.Run(ctx, backfill.Request{
 		Action: cfg.action, DryRun: cfg.dryRun, RangeConfirmed: cfg.rangeConfirmed,
-		FeedID: cfg.feedID, IncludeCategories: cfg.includeCategories,
+		FeedID: cfg.feedID, EntryID: cfg.entryID, IncludeCategories: cfg.includeCategories,
 	}, deps)
 	if runErr == nil || result.Feed.ID != 0 || result.Scanned != 0 || result.Imported != 0 {
 		printBackfillResult(output, cfg.action, cfg.dryRun, result)

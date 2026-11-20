@@ -26,6 +26,8 @@ func TestClientFeedsFeedAndPaginatedEntries(t *testing.T) {
 			writeJSON(t, w, []map[string]any{{"id": 42, "title": "Alice", "feed_url": "http://rssgen/feed/afdian/alice"}})
 		case "/v1/feeds/42":
 			writeJSON(t, w, map[string]any{"id": 42, "title": "Alice", "feed_url": "http://rssgen/feed/afdian/alice"})
+		case "/v1/feeds/42/entries/99":
+			writeJSON(t, w, map[string]any{"id": 99, "url": "https://afdian.com/p/3", "hash": "h3", "status": "read"})
 		case "/v1/feeds/42/entries":
 			for _, status := range r.URL.Query()["status"] {
 				if status == "removed" {
@@ -70,11 +72,15 @@ func TestClientFeedsFeedAndPaginatedEntries(t *testing.T) {
 	if err != nil || feed.Title != "Alice" {
 		t.Fatalf("Feed = %+v, %v", feed, err)
 	}
-	entries, err := client.Entries(context.Background(), 42)
+	entries, err := client.Entries(context.Background(), 42, 0)
 	if err != nil || len(entries) != 3 || entries[2].Hash != "h3" || entries[2].ID != 99 {
 		t.Fatalf("Entries = %+v, %v", entries, err)
 	}
-	if len(paths) != 4 || paths[0] != "/v1/feeds" || paths[1] != "/v1/feeds/42" {
+	selected, err := client.Entries(context.Background(), 42, 99)
+	if err != nil || len(selected) != 1 || selected[0] != entries[2] {
+		t.Fatalf("读取指定条目 = %+v, %v", selected, err)
+	}
+	if len(paths) != 5 || paths[0] != "/v1/feeds" || paths[1] != "/v1/feeds/42" {
 		t.Fatalf("paths = %v", paths)
 	}
 }

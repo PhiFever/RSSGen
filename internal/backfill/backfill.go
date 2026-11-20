@@ -39,7 +39,8 @@ type Request struct {
 	Action            Action
 	FeedID            int64
 	DryRun            bool
-	RangeConfirmed    bool // 调用方已确认扫描下界或正整数条数上限
+	RangeConfirmed    bool  // 调用方已确认扫描下界或正整数条数上限
+	EntryID           int64 // 指定重刷的 Miniflux 条目，零表示整个范围。
 }
 
 // Feed 是对账所需的 Miniflux feed 身份信息。
@@ -129,7 +130,7 @@ type Destination interface {
 	Update(ctx context.Context, entryID int64, title, content string) error
 	Feeds(ctx context.Context) ([]Feed, error)
 	Feed(ctx context.Context, feedID int64) (Feed, error)
-	Entries(ctx context.Context, feedID int64) ([]Entry, error)
+	Entries(ctx context.Context, feedID, entryID int64) ([]Entry, error)
 	Import(ctx context.Context, feedID int64, article Article) (ImportOutcome, error)
 }
 
@@ -222,6 +223,9 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 		reportProgress(deps.Progress, "Miniflux feed 列表读取完成", "total", len(feeds), "eligible", len(result.Feeds))
 		return result, nil
 	case ActionExecute, ActionRefresh:
+		if req.EntryID < 0 || (req.EntryID != 0 && req.Action != ActionRefresh) {
+			return result, fmt.Errorf("条目 ID 仅适用于指定正整数 ID 的重刷")
+		}
 		if req.FeedID <= 0 {
 			return result, fmt.Errorf("feed ID 必须是正整数")
 		}
@@ -272,7 +276,7 @@ func Run(ctx context.Context, req Request, deps Dependencies) (Result, error) {
 
 	reportProgress(deps.Progress, "开始读取 Miniflux 现有条目", "feed_id", req.FeedID)
 	entries, err := retryValue(ctx, policy, func(ctx context.Context) ([]Entry, error) {
-		return deps.Destination.Entries(ctx, req.FeedID)
+		return deps.Destination.Entries(ctx, req.FeedID, req.EntryID)
 	})
 	if err != nil {
 		return result, fmt.Errorf("读取 feed %d 的现有条目: %w", req.FeedID, err)

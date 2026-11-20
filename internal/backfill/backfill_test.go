@@ -143,7 +143,7 @@ func (d *fakeDestination) Feed(context.Context, int64) (Feed, error) {
 	return d.feed, nil
 }
 
-func (d *fakeDestination) Entries(context.Context, int64) ([]Entry, error) {
+func (d *fakeDestination) Entries(context.Context, int64, int64) ([]Entry, error) {
 	d.entriesCalls++
 	return append([]Entry(nil), d.entries...), nil
 }
